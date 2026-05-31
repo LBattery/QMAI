@@ -263,7 +263,9 @@ export function SnapshotViewer({ projectPath, chapterNumber, onClose }: Snapshot
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="min-w-0">
             <h3 className="text-lg font-semibold text-foreground">
-              {t("novel.snapshot.title", { number: chapterNumber })}
+              {chapterNumber < 0 && snapshot?.chapterTitle
+                ? `${snapshot.chapterTitle}快照`
+                : t("novel.snapshot.title", { number: chapterNumber })}
             </h3>
             {snapshot && !loading ? (
               <p className="mt-1 text-xs text-muted-foreground">

@@ -1,10 +1,10 @@
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { RefreshCw, Download, CheckCircle, AlertCircle } from "lucide-react"
 import { allChangelog } from "@/lib/changelog"
 import { isTauri } from "@/lib/platform"
 
-type UpdateStatus = "idle" | "checking" | "up-to-date" | "available" | "error"
+type UpdateStatus = "idle" | "checking" | "up-to-date" | "available" | "downloading" | "ready" | "error"
 
 export function ChangelogSection() {
   const { t, i18n } = useTranslation()
@@ -14,6 +14,8 @@ export function ChangelogSection() {
   const [latestVersion, setLatestVersion] = useState("")
   const [updateNotes, setUpdateNotes] = useState("")
   const [errorMessage, setErrorMessage] = useState("")
+  const [downloadProgress, setDownloadProgress] = useState(0)
+  const updateHandleRef = useRef<unknown>(null)
 
   async function handleCheckUpdate() {
     if (!isTauri()) {
@@ -23,6 +25,7 @@ export function ChangelogSection() {
     }
     setUpdateStatus("checking")
     setErrorMessage("")
+    setDownloadProgress(0)
     try {
       const { check } = await import("@tauri-apps/plugin-updater")
       const update = await check()
@@ -32,6 +35,7 @@ export function ChangelogSection() {
         setUpdateStatus("available")
         setLatestVersion(update.version)
         setUpdateNotes(update.body?.trim() ?? "")
+        updateHandleRef.current = update
       }
     } catch (err) {
       setUpdateStatus("error")
@@ -40,19 +44,49 @@ export function ChangelogSection() {
   }
 
   async function handleDownloadUpdate() {
+    if (!updateHandleRef.current) return
+    setUpdateStatus("downloading")
+    setDownloadProgress(0)
+    try {
+      const update = updateHandleRef.current as { downloadAndInstall: (onEvent?: (event: { event: string; data: { contentLength?: number; chunkLength?: number } }) => void) => Promise<void> }
+      let downloaded = 0
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started" && event.data.contentLength) {
+          downloaded = 0
+        } else if (event.event === "Progress" && event.data.chunkLength) {
+          downloaded += event.data.chunkLength
+          // Estimate progress (contentLength may not be available in all events)
+          setDownloadProgress((prev) => Math.min(prev + 1, 99))
+        } else if (event.event === "Finished") {
+          setDownloadProgress(100)
+        }
+      })
+      setUpdateStatus("ready")
+      setDownloadProgress(100)
+    } catch (err) {
+      if (String(err).includes("restart")) {
+        setUpdateStatus("ready")
+        setDownloadProgress(100)
+      } else {
+        setUpdateStatus("error")
+        setErrorMessage(err instanceof Error ? err.message : String(err))
+      }
+    }
+  }
+
+  async function handleInstallNow() {
     if (!isTauri()) return
     try {
-      const { check } = await import("@tauri-apps/plugin-updater")
-      const { message } = await import("@tauri-apps/plugin-dialog")
-      const update = await check()
-      if (!update) return
-      await message(
-        "开始下载并安装更新。Windows 安装阶段会自动关闭当前软件，请先保存正在编辑的内容。",
-        { title: "开始更新", kind: "info", okLabel: "知道了" },
-      )
-      await update.downloadAndInstall()
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err))
+      const { relaunch } = await import("@tauri-apps/plugin-process" as string)
+      await relaunch()
+    } catch {
+      // Fallback: try downloadAndInstall again
+      if (updateHandleRef.current) {
+        try {
+          const update = updateHandleRef.current as { downloadAndInstall: () => Promise<void> }
+          await update.downloadAndInstall()
+        } catch { /* expected restart */ }
+      }
     }
   }
 
@@ -73,7 +107,7 @@ export function ChangelogSection() {
           <button
             type="button"
             onClick={() => void handleCheckUpdate()}
-            disabled={updateStatus === "checking"}
+            disabled={updateStatus === "checking" || updateStatus === "downloading"}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${updateStatus === "checking" ? "animate-spin" : ""}`} />
@@ -92,6 +126,17 @@ export function ChangelogSection() {
               <AlertCircle className="h-4 w-4" />
               {errorMessage || "检查更新失败"}
             </span>
+          ) : null}
+
+          {updateStatus === "ready" ? (
+            <button
+              type="button"
+              onClick={() => void handleInstallNow()}
+              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+            >
+              <Download className="h-4 w-4" />
+              立即安装
+            </button>
           ) : null}
         </div>
 
@@ -112,9 +157,32 @@ export function ChangelogSection() {
                 className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
               >
                 <Download className="h-3.5 w-3.5" />
-                立即更新
+                下载更新
               </button>
             </div>
+          </div>
+        ) : null}
+
+        {updateStatus === "downloading" ? (
+          <div className="mt-3 space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">正在下载更新...</span>
+              <span className="font-medium">{downloadProgress}%</span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary transition-all duration-300"
+                style={{ width: `${downloadProgress}%` }}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {updateStatus === "ready" ? (
+          <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/40">
+            <p className="text-sm font-medium text-emerald-900 dark:text-emerald-200">
+              更新已下载完成，点击「立即安装」即可完成安装。
+            </p>
           </div>
         ) : null}
       </div>
@@ -137,7 +205,7 @@ export function ChangelogSection() {
               </span>
               <span className="text-xs text-muted-foreground">{entry.date}</span>
               {entry.version === __APP_VERSION__ ? (
-                <span className="text-xs text-emerald-600 dark:text-emerald-400">← 当前版本</span>
+                <span className="text-xs text-emerald-600 dark:text-emerald-400">\u2190 当前版本</span>
               ) : null}
             </div>
             <ul className="mt-3 space-y-2 text-sm leading-relaxed text-foreground/90">

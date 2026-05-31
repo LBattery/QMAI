@@ -76,7 +76,7 @@
     "soul": "灵魂",
     "reviewCenter": "审查中心",
     "settings": "设置",
-    "switchProject": "切换项目",
+    "switchProject": "切换小说",
     "trash": "回收站"
   },
   "theme": {
@@ -844,7 +844,7 @@
       "soul": "灵魂",
       "reviewCenter": "审查中心",
       "settings": "模型与写作设置",
-      "switchProject": "切换项目"
+      "switchProject": "切换小说"
     },
     "sidebar": {
       "knowledge": "章节",

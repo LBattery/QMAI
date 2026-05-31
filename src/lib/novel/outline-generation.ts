@@ -479,6 +479,7 @@ export async function openGeneratedOutline(taskId: string): Promise<void> {
   const task = useOutlineGenerationStore.getState().tasks.find((item) => item.id === taskId)
   if (!task?.outlinePath) return
   const content = await readFile(task.outlinePath)
+  useWikiStore.getState().setActiveView("sources")
   useWikiStore.getState().setSelectedFile(task.outlinePath)
   useWikiStore.getState().setFileContent(content)
   useOutlineGenerationStore.getState().updateTask(taskId, {
