@@ -144,6 +144,51 @@ jobs:
           prerelease: false
           args: ${{ matrix.tauri_args }}
 
+      - name: Publish Windows updater manifest
+        if: github.event_name == 'push' && matrix.label == 'windows-x64'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = node -p "require('./package.json').version"
+          $bundleDir = "src-tauri/target/release/bundle/nsis"
+          $installer = Get-ChildItem $bundleDir -File -Filter "*.exe" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw "未找到 Windows 安装包"
+          }
+
+          $signaturePath = "$($installer.FullName).sig"
+          if (-not (Test-Path $signaturePath)) {
+            throw "未找到 Windows 安装包签名文件：$signaturePath"
+          }
+
+          $releaseDir = "release-assets"
+          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+
+          $assetName = "QMaiWrite_$($version)_x64-setup$($installer.Extension)"
+          $assetPath = Join-Path $releaseDir $assetName
+          Copy-Item $installer.FullName $assetPath -Force
+
+          $signature = (Get-Content $signaturePath -Raw).Trim()
+          $latest = [ordered]@{
+            version = $version
+            notes = "QMAI $version 发布版本"
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ", [System.Globalization.CultureInfo]::InvariantCulture)
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = $signature
+                url = "https://github.com/Mochocyang/QMAI/releases/latest/download/$assetName"
+              }
+            }
+          }
+
+          $latestPath = Join-Path $releaseDir "latest.json"
+          $latest | ConvertTo-Json -Depth 5 | Set-Content -Path $latestPath -Encoding utf8
+          gh release upload "${{ github.ref_name }}" $assetPath $latestPath --clobber
+
       - name: Package macOS app tarball
         if: runner.os == 'macOS'
         shell: bash
