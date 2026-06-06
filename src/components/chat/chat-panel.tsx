@@ -29,6 +29,10 @@ import {
   buildGoldenThreeChapterDirective,
   detectGoldenThreeChapterRequest,
 } from "@/lib/novel/golden-three-chapters"
+import {
+  buildDismantlingReferenceDirective,
+  loadDismantlingLibrary,
+} from "@/lib/novel/dismantling"
 import { createStreamSessionGuard } from "./stream-session"
 import {
   appendContinueUnfinishedDeepChapterContext,
@@ -57,6 +61,16 @@ function findPreviousUserRequest(messages: DisplayMessage[], assistantMessageId:
   const assistantIndex = messages.findIndex((message) => message.id === assistantMessageId)
   const searchRange = assistantIndex >= 0 ? messages.slice(0, assistantIndex) : messages
   return [...searchRange].reverse().find((message) => message.role === "user")?.content
+}
+
+async function loadEnabledDismantlingDirective(projectPath: string): Promise<string> {
+  const library = await loadDismantlingLibrary(projectPath)
+  const enabledProject = library.projects.find((item) => item.useInChat && item.structureMemory.length > 0)
+  if (!enabledProject) return ""
+  return buildDismantlingReferenceDirective({
+    title: enabledProject.title,
+    structureMemory: enabledProject.structureMemory,
+  })
 }
 
 function ConversationTabs() {
@@ -327,6 +341,9 @@ export function ChatPanel() {
       const goldenThreeChapter = novelMode
         ? detectGoldenThreeChapterRequest(text, effectiveTaskRoute?.chapterNumber)
         : undefined
+      const dismantlingDirective = novelMode && project
+        ? await loadEnabledDismantlingDirective(pp).catch(() => "")
+        : ""
       if (novelMode && project && deepChapterEnabled) {
         const { runDeepChapterGeneration } = await import("@/lib/novel/deep-chapter-generation")
         const controller = new AbortController()
@@ -346,6 +363,7 @@ export function ChatPanel() {
               userRequest: text,
               chapterNumber: effectiveTaskRoute?.chapterNumber,
               goldenThreeChapter: goldenThreeChapter?.enabled ? goldenThreeChapter : undefined,
+              dismantlingReferenceDirective: dismantlingDirective,
               llmConfig,
             },
             {
@@ -614,6 +632,7 @@ export function ChatPanel() {
             relevantPages.length > 0 ? `## 页面列表\n${pageList}` : "",
             `## 资料页面\n\n${pagesContext}`,
             novelContextPreamble ? `\n${novelContextPreamble}` : "",
+            dismantlingDirective ? `\n${dismantlingDirective}` : "",
             "",
             "---",
             "",
@@ -850,20 +869,22 @@ export function ChatPanel() {
           const taskDirective = resumeRoute ? buildTaskDirective(resumeRoute) : ""
           const goldenDirective = buildGoldenThreeChapterDirective(goldenResume)
           const { buildContextPack, contextPackToPrompt } = await import("@/lib/novel/context-engine")
-          const contextPack = await buildContextPack(pp, originalRequest, resumeRoute?.chapterNumber)
-          const budget = novelConfig.contextTokenBudget > 0 ? novelConfig.contextTokenBudget : undefined
-          continuationSystemPrompt = [
-            continuationSystemPrompt,
-            "",
+           const contextPack = await buildContextPack(pp, originalRequest, resumeRoute?.chapterNumber)
+           const budget = novelConfig.contextTokenBudget > 0 ? novelConfig.contextTokenBudget : undefined
+           const dismantlingDirective = await loadEnabledDismantlingDirective(pp).catch(() => "")
+           continuationSystemPrompt = [
+             continuationSystemPrompt,
+             "",
             "## QM-QUAI 技能",
             buildQmQuaiSystemPrompt(),
             "",
             taskDirective,
             goldenDirective,
-            "",
-            "## 原始深度章节上下文包",
-            contextPackToPrompt(contextPack, budget),
-          ].filter(Boolean).join("\n")
+             "",
+             "## 原始深度章节上下文包",
+             contextPackToPrompt(contextPack, budget),
+             dismantlingDirective,
+           ].filter(Boolean).join("\n")
         } catch (err) {
           console.warn("构建继续未完成上下文包失败:", err)
         }

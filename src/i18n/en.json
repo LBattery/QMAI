@@ -191,6 +191,7 @@
     "lint": "Check",
     "soul": "Soul",
     "reviewCenter": "Review Center",
+    "dismantling": "Dismantling",
     "settings": "Settings",
     "switchProject": "Switch Project",
     "trash": "Trash"
@@ -1005,6 +1006,7 @@
       "lint": "Memory Center",
       "soul": "Soul",
       "reviewCenter": "Review Center",
+      "dismantling": "Dismantling",
       "settings": "模型与写作设置",
       "switchProject": "Switch Project"
     },

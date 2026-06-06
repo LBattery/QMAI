@@ -28,6 +28,7 @@ export interface DeepChapterGenerationInput {
   userRequest: string
   chapterNumber?: number
   goldenThreeChapter?: GoldenThreeChapterRequest
+  dismantlingReferenceDirective?: string
   llmConfig: LlmConfig
 }
 
@@ -85,7 +86,10 @@ export async function runDeepChapterGeneration(
   const writingConfig = resolveWritingConfig(input.llmConfig)
   const contextPack = await deps.buildContextPack(input.projectPath, input.userRequest, input.chapterNumber)
   assertNotAborted(signal)
-  const contextPrompt = deps.contextPackToPrompt(contextPack)
+  const contextPrompt = [
+    deps.contextPackToPrompt(contextPack),
+    input.dismantlingReferenceDirective,
+  ].filter(Boolean).join("\n\n")
 
   callbacks.onThinking?.(formatContextThinking(input, contextPack))
   assertNotAborted(signal)

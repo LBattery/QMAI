@@ -7,6 +7,25 @@ export interface ChangelogEntry {
   }
 }
 
+const TWO_POINT_TWO_ONE_CHANGELOG: ChangelogEntry = {
+  version: "2.2.1",
+  date: "2026-06-06",
+  highlights: {
+    en: [
+      "Added an independent Dismantling Library for studying reference works without mixing their facts into the current novel memory.",
+      "Supported importing single files or folders into the Dismantling Library, automatically splitting chapters and letting users choose how many chapters to dismantle per batch.",
+      "Added reusable structure memory for dismantling results, focused on chapter rhythm, conflict escalation, hooks, payoff design, and reusable writing patterns.",
+      "Allowed AI Chat and deep chapter generation to reference explicitly enabled dismantling structure while forbidding reuse of the original work's characters, settings, plot, or exact expression.",
+    ],
+    zh: [
+      "新增独立“拆文库”。拆文结果会单独保存在项目的拆文记忆库中，不会混入当前小说正文、大纲或小说记忆，避免原作信息污染正在创作的作品。",
+      "拆文库支持导入单个文件或文件夹，自动拆分章节并按章节顺序整理；用户可以选择要拆多少章节，也可以设置每批拆文的章节数量。",
+      "新增可复用结构记忆。拆文结果重点沉淀章节节奏、冲突推进、爽点安排、人物作用、信息增量、结尾钩子和可复用写法模板，而不是保存原作剧情事实。",
+      "AI 会话和深度章节生成可以引用用户明确启用的拆文结构，用来辅助当前小说写作；系统会明确限制不得复用原作人物、设定、剧情和具体表达，并说明拆文结构不是当前小说记忆。",
+    ],
+  },
+}
+
 const TWO_POINT_TWO_ZERO_CHANGELOG: ChangelogEntry = {
   version: "2.2.0",
   date: "2026-06-05",
@@ -728,6 +747,7 @@ export const CHANGELOG: ChangelogEntry[] = [
 ]
 
 export function currentVersionChangelog(version: string): ChangelogEntry[] {
+  if (version === TWO_POINT_TWO_ONE_CHANGELOG.version) return [TWO_POINT_TWO_ONE_CHANGELOG]
   if (version === TWO_POINT_TWO_ZERO_CHANGELOG.version) return [TWO_POINT_TWO_ZERO_CHANGELOG]
   if (version === TWO_POINT_ONE_ZERO_CHANGELOG.version) return [TWO_POINT_ONE_ZERO_CHANGELOG]
   if (version === TWO_POINT_ZERO_CHANGELOG.version) return [TWO_POINT_ZERO_CHANGELOG]
@@ -739,6 +759,7 @@ export function currentVersionChangelog(version: string): ChangelogEntry[] {
 
 export function allChangelog(): ChangelogEntry[] {
   return [
+    TWO_POINT_TWO_ONE_CHANGELOG,
     TWO_POINT_TWO_ZERO_CHANGELOG,
     TWO_POINT_ONE_ZERO_CHANGELOG,
     TWO_POINT_ZERO_CHANGELOG,

@@ -405,7 +405,7 @@ interface WikiState {
   chatExpanded: boolean
   chatDockPosition: ChatDockPosition
   searchPanelOpen: boolean
-  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "soul" | "settings" | "trash" | "reviewCenter"
+  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "soul" | "dismantling" | "settings" | "trash" | "reviewCenter"
   activeSettingsCategory: "usage-guide" | null
   selectedSoulId: string | null
   selectedSoulTab: "project" | "character"
