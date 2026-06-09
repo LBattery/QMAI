@@ -14,6 +14,18 @@ const GRAPH_EDGE_LABELS_ALWAYS_KEY = "lk-graph-edge-labels-always"
 const CHAT_DOCK_POSITION_KEY = "qmai-chat-dock-position"
 
 export type ChatDockPosition = "bottom" | "right"
+export type SettingsCategoryId =
+  | "llm"
+  | "rerank"
+  | "embedding"
+  | "network"
+  | "interface"
+  | "novel"
+  | "usage-guide"
+  | "maintenance"
+  | "feedback"
+  | "contact-support"
+  | "changelog"
 
 const readStoredChatDockPosition = (): ChatDockPosition => {
   if (typeof localStorage === "undefined") return "bottom"
@@ -57,6 +69,7 @@ const readStoredGraphEdgeLabelsAlways = (): boolean => {
  * `chat_completions` for backward compatibility with pre-0.3.7 configs.
  */
 export type CustomApiMode = "chat_completions" | "responses" | "anthropic_messages"
+export type AzureModelFamily = "auto" | "gpt5"
 export type ReasoningMode = "auto" | "off" | "low" | "medium" | "high" | "max" | "custom"
 
 export interface ReasoningConfig {
@@ -65,14 +78,18 @@ export interface ReasoningConfig {
 }
 
 interface LlmConfig {
-  provider: "openai" | "anthropic" | "google" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
+  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
   apiKey: string
   model: string
   ollamaUrl: string
   customEndpoint: string
+  azureApiVersion?: string
+  azureModelFamily?: AzureModelFamily
   maxContextSize: number // max context window in characters
   apiMode?: CustomApiMode
   reasoning?: ReasoningConfig
+  localCliIsolation?: boolean
+  codexCliTimeoutMinutes?: number
 }
 
 export type SearchProvider = "tavily" | "serpapi" | "searxng" | "none"
@@ -272,6 +289,8 @@ interface MultimodalConfig {
   model: string
   ollamaUrl: string
   customEndpoint: string
+  azureApiVersion?: string
+  azureModelFamily?: AzureModelFamily
   apiMode?: CustomApiMode
   /** Max parallel caption requests during ingest. >=1. */
   concurrency: number
@@ -316,9 +335,13 @@ export interface ProviderOverride {
   apiKey?: string
   model?: string
   baseUrl?: string           // customEndpoint for custom presets, ollamaUrl for ollama
+  azureApiVersion?: string
+  azureModelFamily?: AzureModelFamily
   apiMode?: CustomApiMode
   maxContextSize?: number
   reasoning?: ReasoningConfig
+  localCliIsolation?: boolean
+  codexCliTimeoutMinutes?: number
 }
 
 export type ProviderConfigs = Record<string, ProviderOverride>
@@ -406,7 +429,7 @@ interface WikiState {
   chatDockPosition: ChatDockPosition
   searchPanelOpen: boolean
   activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "soul" | "dismantling" | "settings" | "trash" | "reviewCenter"
-  activeSettingsCategory: "usage-guide" | null
+  activeSettingsCategory: SettingsCategoryId | null
   selectedSoulId: string | null
   selectedSoulTab: "project" | "character"
   selectedSoulSection: "builtIn" | "custom"
@@ -426,6 +449,7 @@ interface WikiState {
   graphStats: { nodeCount: number; edgeCount: number; hiddenCount: number; filteredNodeCount: number; filteredEdgeCount: number }
   refreshGraph: (() => void) | null
   llmConfig: LlmConfig
+  aiChatModel: string
   /** Per-provider-preset stored overrides (API key, model, endpoint, …). */
   providerConfigs: ProviderConfigs
   /** Which preset is currently active. `null` = no LLM configured. */
@@ -440,6 +464,7 @@ interface WikiState {
   scheduledImportConfig: ScheduledImportConfig
   sourceWatchConfig: SourceWatchConfig
   novelMode: boolean
+  chatEditModeEnabled: boolean
   novelConfig: NovelConfig
   searchHistory: string[]
   searchTrigger: { query: string; ts: number } | null
@@ -462,7 +487,7 @@ interface WikiState {
   setChatDockPosition: (position: ChatDockPosition) => void
   setSearchPanelOpen: (open: boolean) => void
   setActiveView: (view: WikiState["activeView"]) => void
-  setActiveSettingsCategory: (category: "usage-guide" | null) => void
+  setActiveSettingsCategory: (category: SettingsCategoryId | null) => void
   setSelectedSoulId: (id: string | null) => void
   setSelectedSoulTab: (tab: "project" | "character") => void
   setSelectedSoulSection: (section: "builtIn" | "custom") => void
@@ -482,6 +507,7 @@ interface WikiState {
   setGraphStats: (stats: WikiState["graphStats"]) => void
   setRefreshGraph: (refreshGraph: (() => void) | null) => void
   setLlmConfig: (config: LlmConfig) => void
+  setAiChatModel: (model: string) => void
   setProviderConfigs: (configs: ProviderConfigs) => void
   setActivePresetId: (id: string | null) => void
   setSearchApiConfig: (config: SearchApiConfig) => void
@@ -494,6 +520,7 @@ interface WikiState {
   setScheduledImportConfig: (config: ScheduledImportConfig) => void
   setSourceWatchConfig: (sourceWatchConfig: SourceWatchConfig) => void
   setNovelMode: (novelMode: boolean) => void
+  setChatEditModeEnabled: (enabled: boolean) => void
   setNovelConfig: (config: Partial<NovelConfig>) => void
   setSearchHistory: (history: string[]) => void
   setSearchTrigger: (trigger: { query: string; ts: number } | null) => void
@@ -547,8 +574,12 @@ export const useWikiStore = create<WikiState>((set) => ({
     model: "",
     ollamaUrl: "http://localhost:11434",
     customEndpoint: "",
+    azureApiVersion: "2024-10-21",
+    azureModelFamily: "auto",
     reasoning: { mode: "auto" },
+    localCliIsolation: false,
   },
+  aiChatModel: "",
   providerConfigs: {},
   activePresetId: null,
 
@@ -621,6 +652,8 @@ export const useWikiStore = create<WikiState>((set) => ({
     model: "",
     ollamaUrl: "http://localhost:11434",
     customEndpoint: "",
+    azureApiVersion: "2024-10-21",
+    azureModelFamily: "auto",
     apiMode: "chat_completions",
     concurrency: 4,
   },
@@ -648,6 +681,7 @@ export const useWikiStore = create<WikiState>((set) => ({
   sourceWatchConfig: DEFAULT_SOURCE_WATCH_CONFIG,
 
   novelMode: false,
+  chatEditModeEnabled: false,
   novelConfig: { ...DEFAULT_NOVEL_CONFIG },
   searchHistory: [],
   searchTrigger: null,
@@ -663,6 +697,7 @@ export const useWikiStore = create<WikiState>((set) => ({
   theme: "light",
 
   setLlmConfig: (llmConfig) => set({ llmConfig }),
+  setAiChatModel: (aiChatModel) => set({ aiChatModel }),
   setProviderConfigs: (providerConfigs) => set({ providerConfigs }),
   setActivePresetId: (activePresetId) => set({ activePresetId }),
   setSearchApiConfig: (searchApiConfig) => set({ searchApiConfig }),
@@ -675,6 +710,7 @@ export const useWikiStore = create<WikiState>((set) => ({
   setScheduledImportConfig: (scheduledImportConfig) => set({ scheduledImportConfig }),
   setSourceWatchConfig: (sourceWatchConfig) => set({ sourceWatchConfig }),
   setNovelMode: (novelMode) => set({ novelMode }),
+  setChatEditModeEnabled: (chatEditModeEnabled) => set({ chatEditModeEnabled }),
   setNovelConfig: (config) => set((state) => ({ novelConfig: { ...state.novelConfig, ...config } })),
   setSearchHistory: (searchHistory) => set({ searchHistory }),
   setSearchTrigger: (searchTrigger) => set({ searchTrigger }),

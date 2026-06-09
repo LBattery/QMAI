@@ -69,7 +69,10 @@ export class DataSourceRegistry {
 
     const promises = sources.map(async (source): Promise<DataSourceResult> => {
       try {
-        const value = await source.load(context)
+        const loadedValue = await source.load(context)
+        const value = loadedValue === undefined || loadedValue === null
+          ? this.getDefaultValue(source.name)
+          : loadedValue
         return { name: source.name, value, error: null }
       } catch (error) {
         console.warn(`[DataSource] ${source.name} failed to load:`, error)

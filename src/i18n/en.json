@@ -641,8 +641,9 @@
       "budgetHint": "Optional. Some providers ignore this if the model decides reasoning automatically."
     },
     "categories": {
-      "llm": "Model Settings",
-      "embedding": "Embedding",
+      "llm": "Large Language / LLM Model",
+      "rerank": "Rerank / Reranker Model",
+      "embedding": "Vector Search / Embedding Model",
       "multimodal": "Multimodal",
       "webSearch": "Web Search",
       "network": "Network",
@@ -697,8 +698,8 @@
         }
       },
       "llm": {
-        "title": "LLM Model",
-        "description": "Keep only the Custom model. You can configure OpenAI-compatible or Anthropic-compatible endpoints, and changes save immediately.",
+        "title": "Large Language / LLM Model",
+        "description": "Each provider has an independent configuration. Turning one on makes it the active provider and turns the others off. Edits save immediately, and API keys remain separate per provider.",
         "expand": "Expand configuration",
         "collapse": "Collapse",
         "toggleOff": "Click to disable",
@@ -753,10 +754,30 @@
           "custom": "Custom",
           "budgetTokens": "Thinking token budget",
           "hint": "Structured tasks such as ingest may disable reasoning automatically so the model returns usable output instead of only chain-of-thought."
-        }
+        },
+        "deploymentName": "Deployment name",
+        "testingConnection": "Testing connection...",
+        "testingFunction": "Testing function...",
+        "azureApiVersion": "Azure API version",
+        "azureApiVersionHint": "Keep the default unless your Azure resource requires another api-version.",
+        "azureModelFamily": "Azure model family",
+        "azureModelFamilyAuto": "Auto",
+        "azureModelFamilyGpt5": "GPT-5 / o-series",
+        "azureModelFamilyHint": "Azure deployment names are arbitrary. Pick GPT-5 / o-series when that deployment needs strict completion parameters.",
+        "localCliIsolation": "Isolate local CLI config",
+        "localCliIsolationHint": "When enabled, Claude/Codex CLI will try to ignore user rules and local config for more predictable tests and generation.",
+        "localCliIsolationOn": "Isolation enabled: local rules and user config will be ignored where supported.",
+        "localCliIsolationOff": "Isolation disabled: current CLI login and local config are used.",
+        "codexCliTimeout": "Codex CLI timeout",
+        "codexCliTimeoutUnit": "minutes",
+        "codexCliTimeoutHint": "Overall subprocess timeout for longer generations, from 1 to 240 minutes.",
+        "providerTests": "Model tests",
+        "providerTestsHint": "Connection test checks reachability. Functional test asks the model to return a specific token, confirming it can generate usable output.",
+        "testConnection": "Test connection",
+        "testFunction": "Test function"
       },
       "embedding": {
-        "title": "Embeddings",
+        "title": "Vector Search / Embedding Model",
         "description": "Enable semantic search. Supports OpenAI-compatible /v1/embeddings endpoints and Google Gemini embedContent endpoints. Local models such as LM Studio or Ollama embeddings do not require an API key.",
         "enableLabel": "Enable vector search",
         "enableHint": "When off, search uses token matching only.",
@@ -785,7 +806,7 @@
         "testSuccessWithDimensions": "Embedding model test passed: {{model}} ({{dimensions}} dims)"
       },
       "rerank": {
-        "title": "Rerank Model",
+        "title": "Rerank / Reranker Model",
         "description": "Apply a second-pass rerank over retrieval candidates before they are shown or injected into context.",
         "enableLabel": "Enable rerank",
         "enableHint": "Used by search view, chat retrieval, novel plot search, and writing-context assembly.",
@@ -1035,8 +1056,8 @@
     },
     "history": {
       "delete": "Delete",
-      "deleteConfirm": "Delete this history entry?",
-      "emptyResult": "This history entry has no results"
+      "deleteConfirm": "Delete this history record? You can restore it from Trash.",
+      "emptyResult": "No issues found in this run"
     },
     "mode": {
       "label": "Novel Mode",
@@ -1045,12 +1066,14 @@
       "description": "When enabled, UI labels adapt to novel writing mode"
     },
     "search": {
-      "placeholder": "Search plot, characters, settings...",
-      "noResults": "No matching plot content found",
+      "title": "Plot Search",
+      "placeholder": "Search characters, events, foreshadowing...",
+      "noResults": "No plot results found",
+      "startSearching": "Type to search plot content",
       "keyword": "Keyword",
       "vector": "Vector",
       "graph": "Graph",
-      "recentChapters": "Recent Chs",
+      "recentChapters": "Recent Chapters",
       "canon": "Canon"
     },
     "settings": {
@@ -1214,7 +1237,7 @@
       "sectionRequestLabel": "Section Generation Request",
       "sectionRequestPlaceholder": "For example: generate chapter outlines from chapter 2 to chapter 20, focusing on the backlash from the Black Jade Token",
       "sectionGenerating": "Generating {{title}}...",
-        "sectionGeneratingHint": "{{title}} selected. Add extra instructions, then click the generate button below.",
+      "sectionGeneratingHint": "{{title}} selected. Add extra instructions, then click the generate button below.",
       "sectionGenerated": "{{title}} was generated and saved to the outline pages",
       "sectionGenerateFailed": "{{title}} generation failed: {{message}}",
       "refineWriteModeLabel": "Save generated content as",
@@ -1230,7 +1253,7 @@
         "locationsOutline": "Generate Locations"
       },
       "ingestFailed": "Initial project memory extraction failed. Please check the LLM configuration and retry.",
-      "ready": "The outline is ready. Click \u201CExtract Initial Memory\u201D to write the initial characters, settings, and project memory.",
+      "ready": "The outline is ready. Click “Extract Initial Memory” to write the initial characters, settings, and project memory.",
       "genres": {
         "mystery": "Mystery",
         "xianxia": "Xianxia",
@@ -1249,17 +1272,6 @@
         "epic": "Epic (2M+ words)"
       }
     },
-    "search": {
-      "title": "Plot Search",
-      "placeholder": "Search characters, events, foreshadowing...",
-      "noResults": "No plot results found",
-      "startSearching": "Type to search plot content",
-      "keyword": "Keyword",
-      "vector": "Vector",
-      "graph": "Graph",
-      "recentChapters": "Recent Chapters",
-      "canon": "Canon"
-    },
     "lint": {
       "title": "Consistency Check",
       "runLint": "Run Check",
@@ -1272,11 +1284,6 @@
       "historyEntryTitle": "Chapter {{chapter}} consistency check",
       "historyEntryTitleNoChapter": "Consistency check",
       "historySummary": "{{warnings}} warnings, {{infos}} info"
-    },
-    "history": {
-      "delete": "Delete",
-      "deleteConfirm": "Delete this history record? You can restore it from Trash.",
-      "emptyResult": "No issues found in this run"
     },
     "review": {
       "title": "AI Review",
@@ -1559,12 +1566,12 @@
       "title": "Memory Center",
       "description": "Review chapter snapshots, character state, character cognition, foreshadowing progress, and timeline memory in one place.",
       "refresh": "Refresh",
-        "loading": "Loading memory center...",
-        "empty": "No novel memory is available yet.",
-        "emptyHint": "Save canon chapters or sync chapter snapshots first, and this view will fill in with character, foreshadowing, and timeline memory.",
-        "selectPrompt": "Choose a memory entry from the left list first.",
-        "selectHint": "After you pick recent snapshots, character state, or another memory category, the detail will appear here.",
-        "openFile": "Open details",
+      "loading": "Loading memory center...",
+      "empty": "No novel memory is available yet.",
+      "emptyHint": "Save canon chapters or sync chapter snapshots first, and this view will fill in with character, foreshadowing, and timeline memory.",
+      "selectPrompt": "Choose a memory entry from the left list first.",
+      "selectHint": "After you pick recent snapshots, character state, or another memory category, the detail will appear here.",
+      "openFile": "Open details",
       "openSection": "Open details",
       "closeDetail": "Close",
       "edit": "Edit",

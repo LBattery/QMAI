@@ -152,4 +152,27 @@ describe("review-adapter staged review", () => {
       suggestion: "改为通过族谱缺页和行为细节推断异常。",
     }])
   })
+  it("passes the provided abort signal into staged review streaming", async () => {
+    const controller = new AbortController()
+    streamChatMock.mockImplementation(async (
+      _config: LlmConfig,
+      _messages: Array<{ role: string; content: string }>,
+      callbacks: StreamCallbacks,
+      signal?: AbortSignal,
+    ) => {
+      expect(signal).toBe(controller.signal)
+      callbacks.onToken("[]")
+      callbacks.onDone()
+    })
+
+    await reviewChapter(
+      "E:/Novel",
+      "测试正文",
+      8,
+      undefined,
+      controller.signal,
+    )
+
+    expect(streamChatMock).toHaveBeenCalledTimes(4)
+  })
 })

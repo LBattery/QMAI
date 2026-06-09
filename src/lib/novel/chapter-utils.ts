@@ -61,6 +61,29 @@ export async function getNextChapterNumber(projectPath: string): Promise<number>
   return maxNum + 1
 }
 
+export async function findChapterFileByNumber(projectPath: string, chapterNumber: number): Promise<string | null> {
+  try {
+    const tree = await listDirectory(`${projectPath}/wiki/chapters`)
+    const files = flattenMdFiles(tree)
+    for (const file of files) {
+      const byName = extractChapterNumber(file.name.replace(/\.md$/, ""))
+      if (byName === chapterNumber) return file.path
+      try {
+        const content = await readFile(file.path)
+        const byFrontmatter = content.match(/^chapter_number:\s*(\d+)\s*$/m)
+        if (byFrontmatter?.[1] && Number.parseInt(byFrontmatter[1], 10) === chapterNumber) {
+          return file.path
+        }
+      } catch {
+        // ignore unreadable chapter file
+      }
+    }
+  } catch {
+    // chapter dir may not exist yet
+  }
+  return null
+}
+
 export interface ResolveTargetChapterNumberForChatInput {
   projectPath: string
   userRequest: string
@@ -111,4 +134,8 @@ async function readSelectedChapterNumber(selectedFile?: string | null): Promise<
     // ignore unreadable selected chapter file
   }
   return undefined
+}
+
+export async function readSelectedChapterNumberForFile(selectedFile?: string | null): Promise<number | undefined> {
+  return readSelectedChapterNumber(selectedFile)
 }

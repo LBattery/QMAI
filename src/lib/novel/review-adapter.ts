@@ -96,7 +96,9 @@ export async function reviewChapter(
   chapterContent: string,
   chapterNumber?: number,
   callbacks: NovelReviewCallbacks = {},
+  signal?: AbortSignal,
 ): Promise<NovelReviewResult[]> {
+  if (signal?.aborted) throw new Error("已停止生成")
   const llmConfig = resolveNovelModel(
     useWikiStore.getState().llmConfig,
     useWikiStore.getState().novelConfig,
@@ -113,6 +115,7 @@ export async function reviewChapter(
     chapterNumber,
   )
 
+  if (signal?.aborted) throw new Error("已停止生成")
   const outputLang = getOutputLanguage()
   const langReminder = buildLanguageReminder(outputLang)
 
@@ -131,6 +134,7 @@ ${langReminder}`
       "阶段1：审查任务识别 / 阶段2：上下文检索",
       callbacks,
       stageThinking,
+      signal,
     )
     const stageTwo = await runReviewStage(
       llmConfig,
@@ -139,6 +143,7 @@ ${langReminder}`
       "阶段3：章节目标对齐 / 阶段4：事实与记忆核对",
       callbacks,
       stageThinking,
+      signal,
     )
     const stageThree = await runReviewStage(
       llmConfig,
@@ -147,6 +152,7 @@ ${langReminder}`
       "阶段5：逐维度审查 / 阶段6：阻断判定",
       callbacks,
       stageThinking,
+      signal,
     )
 
     const result = await runReviewStage(
@@ -171,6 +177,7 @@ ${langReminder}`
       "阶段7：二次复核",
       callbacks,
       stageThinking,
+      signal,
     )
 
     const jsonMatch = result.match(/\[[\s\S]*\]/)
@@ -211,6 +218,7 @@ async function runReviewStage(
   stageTitle: string,
   callbacks: NovelReviewCallbacks,
   stageThinking: Map<string, string>,
+  signal?: AbortSignal,
 ): Promise<string> {
   publishReviewStageThinking(stageThinking, callbacks, stageTitle, "正在分析...")
   const messages: ChatMessage[] = [
@@ -234,10 +242,11 @@ async function runReviewStage(
     llmConfig,
     messages,
     streamCallbacks,
-    AbortSignal.timeout(120000),
+    signal ?? AbortSignal.timeout(120000),
     { reasoning: { mode: "high" } },
   )
 
+  if (signal?.aborted) throw new Error("已停止生成")
   return result.trim()
 }
 

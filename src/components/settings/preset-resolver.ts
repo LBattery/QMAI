@@ -1,5 +1,6 @@
 import type { LlmConfig } from "@/stores/wiki-store"
 import type { ProviderOverride } from "@/stores/wiki-store"
+import { AZURE_OPENAI_API_VERSION } from "@/lib/azure-openai"
 import type { LlmPreset } from "./llm-presets"
 
 /**
@@ -18,6 +19,11 @@ export function resolveConfig(
   const maxContextSize =
     ov.maxContextSize ?? preset.suggestedContextSize ?? fallback.maxContextSize
   const reasoning = ov.reasoning ?? { mode: "auto" as const }
+  const localCliIsolation = ov.localCliIsolation === true
+  const codexCliTimeoutMinutes =
+    typeof ov.codexCliTimeoutMinutes === "number" && Number.isFinite(ov.codexCliTimeoutMinutes)
+      ? Math.max(1, Math.min(240, Math.floor(ov.codexCliTimeoutMinutes)))
+      : undefined
 
   if (preset.provider === "custom") {
     return {
@@ -29,6 +35,7 @@ export function resolveConfig(
       maxContextSize,
       apiMode: ov.apiMode ?? preset.apiMode ?? "chat_completions",
       reasoning,
+      localCliIsolation: false,
     }
   }
 
@@ -41,6 +48,22 @@ export function resolveConfig(
       customEndpoint: fallback.customEndpoint,
       maxContextSize,
       reasoning,
+      localCliIsolation: false,
+    }
+  }
+
+  if (preset.provider === "azure") {
+    return {
+      provider: "azure",
+      apiKey,
+      model,
+      ollamaUrl: fallback.ollamaUrl,
+      customEndpoint: ov.baseUrl ?? preset.baseUrl ?? "",
+      azureApiVersion: ov.azureApiVersion ?? preset.azureApiVersion ?? AZURE_OPENAI_API_VERSION,
+      azureModelFamily: ov.azureModelFamily ?? preset.azureModelFamily ?? "auto",
+      maxContextSize,
+      reasoning,
+      localCliIsolation: false,
     }
   }
 
@@ -55,6 +78,8 @@ export function resolveConfig(
       customEndpoint: fallback.customEndpoint,
       maxContextSize,
       reasoning,
+      localCliIsolation,
+      codexCliTimeoutMinutes: preset.provider === "codex-cli" ? codexCliTimeoutMinutes : undefined,
     }
   }
 
@@ -69,5 +94,6 @@ export function resolveConfig(
     customEndpoint: fallback.customEndpoint,
     maxContextSize,
     reasoning,
+    localCliIsolation: false,
   }
 }

@@ -1,4 +1,9 @@
 import type { LlmConfig, ReasoningConfig } from "@/stores/wiki-store"
+import {
+  AZURE_OPENAI_API_VERSION,
+  buildAzureOpenAiUrl,
+  isAzureOpenAiEndpoint,
+} from "@/lib/azure-openai"
 import { normalizeEndpoint } from "@/lib/endpoint-normalizer"
 
 /**
@@ -114,15 +119,22 @@ function localLlmOriginHeader(): Record<string, string> {
   return { Origin: "http://localhost" }
 }
 
-function isLocalEndpoint(url: string): boolean {
+function isLocalOrPrivateHttpEndpoint(endpoint: string): boolean {
   try {
-    const parsed = new URL(url)
-    return parsed.hostname === "localhost" ||
-      parsed.hostname === "127.0.0.1" ||
-      parsed.hostname === "::1" ||
-      parsed.hostname.endsWith(".localhost")
+    const parsed = new URL(endpoint)
+    const host = parsed.hostname.toLowerCase()
+    if (host === "localhost" || host.endsWith(".localhost")) return true
+    if (host === "127.0.0.1" || host === "::1" || host === "[::1]") return true
+    if (/^10\./.test(host)) return true
+    if (/^192\.168\./.test(host)) return true
+    const match = host.match(/^172\.(\d+)\./)
+    if (match) {
+      const second = Number(match[1])
+      if (second >= 16 && second <= 31) return true
+    }
+    return false
   } catch {
-    return /^(https?:\/\/)?(localhost|127\.0\.0\.1)([:/]|$)/i.test(url)
+    return /^(https?:\/\/)?(localhost|127\.0\.0\.1)([:/]|$)/i.test(endpoint)
   }
 }
 
@@ -130,7 +142,7 @@ export function getCustomCompatibleHeaders(apiKey: string, url: string): Record<
   return {
     "Content-Type": JSON_CONTENT_TYPE,
     ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-    ...(isLocalEndpoint(url) ? localLlmOriginHeader() : {}),
+    ...(isLocalOrPrivateHttpEndpoint(url) ? localLlmOriginHeader() : {}),
   }
 }
 
@@ -333,9 +345,16 @@ function isKimiEndpoint(config: LlmConfig): boolean {
 }
 
 function isOpenAiStrictCompletionModel(config: LlmConfig): boolean {
-  if (config.provider !== "openai") return false
+  if ((config.provider === "azure" || (config.provider === "custom" && isAzureOpenAiEndpoint(config.customEndpoint)))
+    && config.azureModelFamily === "gpt5") {
+    return true
+  }
+
   const model = config.model.trim().toLowerCase()
-  return /^gpt-5(?:[.\-_]|$)/.test(model) || /^o\d+(?:[.\-_]|$)/.test(model)
+  const strictModel = /^gpt-5(?:[.\-_]|$)/.test(model) || /^o\d+(?:[.\-_]|$)/.test(model)
+  if (!strictModel) return false
+  if (config.provider === "openai" || config.provider === "azure") return true
+  return config.provider === "custom" && isAzureOpenAiEndpoint(config.customEndpoint)
 }
 
 function adaptOpenAiStrictCompletionBody(config: LlmConfig, body: Record<string, unknown>): void {
@@ -401,7 +420,7 @@ function buildOpenAiCompatibleBody(
   }
 
   const effort = reasoningEffort(reasoning)
-  if ((config.provider === "openai" || config.provider === "custom") && effort) {
+  if ((config.provider === "openai" || config.provider === "azure" || config.provider === "custom") && effort) {
     body.reasoning_effort = effort
   }
 
@@ -704,6 +723,23 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
       }
     }
 
+    case "azure": {
+      return {
+        url: buildAzureOpenAiUrl(
+          customEndpoint,
+          model,
+          config.azureApiVersion ?? AZURE_OPENAI_API_VERSION,
+        ),
+        headers: {
+          "Content-Type": JSON_CONTENT_TYPE,
+          "api-key": apiKey,
+        },
+        buildBody: (messages, overrides) =>
+          buildOpenAiCompatibleBody(config, messages, overrides),
+        parseStream: parseOpenAiLine,
+      }
+    }
+
     case "ollama": {
       // Defense-in-depth for the same reason as the custom branch: if a
       // user pasted the full path as their Ollama URL, don't tack on
@@ -792,16 +828,32 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
       // a pasted "/chat/completions" tail. Don't double-append in that
       // case, or we'd POST to ".../chat/completions/chat/completions".
       const base = normalizeEndpoint(customEndpoint, "chat_completions").normalized.replace(/\/+$/, "")
-      const url = /\/chat\/completions$/i.test(base)
-        ? base
-        : `${base}/chat/completions`
+      const url = isAzureOpenAiEndpoint(base)
+        ? buildAzureOpenAiUrl(
+            base,
+            model,
+            config.azureApiVersion ?? AZURE_OPENAI_API_VERSION,
+          )
+        : /\/chat\/completions$/i.test(base)
+          ? base
+          : `${base}/chat/completions`
+      const azure = isAzureOpenAiEndpoint(url)
       return {
         url,
-        headers: getCustomCompatibleHeaders(apiKey, url),
-        buildBody: (messages, overrides) => ({
-          ...buildOpenAiCompatibleBody(config, messages, overrides),
-          model,
-        }),
+        headers: {
+          "Content-Type": JSON_CONTENT_TYPE,
+          ...(apiKey
+            ? azure
+              ? { "api-key": apiKey }
+              : { Authorization: `Bearer ${apiKey}` }
+            : {}),
+          ...(!azure && isLocalOrPrivateHttpEndpoint(url) ? localLlmOriginHeader() : {}),
+        },
+        buildBody: (messages, overrides) => {
+          const body = buildOpenAiCompatibleBody(config, messages, overrides)
+          if (!azure) body.model = model
+          return body
+        },
         parseStream: parseOpenAiLine,
       }
     }

@@ -123,8 +123,11 @@ async function buildContextPackFromRawData(
   context: ContextLoadContext,
 ): Promise<ContextPack> {
   // 合并快照数据和降级数据
-  const recentSummaries = rawData.snapshots.recentSummaries.length > 0 
-    ? rawData.snapshots.recentSummaries 
+  const snapshotRecentSummaries = Array.isArray(rawData.snapshots?.recentSummaries)
+    ? rawData.snapshots.recentSummaries
+    : []
+  const recentSummaries = snapshotRecentSummaries.length > 0 
+    ? snapshotRecentSummaries 
     : rawData.fallbackRecentSummaries
   
   const previousChapterEnding = rawData.snapshots.previousChapterEnding 
@@ -140,9 +143,12 @@ async function buildContextPackFromRawData(
     rawData.fallbackTimeline
   ], "\n\n")
   
+  const snapshotForeshadowingSignals = Array.isArray(rawData.snapshots?.foreshadowingSignals)
+    ? rawData.snapshots.foreshadowingSignals
+    : []
   const foreshadowingStates = mergeForeshadowingSignals(
-    rawData.snapshots.foreshadowingSignals.length > 0 
-      ? rawData.snapshots.foreshadowingSignals 
+    snapshotForeshadowingSignals.length > 0 
+      ? snapshotForeshadowingSignals 
       : [rawData.fallbackForeshadowingStates].filter(Boolean),
     rawData.searchResults,
   )

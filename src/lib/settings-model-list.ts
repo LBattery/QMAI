@@ -7,6 +7,11 @@ export interface LlmModelListResult {
   models: string[]
 }
 
+const MODEL_LIST_COMPAT_HEADERS: Record<string, string> = {
+  Accept: "application/json",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) QMaiWrite",
+}
+
 function uniqueSortedModels(models: string[]): string[] {
   return Array.from(new Set(models.map((model) => model.trim()).filter(Boolean))).sort((a, b) =>
     a.localeCompare(b),
@@ -126,13 +131,30 @@ function buildModelsUrl(config: LlmConfig): { url: string; headers: Record<strin
 
 async function fetchModelList(url: string, headers: Record<string, string>, _currentModel: string): Promise<LlmModelListResult> {
   const httpFetch = await getHttpFetch()
-  const response = await httpFetch(url, {
+  let response = await httpFetch(url, {
     method: "GET",
     headers,
   })
+  let original403Text: string | null = null
+
+  if (response.status === 403) {
+    original403Text = await response.text().catch(() => "")
+    try {
+      response = await httpFetch(url, {
+        method: "GET",
+        headers: {
+          ...headers,
+          ...MODEL_LIST_COMPAT_HEADERS,
+        },
+      })
+      original403Text = null
+    } catch {
+      throw new Error(`模型列表拉取失败：HTTP 403${original403Text ? ` ${original403Text.slice(0, 200)}` : ""}`)
+    }
+  }
 
   if (!response.ok) {
-    const text = await response.text().catch(() => "")
+    const text = original403Text ?? await response.text().catch(() => "")
     throw new Error(`模型列表拉取失败：HTTP ${response.status}${text ? ` ${text.slice(0, 200)}` : ""}`)
   }
 

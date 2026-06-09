@@ -17,7 +17,7 @@
  * gateways really do mount the API at a bare host.
  */
 
-export type EndpointMode = "chat_completions" | "responses" | "anthropic_messages"
+export type EndpointMode = "chat_completions" | "responses" | "anthropic_messages" | "azure"
 
 export interface NormalizedEndpoint {
   /** The cleaned-up URL to store. Empty string for empty input. */
@@ -95,6 +95,32 @@ export function normalizeEndpoint(raw: string, mode: EndpointMode): NormalizedEn
   // Strip trailing slashes (cheap, always safe)
   url = url.replace(/\/+$/, "")
 
+  // Azure OpenAI uses resource/deployment URLs and an api-version query
+  // parameter configured separately, so keep deployment paths but strip
+  // the final request suffix.
+  if (mode === "azure" || isAzureOpenAiEndpoint(url)) {
+    try {
+      const u = new URL(url)
+      let pathname = u.pathname.replace(/\/+$/, "")
+      if (/\/chat\/completions\/?$/i.test(pathname)) {
+        pathname = pathname.replace(/\/chat\/completions\/?$/i, "")
+        notes.push("已移除末尾的 chat/completions；Azure 请求时会自动添加。")
+      }
+      url = `${u.origin}${pathname}`
+      if (u.search) notes.push("已移除查询参数；api-version 会使用单独的设置。")
+    } catch {
+      if (/\/chat\/completions\/?($|\?)/i.test(url)) {
+        url = url.replace(/\/chat\/completions\/?(?=$|\?)/i, "")
+        notes.push("已移除末尾的 chat/completions；Azure 请求时会自动添加。")
+      }
+    }
+    return {
+      normalized: url,
+      changed: url !== trimmed,
+      warning: notes.length ? notes.join(" ") : undefined,
+    }
+  }
+
   // Strip request-path tails users paste by accident. Works in both
   // modes for /chat/completions and /embeddings (wrong shape for either
   // wire). /messages is only wrong in chat_completions mode — in
@@ -133,3 +159,4 @@ export function normalizeEndpoint(raw: string, mode: EndpointMode): NormalizedEn
     warning: notes.length ? notes.join(" ") : undefined,
   }
 }
+import { isAzureOpenAiEndpoint } from "@/lib/azure-openai"

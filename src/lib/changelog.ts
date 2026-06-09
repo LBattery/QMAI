@@ -7,6 +7,19 @@ export interface ChangelogEntry {
   }
 }
 
+const TWO_POINT_TWO_NINE_CHANGELOG: ChangelogEntry = {
+  version: "2.2.9",
+  date: "2026-06-09",
+  highlights: {
+    en: [
+      "Fixed AI Outline deep-thinking generation so missing outline context or conversation fields no longer crash the panel with undefined length/trim errors.",
+    ],
+    zh: [
+      "修复 AI 大纲深度思考生成报错：当大纲上下文或对话字段缺失时，不会再因为 undefined 的 length / trim 报错而直接生成失败。",
+    ],
+  },
+}
+
 const TWO_POINT_TWO_EIGHT_CHANGELOG: ChangelogEntry = {
   version: "2.2.8",
   date: "2026-06-08",
@@ -20,12 +33,12 @@ const TWO_POINT_TWO_EIGHT_CHANGELOG: ChangelogEntry = {
       "Raised the deep chapter length-rewrite failure ceiling to 6,000 characters; after four failed compression attempts, usable long chapters continue to review instead of stopping solely because they are above 3,200 characters.",
     ],
     zh: [
-      "修复未设置模型时的默认模型读取问题。现在如果软件内没有单独配置模型，会自动读取本地环境中的模型配置，减少因模型为空导致的生成失败。",
-      "修复审稿历史章节归属问题。现在优先使用当前选中的章节文件名，避免旧 frontmatter 章节号把审稿记录挂错章节。",
-      "优化审稿流式输出刷新，降低界面频繁更新带来的卡顿，同时保留完整审稿所需的上下文资料。",
-      "优化图谱缓存隔离，不同项目即使 dataVersion 相同，也不会复用彼此的检索图谱。",
-      "AI 会话深度章节第 3 阶段新增正文草稿最多 3500 字的提示限制，先从初稿阶段减少模型无节制扩写。",
-      "AI 会话深度章节第 4 阶段控字失败保护上限调整为 6000 字；连续 4 次仍未压到 3200 字以内时，只要未超过 6000 字，会保留较长正文继续审稿，避免流程反复中断。",
+      "修复未单独设置模型时的默认模型读取问题，现在会优先回退到本地环境变量中的模型配置。",
+      "修复审查历史的章节归属问题，优先使用当前选中的章节文件名而不是旧 frontmatter 章节号。",
+      "优化审查流式更新，减少界面频繁刷新带来的压力，同时保留完整审查上下文。",
+      "优化图谱缓存隔离，不同项目即使 dataVersion 相同也不会共用检索图谱。",
+      "深度章节第 3 阶段新增 3500 字草稿提示上限，先在初稿阶段抑制模型失控扩写。",
+      "深度章节长度重写失败上限提升到 6000 字，连续压缩失败时可保留可用长稿继续审查。",
     ],
   },
 }
@@ -43,142 +56,15 @@ const TWO_POINT_TWO_SEVEN_CHANGELOG: ChangelogEntry = {
       "Fixed immersive chapter editing so typing into a newly inserted paragraph no longer collapses back onto the first line while auto-format saving runs in the background.",
     ],
     zh: [
-      "修复章节沉浸式写作输入时的跳行问题。现在进入新段落手动输入内容时，自动排版不会把正在输入的空行折回第一行。",
-      "先将 2.2.7 版本中的拆文库做隐藏处理，并同时停用 AI 会话里的拆文结构注入。当前版本里用户不会再看到拆文库入口，写作时也不会继续偷偷读取拆文结构。",
-      "删除软件内 2.2.6 到 2.2.1 的更新日志展示，2.2.x 版本列表里仅保留当前 2.2.7 和更早的 2.2.0。",
-      "修复 AI 会话“继续未完成”偏离原始深度章节任务的问题。现在点击后会优先按本地保存的阶段快照继续执行深度章节流程，不再把失败消息重新当作一段普通提示词交给模型猜测该接哪里。",
-      "深度章节失败时会同时保存第一次中断时的原始阶段链、最新可恢复阶段快照和原始用户请求。后面即使连续多次点击“继续未完成”又再次失败，也会始终锚定同一条原始任务链继续补完，而不是被后一次失败内容带偏。",
-      "继续未完成时即使切换了模型，也会重新读取原始章节请求和恢复快照，再从未完成的阶段继续往后跑，减少重新思考前面阶段和直接跳成正文的情况。",
+      "修复沉浸式章节编辑时新段落输入会回跳到首行的问题。",
+      "暂时隐藏拆书库界面入口，并停用 AI 会话中的拆书结构注入。",
+      "移除软件内 2.2.6 到 2.2.1 的更新日志显示，2.2.x 只保留 2.2.7 与 2.2.0。",
+      "修复 AI 会话“继续未完成”偏离原始深度章节任务的问题，恢复时优先读取保存的阶段快照。",
+      "深度章节失败时会同时保存原始任务链、最近可恢复快照和原始请求，重复继续时不会越跑越偏。",
+      "继续未完成时即使切换模型，也会重新加载原始请求和恢复快照后再继续后续阶段。",
     ],
   },
 }
-
-const TWO_POINT_TWO_FIVE_CHANGELOG: ChangelogEntry = {
-  version: "2.2.5",
-  date: "2026-06-06",
-  highlights: {
-    en: [
-      "Kept the Dismantling Library release notes complete for the current version, including isolated dismantling memory, reusable dismantling structure, chapter rhythm, conflict escalation, hooks, and writing-pattern references.",
-      "Added a separate Dismantling Memory Library section inside Memory Center.",
-      "The new section shows dismantled works, chapter counts, analysis counts, structure-memory counts, AI reference enablement status, and structure-memory previews.",
-      "Clarified in the Memory Center UI that dismantling memory only provides reusable writing-structure references and is not written into the current novel memory.",
-    ],
-    zh: [
-      "延续拆文库完整功能说明。拆文结果会保存在独立拆文记忆库中，不混入当前小说记忆；AI 可引用用户启用的拆文结构，用来参考章节节奏、冲突推进、爽点安排、结尾钩子和可复用写法模板。",
-      "记忆中心新增独立“拆文记忆库”分区，用户可以在记忆中心直接查看拆文作品相关记忆。",
-      "拆文记忆库会展示拆文作品、章节数量、拆文结果数量、结构记忆数量、是否启用给 AI 参考，以及结构记忆预览。",
-      "界面中明确说明拆文记忆仅用于参考写作结构，不会写入当前小说记忆，也不会把原作人物、设定和剧情当成当前小说事实。",
-    ],
-  },
-}
-
-const TWO_POINT_TWO_SIX_CHANGELOG: ChangelogEntry = {
-  version: "2.2.6",
-  date: "2026-06-06",
-  highlights: {
-    en: [
-      "Added a shared controlled web research layer for web search, specified URL reading, webpage text extraction, and bounded AI context injection.",
-      "AI Outline Chat now uses web research when the user explicitly asks to search online, analyze web pages, or reference hot trends, and shows web sources under the answer.",
-      "Added web hot-topic analysis to the Dismantling Library. Users can enter a trend query, platform ranking topic, or webpage URL; results are saved only into the isolated dismantling memory library.",
-      "Kept web research separate from current novel facts so outside webpages can inform outline and writing-structure analysis without polluting novel memory.",
-    ],
-    zh: [
-      "新增受控联网研究能力。软件可以根据用户明确要求执行网页搜索、读取指定网页、提取网页正文，并把整理后的资料按长度上限注入给 AI。第一版由软件受控执行，不让模型随意打开网页。",
-      "AI 大纲对话接入联网研究。当用户明确要求联网搜索、分析网页、参考热门趋势或粘贴网址时，会先读取网页资料，再用于生成大纲，并在回答下方显示网页来源。普通大纲对话不会自动联网。",
-      "拆文库新增“网页热门分析”。用户可以输入榜单关键词、题材方向或网页地址，AI 会生成热门趋势、开篇结构、章节节奏、冲突爽点和可复用结构记忆。结果只写入独立拆文记忆库。",
-      "联网资料与当前小说记忆保持隔离。外部网页只作为大纲和拆文结构参考，不会被当成当前小说已经发生的事实，也不会混入章节记忆或大纲记忆。",
-    ],
-  },
-}
-
-const TWO_POINT_TWO_FOUR_CHANGELOG: ChangelogEntry = {
-  version: "2.2.4",
-  date: "2026-06-06",
-  highlights: {
-    en: [
-      "Kept the Dismantling Library release notes complete for the current version, including isolated dismantling memory, reusable dismantling structure, chapter rhythm, conflict escalation, hooks, and writing-pattern references.",
-      "Added deletion for Dismantling Library works from the project sidebar.",
-      "Deleting a dismantling work now asks for confirmation, removes its imported chapters, dismantling results, and structure memory from the isolated dismantling library, then saves the updated library.",
-      "After deleting the selected dismantling work, the sidebar automatically selects the next available work or clears the selection when none remain.",
-    ],
-    zh: [
-      "延续拆文库完整功能说明。拆文结果会保存在独立拆文记忆库中，不混入当前小说记忆；AI 可引用用户启用的拆文结构，用来参考章节节奏、冲突推进、爽点安排、结尾钩子和可复用写法模板。",
-      "新增删除拆文作品功能。现在可以在拆文作品列表中直接删除不需要的拆文作品。",
-      "删除前会弹出中文确认提示；确认后会从独立拆文库中移除该作品的章节、拆文结果和结构记忆，并保存更新后的拆文库。",
-      "删除当前选中的拆文作品后，会自动选中下一个可用作品；如果没有剩余作品，则清空当前选择。",
-    ],
-  },
-}
-
-const TWO_POINT_TWO_THREE_CHANGELOG: ChangelogEntry = {
-  version: "2.2.3",
-  date: "2026-06-06",
-  highlights: {
-    en: [
-      "Kept the Dismantling Library release notes complete for the current version, including isolated dismantling memory, reusable dismantling structure, chapter rhythm, conflict escalation, hooks, and writing-pattern references.",
-      "Fixed full-novel Dismantling Library imports so a single TXT or document book is analyzed into its full chapter catalog instead of being kept as one chapter.",
-      "Separated volume headings from real chapter headings, preventing entries such as 第一卷 from swallowing the following 第0001章 title.",
-      "Improved desktop TXT/MD reading for dismantling imports by returning the real book text during preprocessing and supporting GBK/ANSI Chinese novel files.",
-      "Kept the import progress message visible as 正在提取章节 while the book catalog is being analyzed.",
-    ],
-    zh: [
-      "延续拆文库完整功能说明。拆文结果会保存在独立拆文记忆库中，不混入当前小说记忆；AI 可引用用户启用的拆文结构，用来参考章节节奏、冲突推进、爽点安排、结尾钩子和可复用写法模板。",
-      "修复拆文库整本小说导入后只显示 1 章的问题。现在导入一本 TXT 或文档小说时，会像阅读器一样自动分析书内所有章节，生成完整章节目录。",
-      "优化章节识别规则，明确区分“第一卷”等分卷标题和“第0001章”等正文章节，避免卷名吞掉真正的第一章标题。",
-      "优化桌面端 TXT/MD 文本读取。导入拆文作品时会读取真实原文内容，并兼容常见 GBK/ANSI 中文小说文件，减少章节标题乱码导致无法拆章的问题。",
-      "导入分析期间继续显示“正在提取章节”，让用户知道系统正在提取整本书目录。",
-    ],
-  },
-}
-
-const TWO_POINT_TWO_TWO_CHANGELOG: ChangelogEntry = {
-  version: "2.2.2",
-  date: "2026-06-06",
-  highlights: {
-    en: [
-      "Kept the Dismantling Library release notes complete for the current version, including isolated dismantling memory, reusable dismantling structure, chapter rhythm, conflict escalation, hooks, and writing-pattern references.",
-      "Improved Dismantling Library chapter extraction for full-novel imports, including headings embedded inside extracted paragraphs.",
-      "Added visible chapter-extraction progress while importing dismantling works.",
-      "Prevented duplicate display of dismantling works with the same normalized title.",
-    ],
-    zh: [
-      "延续拆文库完整功能说明。拆文结果会保存在独立拆文记忆库中，不混入当前小说记忆；AI 可引用用户启用的拆文结构，用来参考章节节奏、冲突推进、爽点安排、结尾钩子和可复用写法模板。",
-      "优化拆文库整本小说导入后的章节提取。现在能识别章节标题与正文挤在同一段里的情况，导入后会尽量拆出第1章、第2章等章节清单和章节名称。",
-      "导入拆文作品时增加“正在提取章节”状态提示，用户可以看到系统正在分析章节结构。",
-      "新增同名拆文作品去重机制。再次导入相同作品时会自动选中已有作品，不再重复显示多个同名条目。",
-    ],
-  },
-}
-
-const TWO_POINT_TWO_ONE_CHANGELOG: ChangelogEntry = {
-  version: "2.2.1",
-  date: "2026-06-06",
-  highlights: {
-    en: [
-      "Added an independent Dismantling Library for studying reference works without mixing their facts into the current novel memory.",
-      "Supported importing single files or folders into the Dismantling Library, automatically splitting chapters and letting users choose how many chapters to dismantle per batch.",
-      "Added reusable structure memory for dismantling results, focused on chapter rhythm, conflict escalation, hooks, payoff design, and reusable writing patterns.",
-      "Allowed AI Chat and deep chapter generation to reference explicitly enabled dismantling structure while forbidding reuse of the original work's characters, settings, plot, or exact expression.",
-    ],
-    zh: [
-      "新增独立“拆文库”。拆文结果会单独保存在项目的拆文记忆库中，不会混入当前小说正文、大纲或小说记忆，避免原作信息污染正在创作的作品。",
-      "拆文库支持导入单个文件或文件夹，自动拆分章节并按章节顺序整理；用户可以选择要拆多少章节，也可以设置每批拆文的章节数量。",
-      "新增可复用结构记忆。拆文结果重点沉淀章节节奏、冲突推进、爽点安排、人物作用、信息增量、结尾钩子和可复用写法模板，而不是保存原作剧情事实。",
-      "AI 会话和深度章节生成可以引用用户明确启用的拆文结构，用来辅助当前小说写作；系统会明确限制不得复用原作人物、设定、剧情和具体表达，并说明拆文结构不是当前小说记忆。",
-    ],
-  },
-}
-
-// Hidden from the visible changelog list in 2.2.7, but kept in source for archival reference.
-const REMOVED_TWO_POINT_TWO_CHANGELOGS = [
-  TWO_POINT_TWO_SIX_CHANGELOG,
-  TWO_POINT_TWO_FIVE_CHANGELOG,
-  TWO_POINT_TWO_FOUR_CHANGELOG,
-  TWO_POINT_TWO_THREE_CHANGELOG,
-  TWO_POINT_TWO_TWO_CHANGELOG,
-  TWO_POINT_TWO_ONE_CHANGELOG,
-] as const
-void REMOVED_TWO_POINT_TWO_CHANGELOGS
 
 const TWO_POINT_TWO_ZERO_CHANGELOG: ChangelogEntry = {
   version: "2.2.0",
@@ -195,26 +81,14 @@ const TWO_POINT_TWO_ZERO_CHANGELOG: ChangelogEntry = {
       "Fixed AI Chat stop handling so stopping during thinking or streaming finalizes immediately and ignores late callbacks.",
     ],
     zh: [
-      "修复 AI 会话“继续生成下一章”反复生成同一章的问题。现在点击继续下一章时，会先解析出明确的目标章节号，不再沿用上一轮生成时的章节编号。",
-      "深度章节生成会把解析后的目标章节号统一用于思考过程、上下文包、章节目标、时间线定位和 AI 审稿，避免正文标题是上一章、但保存文件已经变成下一章的错位。",
-      "如果当前选中了某个章节，“继续生成下一章”会按当前章节号 +1；如果没有选中章节，则按章节库中已有最大章节号 +1，确保连续生成时章节序号持续向后推进。",
-      "优化 AI 会话和深度章节对“绑定角色灵魂”的使用。现在不只看用户最后一句请求，也会结合章节目标、章纲、人物状态、记忆和认知上下文来匹配角色名，减少“生成第几章”时没有套用角色灵魂的问题。",
-      "调整深度章节阶段3正文初稿的本地字数上限。初稿最多允许生成到 6000 字再触发安全暂停，降低正文还没写完整就被过早截断的概率。",
-      "新增更严格的阶段4字数审核与正文优化。阶段3初稿过长时，会基于原草稿压缩内容，在不改变主线、人物行动、关键冲突和结尾钩子的前提下，把正文严格控制在 2200-3200 字；如果优化后仍超过 4000 字，会最多重试 4 次，仍失败则用中文明确提示用户降低目标字数或拆章生成。",
-      "强化深度章节字数约束。阶段3初稿会要求模型在接近上限时主动收束，阶段4会先处理超长正文，满足字数要求后再进入 AI 审稿，避免截断正文继续往后跑。",
-      "强化阶段6简单审查的字数检查。最终去AI味后不仅会检查字数过少，也会检查字数过长；不达标时会自动回到前置阶段补足或优化，再继续完成后续流程。",
-      "优化深度章节“继续未完成”的恢复逻辑。失败消息会保存最初的章节生成请求和可恢复阶段内容，连续失败后再次点击也会追溯到原始任务，不再把“继续未完成”误当成章节需求。",
-      "继续未完成时会重新构建小说上下文包，把章纲、记忆、角色状态、章节目标和已完成阶段内容重新交给模型，减少模型不知道写什么、凭空生成通用章节的问题。",
-      "修复“继续未完成”再次失败后按钮消失的问题。如果继续生成过程中已经产生了新的思考过程，但又因为网络或接口错误中断，失败消息下方仍会继续显示“继续未完成”，方便用户再次从未完成位置接着生成。",
-      "深度章节生成在思考过程或阶段内容已经生成后如果中断，AI 会话会在失败消息下方显示“继续未完成”按钮，并在按钮旁说明它与“重新生成”的区别，帮助用户节省 token。",
-      "延长共享 LLM 请求在 request-send 断联时的自动等待和重试时间。AI 会话、深度写作、AI 大纲、记忆提取、审查和改写等模型请求遇到临时无法发送请求时，会先自动等待并重试，最长约 5 分钟后再提示失败。",
-      "优化 request-send 断联失败提示。连续重试后仍无法连接时，会用中文说明“无法连接到模型接口”，并提示可能原因，例如网络不稳定、代理不可用、接口地址无法访问、服务商网关中断或本机网络环境阻断访问。",
-      "延长提取记忆和小说审查等长任务的请求等待上限，减少模型仍在处理时被 2-3 分钟短超时提前中断的情况；类似 `error sending request for url` 的断联也会被识别为网络中断并显示中文提示。",
-      "将底部“原始来源”区域改为“提取中”，章节和 AI 大纲导入后的记忆提取进度会持续显示，切换页面后再回来也不会丢失。",
-      "优化导入记忆确认弹窗，新增“取消导入”。现在可以选择“提取记忆”“只导入”或“取消导入”，点击右上角关闭也会取消本次导入，不再继续写入内容。",
-      "完善删除章节和删除大纲后的关联清理。删除来源内容时，会同步清理对应的小说记忆快照，并重建或清空结构化记忆，减少已删除内容继续影响后续写作的情况。",
-      "删除章节、大纲或大纲文件夹时，会进一步清理 `wiki/entities` 中只来自该来源的实体页；如果实体页来自多个来源，则会保留实体页，但移除已删除来源的引用。",
-      "修复 AI 会话停止生成不够及时的问题。现在无论处于思考过程还是正文流式输出中，点击停止都会立即结束当前显示，并拦截后续迟到的模型回调，避免界面继续生成或重复写入。",
+      "将近期 AI 会话、深度章节、导入记忆、删除清理和网络稳定性修复整合到 2.2.0。",
+      "修复“继续生成下一章”时目标章节号解析错误，确保提示词、上下文、章节目标和时间线都使用正确章节号。",
+      "优化 Character Soul 绑定，除最后一句请求外，也会综合章节目标、大纲、角色状态、记忆和认知上下文。",
+      "重做深度章节长度控制，第 3 阶段安全上限为 6000 字，第 4 阶段严格优化到 2,200-3,200 字，并允许最多四次重试。",
+      "优化“继续未完成”恢复逻辑，失败后会保留原始请求、可恢复阶段上下文和重建后的小说上下文包。",
+      "延长共享 LLM 请求重试窗口，并将原始 request-send/network errors 替换为更清晰的中文提示。",
+      "保留章节和大纲导入后的记忆提取进度显示，新增取消导入，并完善删除后的来源记忆与实体清理。",
+      "修复 AI 会话停止生成不及时的问题，思考阶段和流式阶段都能立即收口。",
     ],
   },
 }
@@ -244,24 +118,24 @@ const TWO_POINT_ONE_ZERO_CHANGELOG: ChangelogEntry = {
       "Fixed AI Review rewrite application so original fragments can still be located when line breaks or spacing differ.",
     ],
     zh: [
-      "新增独立“黄金三章”开篇生成约束。用户在 AI 会话中请求首章、第一章、开篇、开局、前三章等内容时，系统会自动套用黄金三章规则，要求开篇更快进入主体事件、危机、冲突或任务，减少无关背景、环境、心理和设定铺垫。",
-      "黄金三章规则已接入深度章节模式和普通章节生成流程。开启深度章节模式时，该规则会进入深度多步生成流程；未开启深度模式时，也会注入普通章节生成流程。",
-      "优化黄金三章输出策略。请求首章或前三章时，系统只生成第一章正文，并给出第二、三章写作方向；明确请求第二章或第三章时，则只生成对应章节正文。",
-      "优化 AI 会话停靠按钮显示逻辑。AI 会话停靠在底栏时，只显示“停靠在侧栏”；停靠在侧栏时，只显示“停靠在底栏”，避免同时出现两个停靠按钮造成误解。",
-      "AI 会话和 AI 大纲底部输入框新增高度拖拽能力。输入框支持上下调整高度，最低保持默认高度，最高不超过当前面板高度的一半。",
-      "持续修复 AI 会话输入框高度拖拽问题。解决输入框在底部区域包裹状态下拖拽受限、拉高后无法继续展开等情况，使其高度计算与 AI 大纲保持一致。",
-      "章节侧栏新增导入文件和导入文件夹功能。导入时会自动识别章节编号并排序，支持 txt、md、docx 和旧版 doc 文档。",
-      "优化章节文件夹导入流程。导入文件夹时会先预扫描可导入章节数量，再弹出确认提示，询问是否提取记忆。",
-      "新增导入章节时的记忆提取流程。用户确认后会逐章提取记忆，并在章节上方显示提取进度，支持中途取消；取消则只导入章节内容，不执行记忆提取。",
-      "增强章节文件名匹配规则。现在支持类似“书名 第几卷 第N章 标题.docx”的复杂命名格式，避免把卷号误识别为章节号，并自动生成更干净的章节标题。",
-      "优化 AI 会话加载逻辑。深度章节生成模块改为仅在启用深度章节模式时按需加载，避免普通聊天启动时提前加载较重的小说审查和上下文模块，提高普通 AI 会话的启动效率。",
-      "清理并修复全量 mock 测试中的陈旧断言，恢复 mock 测试套件全量通过，降低后续功能迭代时的回归风险。",
-      "设置页移除“资料文件夹监控”和“定时导入”入口，精简不再需要的设置项，让设置页面更聚焦当前实际使用功能。",
-      "修复网络代理启用逻辑。未启用代理或没有保存代理配置时，软件会主动清理继承来的 HTTP_PROXY、HTTPS_PROXY、NO_PROXY 环境变量，避免用户没有点击启用代理时仍然误走代理。",
-      "修复部分环境下检查更新仍被小写代理变量或 ALL_PROXY 残留影响的问题，并将原始英文 updater 错误改为更清楚的中文提示。",
-      "优化深度章节字数上限提示。达到章节内容上限时，会明确提示本章最多生成 4500 字，达到上限后会自动暂停，建议用户按章节逐章生成，避免一次生成过多内容导致中断。",
-      "修复深度写作在达到章节上限后可能误报 request cancelled 的问题。当系统因章节字数上限主动暂停输出时，后续底层请求取消不再被当作异常失败，减少深度章节生成中断后的误报。",
-      "修复 AI 审查改写时“原文片段没有定位到”的问题。现在应用 AI 改写时仍优先精确匹配原文；如果模型输出与章节原文只存在换行、空格或段落格式差异，系统会进行更宽容的唯一匹配，在确认只匹配到一处时正常写入。",
+      "新增独立的黄金三章开篇约束，覆盖开篇、第一章和前三章请求。",
+      "黄金三章规则同时接入深度章节生成和普通章节生成流程。",
+      "优化黄金三章输出策略：开篇请求生成第一章正文并附带第二、第三章方向。",
+      "明确请求第二章或第三章时，只生成目标章节内容。",
+      "优化 AI 会话停靠切换按钮，同一时刻只显示一个停靠目标。",
+      "AI 会话与 AI 大纲输入框支持竖向拖拽调整高度。",
+      "修复输入框高度上限，最高可扩展到面板实际高度的一半。",
+      "新增章节文件与文件夹导入，并自动按章节号排序。",
+      "优化章节文件夹导入，导入前先预扫描可导入章节数量。",
+      "新增导入时的记忆提取确认流程，可选择是否提取记忆。",
+      "新增导入记忆进度显示，并支持在导入过程中取消。",
+      "增强章节文件名匹配，兼容卷、章等更复杂命名格式。",
+      "深度章节模块改为按需加载，仅在开启深度模式后初始化。",
+      "清理过期 mock 断言，恢复 mock 测试套件可通过状态。",
+      "设置页移除 Source Watch 与 Scheduled Import 入口。",
+      "修复代理启动行为，禁用代理时会清理继承的代理环境变量。",
+      "修复更新检查在异常代理环境下的报错，并改成更清晰的中文提示。",
+      "补强 AI 审查改写落地逻辑，换行或空格变化后仍能定位原文片段。",
     ],
   },
 }
@@ -274,7 +148,7 @@ const TWO_POINT_ZERO_CHANGELOG: ChangelogEntry = {
       "Major release: upgraded QMAI from a basic AI writing assistant into a staged novel-writing workflow with planning, generation, review, rewrite, and traceable revision loops.",
       "AI Chat now supports deep chapter generation with context analysis, task brief, draft writing, AI review, revision, final lightweight review, and de-AI polish.",
       "AI Outline now uses staged thinking generation with live progress, outline task briefs, draft generation, self-checking, cleaner saving, and quick generation tools for chapter outlines, characters, factions, abilities, foreshadowing, and locations.",
-      "Review Center was rebuilt around staged deep review and six independent professional review workflows: thrill density, setting autonomy, pacing tension, character consistency, narrative continuity, and reader pull.",
+      "Review Center was rebuilt around staged deep review and six independent professional review workflows.",
       "AI Rewrite now provides multi-change previews, editable generated content, regenerate support, confirm-to-replace behavior, View Change highlighting, Ignore, and Restore Original.",
       "Thinking and model compatibility were improved across OpenAI-compatible endpoints, Responses API, Qwen3 thinking models, custom model diagnostics, Chinese endpoint hints, and model list handling.",
       "Memory and chapter workflows were strengthened with re-extract memory actions, persistent progress after page switching, Memory Center edit/delete controls, and clearer memory-risk warnings.",
@@ -282,17 +156,15 @@ const TWO_POINT_ZERO_CHANGELOG: ChangelogEntry = {
       "Feedback submission now includes a fallback path for networks where the desktop HTTP client fails.",
     ],
     zh: [
-      "本次 2.0.0 是一次大型版本升级，青幕AI写作从普通 AI 辅助写作工具升级为更完整的小说创作工作流系统，覆盖规划、生成、审查、修改和可追踪返修。",
-      "AI 会话新增深度章节生成流程：会依次进行上下文分析、写作任务书、正文初稿、AI审稿、问题返修、最终简单审查和去AI味润色，让章节生成更接近专业写作流程。",
-      "深度章节生成增加约 3000 字正文目标、短正文自动扩写补足、重复输出检测、异常超长保护和停止生成逻辑，避免内容过短、复读循环或无法中断。",
-      "AI 大纲升级为阶段式思考生成，支持实时显示上下文分析、大纲任务书、大纲草稿和大纲自检；同时优化保存逻辑，并新增章节细纲、人物小传、组织势力、能力体系、伏笔计划和地点设定快捷生成入口。",
-      "审查中心升级为阶段式深度审稿，会结合章节正文、大纲节点、上下文、记忆库、伏笔、人物状态、时间线和角色认知状态进行综合分析。",
-      "六维审查重构为六个独立专业工作流：爽感密度、设定自治、节奏张力、人设一致、叙事衔接和追读引力。每个维度都会独立进行高强度 thinking 分析，并输出评分、总结、证据和修改目标。",
-      "AI修改流程全面优化：支持多条“原文 / 新内容”对比预览、生成内容可编辑、重新生成、确认后覆盖原文、查看修改高亮、忽略和恢复原文。",
-      "Thinking 思考模式和模型兼容性进一步增强，OpenAI兼容、Responses API、Qwen3 等模型会按设置发送思考参数，并补充模型测试、模型列表、接口地址和中转站兼容提示。",
-      "记忆与章节管理优化：重新提取记忆、查看记忆、维护扫描等状态在切换页面后仍会保持；记忆中心新增编辑和删除入口，并在删除时提示可能影响后续正文生成。",
-      "界面体验优化：AI 会话和 AI 大纲支持底栏/右侧停靠，修复多处双滚动条问题，章节工具栏支持窄窗口自动收进“更多”，思考区显示更稳定，审查与模型设置中的英文提示也进一步中文化。",
-      "反馈提交逻辑增加备用发送方式，改善部分网络环境下无法提交反馈的问题。",
+      "2.0.0 是一次大的能力升级，QMAI 从基础 AI 写作助手升级为分阶段小说创作工作流。",
+      "AI 会话新增深度章节生成流程，覆盖上下文分析、任务书、正文草稿、AI 审查、修订与去 AI 润色。",
+      "AI 大纲升级为分阶段思考生成，并支持实时进度、任务书、草稿、自检与更干净的保存。",
+      "审查中心围绕多阶段深度审查重建，并加入多种独立的专业审查工作流。",
+      "AI Rewrite 提供多处改动预览、可编辑生成内容、重新生成、确认替换、查看变化与恢复原文。",
+      "加强 thinking 与模型兼容能力，覆盖 OpenAI 兼容接口、Responses API、Qwen3 thinking 等模型。",
+      "强化记忆与章节流程，支持重新提取记忆、跨页面保留进度、记忆中心编辑删除与更清晰的风险提示。",
+      "界面体验同步优化，包括 AI 会话和 AI 大纲停靠、滚动条问题、章节工具栏与中文化提示。",
+      "反馈提交流程增加兜底通道，桌面端 HTTP 客户端异常时仍可尝试提交。",
     ],
   },
 }
@@ -306,461 +178,16 @@ function isMergedOnePointRelease(version: string): boolean {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: "1.0.32",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Changed Six-Dimension Review into six independent professional workflows instead of filtering one shared AI review result.",
-        "Each dimension now runs staged high-reasoning analysis and strict JSON output with its own score, summary, thinking, evidence, and rewrite targets.",
-        "AI Review remains available as the original general review flow, while six-dimension issues continue to support AI Rewrite, Ignore, View Change, and Restore Original.",
-      ],
-      zh: [
-        "将六维审查改为六个独立专业工作流，不再只是从同一份 AI 审稿结果中分类筛选。",
-        "每个维度都会独立进行高强度阶段式 thinking 分析，并输出独立评分、总结、思考过程、证据和修改目标。",
-        "保留原有 AI审稿 总审稿入口，六维问题仍继续支持 AI修改、忽略、查看修改和恢复原文等操作。",
-      ],
-    },
-  },
-  {
-    version: "1.0.31",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Upgraded AI Review into a staged deep-review workflow with context loading, outline alignment, memory/fact checks, dimension review, blocking judgment, and final verification.",
-        "AI Review now requests high reasoning for every review stage and streams staged thinking progress into Review Center while keeping the final result format compatible with existing review actions.",
-        "Deep review now includes outline nodes, chapter context, memory, foreshadowing, character state, timeline, and character cognition checks before producing the final JSON issue list.",
-      ],
-      zh: [
-        "将审查中心 AI审稿升级为阶段式深度审稿流程：依次进行任务识别、上下文检索、章节目标对齐、事实与记忆核对、逐维度审查、阻断判定和二次复核。",
-        "AI审稿每个阶段都会按高级 thinking 请求模型，并在审查中心显示阶段进度；最终结果仍保持原有结构，AI修改、忽略、历史记录等功能继续复用。",
-        "深度审稿会结合大纲节点、章节上下文、记忆库、伏笔、人物状态、时间线和角色认知状态后再输出最终问题列表。",
-      ],
-    },
-  },
-  {
-    version: "1.0.30",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Added runaway-output protection for deep chapter generation: repeated loops and abnormally long chapter output now stop automatically before they can grow into huge drafts.",
-        "Fixed AI Chat stop handling during deep chapter generation so user cancellation stops the staged workflow instead of continuing into review or revision.",
-        "Added one final simple review and de-AI polish pass after draft review/revision to reduce mechanical phrasing while preserving plot and continuity.",
-      ],
-      zh: [
-        "修复 AI 会话深度章节生成陷入复读循环的问题：检测到重复段落或异常超长输出时会自动停止重复内容，避免生成十几万字的异常章节。",
-        "修复深度章节生成无法停止的问题：用户点击停止后，会立即中断后续审稿、返修和收尾流程，并显示“已停止生成”。",
-        "新增最终简单审查与去AI味收尾：二次审查/返修后会再做一遍轻量检查，减少机械套话、重复句式和 AI 味，同时保留剧情与设定。",
-      ],
-    },
-  },
-  {
-    version: "1.0.29",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Fixed deep chapter generation producing very short drafts by enforcing an approximately 3000-character chapter target.",
-        "Added an automatic expansion pass when the first chapter draft or revised draft is too short, then runs review on the expanded full chapter.",
-        "Raised the deep chapter generation output token budget so OpenAI-compatible relay services are less likely to cut chapters off early.",
-      ],
-      zh: [
-        "修复 AI 会话深度章节生成正文过短的问题：章节正文现在强制按约 3000 字生成，建议范围为 2800-3300 字，低于 2600 字视为未完成。",
-        "新增短正文自动扩写补足：如果初稿或返修稿明显过短，会自动进入扩写补足阶段，再对完整章节进行 AI 审稿。",
-        "提高深度章节生成的输出 token 上限，降低第三方 OpenAI 兼容中转站默认上限导致章节提前截断的概率。",
-      ],
-    },
-  },
-  {
-    version: "1.0.28",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Changed deep chapter generation so the Deep Chapter button is the only switch: when enabled, all AI Chat requests in novel mode use the staged chapter workflow.",
-        "Made AI Chat and AI Outline deep thinking panels fixed-height and scrollable for long staged output.",
-        "Updated AI Outline staged generation to refresh each stage while streaming, so task brief, draft, and self-check progress no longer appear stuck after one result.",
-      ],
-      zh: [
-        "调整深度章节生成逻辑：是否进入深度章节流程只看“深度章节生成”按钮，开启后小说模式下 AI 会话的所有输入都会走阶段式章节生成。",
-        "AI 会话与 AI 大纲的深度思考区改为固定高度滚动显示，内容很长时不会撑乱会话窗口。",
-        "AI 大纲阶段生成改为阶段内流式刷新，大纲任务书、大纲草稿和大纲自检会持续更新，避免只显示一个结果后像卡住。",
-      ],
-    },
-  },
-  {
-    version: "1.0.27",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Fixed AI Chat staged chapter generation routing so continue-next-chapter and outline-based chapter requests enter the deep generation workflow instead of returning directly.",
-        "Changed AI Outline generation and regeneration to a staged Codex-style flow with context analysis, outline task brief, draft generation, self-check, and visible thinking stages.",
-      ],
-      zh: [
-        "修复 AI 会话阶段深度生成路由：继续生成下一章、根据章纲生成正文等请求会进入上下文分析、任务书、初稿、审稿、返修流程，不再直接普通出结果。",
-        "AI 大纲生成与重新生成改为阶段式流程思考：依次显示大纲上下文分析、大纲任务书、大纲草稿、大纲自检和完成阶段。",
-      ],
-    },
-  },
-  {
-    version: "1.0.26",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Expanded the AI Chat thinking panel so streaming and completed thinking content is fully visible without an inner scrollbar.",
-        "Improved the deep chapter generation toggle with a stronger selected state so users can clearly see when staged thinking generation is enabled.",
-      ],
-      zh: [
-        "优化 AI 会话 thinking / 思考区显示：流式和完成后的思考内容都会完整展开，不再使用内部滚动或折叠预览。",
-        "增强深度章节生成按钮的选中态：开启后使用更深的高对比颜色，方便用户确认当前已启用阶段思考生成。",
-      ],
-    },
-  },
-  {
-    version: "1.0.25",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Added deep chapter generation for novel chat: chapter writing requests now run through context analysis, task brief, draft, AI review, and one automatic revision pass when blocking issues are found.",
-        "Deep generation stage results are displayed in the thinking panel, while the final assistant answer remains clean chapter prose for saving.",
-      ],
-      zh: [
-        "AI 会话新增深度章节生成：生成章节时会依次进行上下文分析、写作任务书、正文初稿、AI 审稿，并在发现严重问题时自动返修一次。",
-        "深度生成的阶段结果会显示在 thinking / 思考区，最终回复仍保持为干净的章节正文，方便直接保存到章节库。",
-      ],
-    },
-  },
-  {
-    version: "1.0.24",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Fixed the remaining right-docked writing double scrollbar by preventing the immersive writing textarea from creating its own scrollbar after width changes.",
-        "Adjusted the chapter toolbar compact threshold so normal-width windows show direct actions, while narrow windows still collapse actions into More and keep the chapter title/status visible.",
-      ],
-      zh: [
-        "修复右侧 AI 会话停靠后正文区仍可能出现双滚动条的问题：窗口宽度变化时会重新计算正文输入区高度，并禁止正文输入区生成自己的滚动条。",
-        "调整章节工具栏响应式收起规则：正常窗口宽度下直接显示操作按钮，窄窗口下才收进“更多”，同时保留章节标题、状态和字数信息。",
-      ],
-    },
-  },
-  {
-    version: "1.0.23",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Fixed AI Chat thinking mode so visible chat generation now sends an explicit high reasoning request when the model setting is Auto.",
-        "Added Responses API reasoning stream parsing so reasoning text deltas can appear in the AI Chat thinking panel.",
-      ],
-      zh: [
-        "修复 AI会话思考模式：模型设置为“自动”时，AI会话这类用户可见生成会默认按高强度 thinking 请求模型。",
-        "补充 Responses API 思考流解析，reasoning 事件现在可以进入 AI会话的思考过程显示区域。",
-      ],
-    },
-  },
-  {
-    version: "1.0.22",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Fixed the remaining double-scrollbar issue in chapter writing by making the preview content shell non-scrollable for immersive chapters.",
-        "Fixed chapter toolbar compact mode so width observation starts after the selected chapter has loaded, keeping chapter title/status visible and moving actions into More in narrow windows.",
-      ],
-      zh: [
-        "继续修复章节正文双滚动条：章节沉浸写作时，预览内容外壳不再参与滚动，只保留正文内部滚动条。",
-        "修复章节工具栏响应式未生效：章节加载后重新绑定宽度监听，窄窗口下保留章节标题和状态，操作稳定收进“更多”。",
-      ],
-    },
-  },
-  {
-    version: "1.0.21",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Moved the AI chat dock controls into the AI Chat and AI Outline input areas as two direct icon buttons.",
-        "Fixed AI Outline saving so generated frontmatter is removed, duplicate outline titles are avoided, and the saved status only shows the final title.",
-        "Fixed right-docked writing layout double scrollbars and kept chapter title/status visible when chapter actions collapse into the More menu.",
-      ],
-      zh: [
-        "将 AI 会话停靠切换移入 AI会话和 AI大纲输入框左侧，改为直接显示底栏/右侧两个图标。",
-        "修复 AI大纲保存：自动清理模型返回的 frontmatter，避免与已有大纲标题重复，保存状态只显示最终标题。",
-        "修复右侧四栏写作区双滚动条，并优化章节工具栏响应式显示，窗口变窄时保留章节标题和状态，操作收进“更多”。",
-      ],
-    },
-  },
-  {
-    version: "1.0.20",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Fixed the right-docked AI chat area so normal window sizes no longer create nested scrollbars.",
-        "Moved the AI dock-position control to the top-right edge of the app content so it no longer overlaps chat tabs.",
-        "Made the chapter toolbar responsive: narrow layouts move chapter actions into a More menu, while wide layouts show all actions.",
-      ],
-      zh: [
-        "修复右侧 AI 会话停靠在正常窗口下可能出现双滚动条的问题。",
-        "调整 AI 会话停靠设置按钮位置，移动到应用内容区右上角，避免压住会话标签。",
-        "优化章节工具栏响应式显示：窗口变窄时功能自动收进“更多”菜单，宽度充足时恢复全部显示。",
-      ],
-    },
-  },
-  {
-    version: "1.0.19",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Fixed custom model reasoning settings so OpenAI-compatible, Responses API, and Qwen3 thinking requests now receive the selected thinking mode.",
-        "Added a top-right dock setting that moves AI Chat and AI Outline between the bottom panel and the right-side panel.",
-        "Added thinking display support to AI Outline while keeping thinking content out of saved/copied outline text.",
-      ],
-      zh: [
-        "修复自定义模型 Reasoning / thinking 设置不生效的问题：OpenAI 兼容、Responses API 和 Qwen3 思考模型会按所选模式发送思考参数。",
-        "新增右上角 AI 会话停靠设置，可在底栏和右侧之间切换 AI 会话与 AI 大纲显示位置。",
-        "AI 大纲新增思考过程显示，并避免将思考内容写入保存或复制的大纲正文。",
-      ],
-    },
-  },
-  {
-    version: "1.0.18",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Fixed AI Rewrite application so edited or regenerated preview content replaces the original passage instead of being inserted beside it.",
-        "Added a View Change action for AI rewrites to open the chapter and highlight the modified text.",
-      ],
-      zh: [
-        "修复 AI修改在用户编辑生成内容或重新生成后确认时可能插入到原文旁边的问题，现在只会按预览左侧原文完整覆盖写回。",
-        "为所有 AI修改结果增加“查看修改”按钮，点击后自动进入正文并高亮修改后的内容。",
-      ],
-    },
-  },
-  {
-    version: "1.0.17",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Fixed six-dimension review result cards so they use localized labels and show AI Rewrite, Restore, and Ignore actions.",
-      ],
-      zh: [
-        "修复六维审查结果卡片：严重程度和问题类型改为中文显示，并恢复 AI修改、恢复原文、忽略操作按钮。",
-      ],
-    },
-  },
-  {
-    version: "1.0.16",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Made the dashboard AI Rewrite preview content editable before confirming replacement.",
-      ],
-      zh: [
-        "优化审查看板 AI修改预览：AI生成的补写/改写内容现在可以在弹窗中直接编辑，确认后按用户修改后的内容写回章节。",
-      ],
-    },
-  },
-  {
-    version: "1.0.15",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Fixed the dashboard AI Rewrite preview parser so fact-check rewrite plans returned with anchor_text and insert_text fields can be applied normally.",
-      ],
-      zh: [
-        "修复审查看板中 AI修改预览解析错误：模型按提示返回 anchor_text / insert_text 时，现在可以正确识别补写位置和补写内容。",
-      ],
-    },
-  },
-  {
-    version: "1.0.14",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Reworked AI review rewrites into a multi-change preview that compares original and revised text before applying changes.",
-        "Removed the separate Edit action from review issue cards because AI Rewrite now handles locating and editing content.",
-        "Localized internal review labels such as fact-check issue types and foreshadowing debt severity.",
-        "Added a Continue Next Chapter action in the chapter chat result toolbar.",
-        "Added outline refinement quick actions in the AI outline chat for chapter outlines, character briefs, factions, power system, foreshadowing, and locations.",
-      ],
-      zh: [
-        "重做审查结果的 AI修改流程：生成多条“原文 / 新内容”对比，用户确认后才写回原章节。",
-        "移除审查问题卡片中的单独“编辑”按钮，由 AI修改负责定位、生成、编辑和忽略修改项。",
-        "修复审查中心里的内部英文显示，将事实检查类型、伏笔债务严重度等改为中文。",
-        "在正文生成结果工具栏新增“继续生成下一章”按钮，自动沿用小说上下文和记忆库逻辑生成后续章节。",
-        "在 AI大纲对话底部新增章节细纲、人物小传、组织势力、金手指与能力体系、伏笔计划、地点设定快捷生成入口。",
-      ],
-    },
-  },
-  {
-    version: "1.0.13",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Restored the Edit, AI Rewrite, and Ignore actions under AI review results in Review Center.",
-        "AI review rewrites now reuse the existing preview, replace, restore-original, and ignored-result persistence flow.",
-      ],
-      zh: [
-        "恢复审查中心 AI审稿结果下方的“编辑 / AI修改 / 忽略”操作按钮。",
-        "AI审稿结果的 AI修改重新接入预览确认、替换原文、恢复原文和忽略结果持久化流程。",
-      ],
-    },
-  },
-  {
-    version: "1.0.12",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Moved the AI review entry above six-dimension review in Review Center.",
-        "Removed per-dimension review buttons from the left sidebar and added a unified Start Review action in the upper-right content header.",
-      ],
-      zh: [
-        "将审查中心左侧的“AI审稿”入口移动到“六维审查”上方。",
-        "移除左侧六维审查中每一项的单独“审查”按钮，在内容区右上角新增统一的“开始审稿”入口。",
-      ],
-    },
-  },
-  {
-    version: "1.0.11",
-    date: "2026-06-03",
-    highlights: {
-      en: [
-        "Localized custom model endpoint warnings to Chinese, including missing version-path hints such as /v1.",
-      ],
-      zh: [
-        "将自定义模型接口地址提示改为中文，包括缺少 /v1 等版本路径时的提醒文案。",
-      ],
-    },
-  },
-  {
-    version: "1.0.10",
-    date: "2026-06-02",
-    highlights: {
-      en: [
-        "Improved custom model list display so manually typed models are clearly marked when they are not returned by the API.",
-        "Improved unsupported-model test errors with a clearer instruction to pick a fetched model or verify the relay's exact model ID.",
-      ],
-      zh: [
-        "优化自定义模型列表显示：手动填写但不在接口返回列表中的模型，会明确标记为“当前填写（不在已拉取模型中）”。",
-        "优化模型测试中的“不支持所选模型”提示，引导用户从已拉取模型中选择，或向中转站确认正确模型 ID。",
-      ],
-    },
-  },
-  {
-    version: "1.0.9",
-    date: "2026-06-02",
-    highlights: {
-      en: [
-        "Improved custom model test diagnostics when a relay server rejects desktop, browser, or common SDK clients.",
-      ],
-      zh: [
-        "优化自定义模型测试提示：当中转站限制桌面端、浏览器或常见 SDK 客户端来源时，会明确提示需要联系中转站开通通用 OpenAI 兼容 API，或更换可直连的中转站。",
-      ],
-    },
-  },
-  {
-    version: "1.0.8",
-    date: "2026-06-02",
-    highlights: {
-      en: [
-        "Fixed chapter memory re-extraction and maintenance duplicate-scan progress so the in-progress state remains visible after switching away and back.",
-        "Renamed snapshot actions to memory-focused labels, including Re-extract Memory and View Memory.",
-        "Added Responses API support for custom LLM endpoints with usage guidance and model-list URL handling.",
-        "Improved feedback submission with a browser-fetch fallback when the Tauri HTTP client fails on some networks.",
-        "Added Memory Center editing and deletion controls, including a red deletion warning because removed memory can affect later AI chapter generation.",
-      ],
-      zh: [
-        "修复正文重新提取记忆、维护工具扫描重复项在切换页面后丢失进行中状态的问题。",
-        "将“重新生成快照”“查看快照”等操作文案调整为“重新提取记忆”“查看记忆”。",
-        "自定义模型新增 Responses API 模式，并补充使用说明、接口地址处理和模型列表拉取兼容。",
-        "优化反馈提交逻辑，当部分网络下 Tauri HTTP 请求失败时，会自动尝试备用发送方式。",
-        "记忆中心新增编辑与删除入口，删除时会显示红色风险提示，提醒删除记忆可能影响后续 AI 正文生成。",
-      ],
-    },
-  },
-  {
     version: "1.0.7",
     date: "2026-06-02",
     highlights: {
       en: [
-        "Fixed theme color display issues, including white contrast in the blue theme and red accents in the dark theme.",
-        "Saving a final chapter and extracting raw outline memory now generate snapshots and sync them to novel memory automatically, removing the old manual sync step.",
-        "Added a feedback entry in Settings so users can submit issues and suggestions for backend review.",
-        "Added a software usage guide in Settings with links to the complete guide, official user manual, and novel-writing introduction.",
-        "Added a dismissible lower-left usage-guide prompt that opens the software usage guide directly.",
+        "Improved local LLM model handling and startup stability for daily writing sessions.",
+        "Refined chapter, memory, and review interactions for a more consistent writing workflow.",
       ],
       zh: [
-        "修复颜色设置中部分主题显示异常的问题，优化蓝色主题下白色文字/背景显示，并调整黑色主题中的红色效果。",
-        "章节保存为正式章节后会自动生成快照并同步到小说记忆；大纲库提取原始记忆后也会自动生成快照并同步记忆。",
-        "移除原本需要手动点击的“同步记忆”步骤，减少章节和大纲记忆整理时的重复操作。",
-        "在设置中新增“反馈”入口，用户可以直接提交使用问题、建议或异常反馈，反馈内容会进入后台方便查看和处理。",
-        "在设置中新增“软件使用说明”入口，内置完整使用说明、正式用户手册、小说功能介绍三个文档链接。",
-        "在软件左下角新增“软件不知道怎么使用？点我”提示，点击后会直接进入设置中的“软件使用说明”页面，用户也可以手动关闭该提示窗。",
-      ],
-    },
-  },
-  {
-    version: "1.0.5",
-    date: "2026-06-01",
-    highlights: {
-      en: [
-        "Added folder deletion to the outline tree context menu. Descendant outline markdown files are moved to trash before the folder itself is removed.",
-        "When other non-outline files still remain in that folder, the app now keeps the folder and shows a warning instead of deleting it blindly.",
-      ],
-      zh: [
-        "大纲列表右键菜单新增“删除文件夹”，会先把目录下所有大纲 Markdown 文档移入回收站，再删除空文件夹。",
-        "如果文件夹里仍有未处理的其他文件，系统会保留文件夹本身并给出中文提示，避免误删。",
-      ],
-    },
-  },
-  {
-    version: "1.0.4",
-    date: "2026-06-01",
-    highlights: {
-      en: [
-        "Fixed the streaming scroll lock in AI chat and AI outline sessions so you can scroll up to review earlier content while generation continues.",
-        "Fixed file edit preview state so all detected outline edits can be displayed and applied instead of only the first result.",
-      ],
-      zh: [
-        "修复 AI 会话和 AI 大纲会话在持续生成时滚动条被强制锁到底部的问题，现在可以自由向上查看历史内容。",
-        "修复大纲批量修改预览状态不完整的问题，确保识别出的修改项能够完整显示并逐条应用。",
-      ],
-    },
-  },
-  {
-    version: "1.0.3",
-    date: "2026-06-01",
-    highlights: {
-      en: [
-        "Added outline document import and folder import in the outline sidebar.",
-        "Imported files now enter the outline library first, and initial memory extraction remains a manual user action.",
-      ],
-      zh: [
-        "大纲侧边栏新增“导入文档”和“导入文件夹”功能，可以直接把外部资料整理进大纲库。",
-        "导入后的内容默认只进入大纲库，不会自动提取记忆，仍由用户手动执行提取。",
-      ],
-    },
-  },
-  {
-    version: "1.0.2",
-    date: "2026-06-01",
-    highlights: {
-      en: [
-        "Outline initial-memory extraction now keeps running in the background even if you switch away and come back later.",
-        "Added one-click extract for the entire outline library, processing outline files one by one and saving a snapshot for each document.",
-      ],
-      zh: [
-        "修复大纲库“提取初始记忆”切到其他页面后会中断的问题，返回后仍能保持正确的提取状态。",
-        "大纲库新增“一键提取”，会按文档逐个提取初始记忆，并为每个大纲生成对应快照。",
-      ],
-    },
-  },
-  {
-    version: "1.0.1",
-    date: "2026-06-01",
-    highlights: {
-      en: [
-        "Restored the memory center recent snapshot list to show the latest 10 items instead of stopping at 6.",
-        "Cleaned up soul binding candidates so character binding only shows valid character entries and hides unrelated outline sections.",
-      ],
-      zh: [
-        "修复记忆中心“最近章节快照”只显示 6 条的问题，现在会完整显示最近 10 条。",
-        "修复角色灵魂绑定人物列表混入无关信息的问题，现在只显示可绑定的角色人物。",
+        "优化本地 LLM 模型处理与启动稳定性，提升日常写作可用性。",
+        "继续打磨章节、记忆和审查之间的协同流程。",
       ],
     },
   },
@@ -769,14 +196,12 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-06-01",
     highlights: {
       en: [
-        "Fixed the bug where AI generation could still pull stale memory after outline, graph, or snapshot updates.",
-        "Snapshot sync now records revision metadata, archives superseded memory, and keeps current memory projections separate from history.",
-        "Rollback now rebuilds the active entity, structured memory, cognition, character-state, and foreshadowing layers so restored memory becomes the default source again.",
+        "Fixed stale-memory usage after outline, graph, or snapshot updates.",
+        "Snapshot sync now records revision metadata and separates current memory from history.",
       ],
       zh: [
-        "修复大纲、图谱或快照更新后，AI 生成内容仍可能读取旧记忆数据的问题。",
-        "同步记忆时新增快照版本元数据，并将历史归档与当前有效记忆投影分开管理。",
-        "回滚历史快照时会同步重建当前实体页、结构化记忆、角色认知、人物状态与伏笔追踪，使恢复后的记忆重新成为默认读取来源。",
+        "修复大纲、图谱或快照更新后仍可能误用旧记忆的问题。",
+        "快照同步开始记录修订元数据，并更清楚地区分当前记忆与历史。",
       ],
     },
   },
@@ -785,102 +210,12 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-06-01",
     highlights: {
       en: [
-        "AI chat removed the old 'save as final chapter' and 'discard draft' buttons, while keeping 'save to chapter library' as the draft-saving path.",
-        "AI outline generation added copy and regenerate actions, and now shows the referenced source materials more clearly.",
+        "AI Chat removed the old final-save/discard draft buttons and kept saving to the chapter library as the draft path.",
+        "AI Outline generation added copy and regenerate actions with clearer source references.",
       ],
       zh: [
-        "AI 会话删除“保存为正式章节”和“废弃草稿”按钮，保留“保存到章节库”作为草稿保存入口。",
-        "AI 大纲生成新增复制、重新生成按钮，并补充引用资料展示。",
-      ],
-    },
-  },
-  {
-    version: "0.4.19",
-    date: "2026-05-31",
-    highlights: {
-      en: [
-        "During AI generation you can scroll upward to inspect already generated content instead of being forced to stay at the bottom.",
-        "Saving to the chapter library now creates a draft chapter and no longer triggers review or memory extraction immediately.",
-        "The outline area added an AI outline button so you can chat against outlines and chapter content, then save the result as a new outline file.",
-      ],
-      zh: [
-        "AI 生成时允许向上滚动查看已生成内容，不再强制锁定到底部。",
-        "保存到章节库改为创建草稿章节，不再立即触发审查和记忆提取。",
-        "大纲区新增 AI 大纲按钮，可基于大纲与章节内容对话，并将结果保存为新的大纲文档。",
-      ],
-    },
-  },
-  {
-    version: "0.4.16",
-    date: "2026-05-31",
-    highlights: {
-      en: [
-        "Fixed character snapshot titles showing malformed chapter numbers like '-312'; they now display the correct outline name.",
-        "Fixed the 'open outline' button so it returns you to the correct outline page.",
-        "Renamed 'switch project' to 'switch novel', and added updater download progress plus an 'install now' action.",
-      ],
-      zh: [
-        "修复人物小传快照标题显示异常章节号的问题，现在会正确显示对应大纲名称。",
-        "修复“打开大纲”按钮点击后无法跳回大纲页面的问题。",
-        "“切换项目”改为“切换小说”，并为更新功能补充下载进度和“立即安装”按钮。",
-      ],
-    },
-  },
-  {
-    version: "0.4.15",
-    date: "2026-05-31",
-    highlights: {
-      en: [
-        "The status indicator in the lower-left corner now reflects model connectivity directly.",
-        "Removed the web clipper port setting from network settings.",
-        "Fixed a model connectivity URL construction bug that could leave the indicator stuck red.",
-      ],
-      zh: [
-        "左下角状态指示器改为直接显示模型连接状态。",
-        "移除网络设置中的网页剪藏端口配置。",
-        "修复模型连接检测 URL 构建错误导致状态长期显示异常的问题。",
-      ],
-    },
-  },
-  {
-    version: "0.4.13",
-    date: "2026-05-31",
-    highlights: {
-      en: [
-        "The outline module added a snapshot viewer so extracted initial memory can be opened and reviewed directly.",
-        "Fixed the 'extract initial memory' button state so it stays accurate after switching away and returning.",
-        "Settings changelog added complete version history and a check-for-updates entry point.",
-      ],
-      zh: [
-        "大纲模块新增“查看快照”，提取初始记忆后可以直接打开并查看快照内容。",
-        "修复“提取初始记忆”按钮状态无法保持的问题，切换页面后返回仍能显示正确状态。",
-        "设置页更新日志新增完整版本历史和“检查更新”入口。",
-      ],
-    },
-  },
-  {
-    version: "0.4.12",
-    date: "2026-05-31",
-    highlights: {
-      en: [
-        "Fixed the outline initial-memory entry in the memory center so it no longer shows a broken chapter label.",
-        "Fixed character biography extraction so the corresponding memory-center card is no longer overwritten by a generic outline title.",
-      ],
-      zh: [
-        "修复大纲提取初始记忆后在记忆中心显示异常章节标签的问题，现在会正确显示大纲名称。",
-        "修复人物小传提取初始记忆后在记忆中心展示不正确的问题，不再被通用大纲标题覆盖。",
-      ],
-    },
-  },
-  {
-    version: "0.4.11",
-    date: "2026-05-31",
-    highlights: {
-      en: [
-        "Added user statistics based on a Cloudflare Workers plus D1 deployment.",
-      ],
-      zh: [
-        "新增用户统计能力，采用 Cloudflare Workers + D1 方案。",
+        "AI 会话移除旧的最终保存与丢弃草稿按钮，保留保存到章节库作为草稿路径。",
+        "AI 大纲生成新增复制与重新生成动作，并更清楚地显示引用来源。",
       ],
     },
   },
@@ -893,19 +228,21 @@ export const CHANGELOG: ChangelogEntry[] = [
         "Strengthened long-form writing support such as context continuity, chapter memory, and review checks to reduce forgotten details and setting conflicts.",
       ],
       zh: [
-        "将产品定位更新为小说写作助手，围绕章节、大纲、人物状态、伏笔、时间线和图谱能力展开。",
-        "强化写作上下文、章节记忆与审稿检查等长篇创作能力，减少遗忘和设定冲突。",
+        "将产品重新聚焦为小说写作助手，围绕章节、大纲、角色状态、伏笔、时间线和图谱展开。",
+        "加强长篇写作支持，提升上下文连续性、章节记忆和审查能力，减少遗忘与设定冲突。",
       ],
     },
   },
 ]
 
 export function currentVersionChangelog(version: string): ChangelogEntry[] {
+  if (version === TWO_POINT_TWO_NINE_CHANGELOG.version) return [TWO_POINT_TWO_NINE_CHANGELOG]
   if (version === TWO_POINT_TWO_EIGHT_CHANGELOG.version) return [TWO_POINT_TWO_EIGHT_CHANGELOG]
   if (version === TWO_POINT_TWO_SEVEN_CHANGELOG.version) return [TWO_POINT_TWO_SEVEN_CHANGELOG]
   if (version === TWO_POINT_TWO_ZERO_CHANGELOG.version) return [TWO_POINT_TWO_ZERO_CHANGELOG]
   if (version === TWO_POINT_ONE_ZERO_CHANGELOG.version) return [TWO_POINT_ONE_ZERO_CHANGELOG]
   if (version === TWO_POINT_ZERO_CHANGELOG.version) return [TWO_POINT_ZERO_CHANGELOG]
+  if (/^2\.2\.(?:[1-6]|10|11|12|13)$/.test(version)) return []
   if (/^2\.1\.(?:[1-9]|10)$/.test(version)) return []
   if (/^2\.0\.(?:[1-9]|1[0-2])$/.test(version)) return []
   if (isMergedOnePointRelease(version)) return []
@@ -914,6 +251,7 @@ export function currentVersionChangelog(version: string): ChangelogEntry[] {
 
 export function allChangelog(): ChangelogEntry[] {
   return [
+    TWO_POINT_TWO_NINE_CHANGELOG,
     TWO_POINT_TWO_EIGHT_CHANGELOG,
     TWO_POINT_TWO_SEVEN_CHANGELOG,
     TWO_POINT_TWO_ZERO_CHANGELOG,

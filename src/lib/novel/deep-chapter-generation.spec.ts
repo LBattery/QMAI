@@ -151,6 +151,64 @@ describe("runDeepChapterGeneration", () => {
     expect(thinking.join("\n")).toContain("未发现阻断问题")
   })
 
+  it("shows a visible golden-three hint in thinking when generating the first chapter", async () => {
+    const deps = createDeps()
+    const thinking: string[] = []
+
+    await runDeepChapterGeneration(
+      {
+        projectPath: "E:/Novel",
+        userRequest: "给我生成第1章内容",
+        chapterNumber: 1,
+        llmConfig,
+        goldenThreeChapter: {
+          enabled: true,
+          targetChapter: 1,
+          outputMode: "first_chapter_with_directions",
+          requestedFirstThree: false,
+        },
+      },
+      { onThinking: (content) => thinking.push(content) },
+      deps,
+    )
+
+    expect(thinking.join("\n")).toContain("黄金三章：已启用")
+    expect(thinking.join("\n")).toContain("当前按黄金三章规则生成第1章正文")
+  })
+
+  it("uses safe defaults when a context pack is missing optional array fields", async () => {
+    const deps = createDeps()
+    vi.mocked(deps.buildContextPack).mockResolvedValueOnce({
+      ...contextPack,
+      recentSummaries: undefined as unknown as string[],
+      chapterGoal: undefined as unknown as string,
+      characterStates: undefined as unknown as string,
+    })
+    const thinking: string[] = []
+
+    await expect(runDeepChapterGeneration(
+      { projectPath: "E:/Novel", userRequest: "生成第3章", chapterNumber: 3, llmConfig },
+      { onThinking: (content) => thinking.push(content) },
+      deps,
+    )).resolves.toMatchObject({ finalContent: expect.any(String) })
+
+    expect(thinking.join("\n")).toContain("近期剧情")
+  })
+
+  it("falls back to an empty context pack when context building throws", async () => {
+    const deps = createDeps()
+    vi.mocked(deps.buildContextPack).mockRejectedValueOnce(new Error("context failed"))
+    const thinking: string[] = []
+
+    await expect(runDeepChapterGeneration(
+      { projectPath: "E:/Novel", userRequest: "???3?", chapterNumber: 3, llmConfig },
+      { onThinking: (content) => thinking.push(content) },
+      deps,
+    )).resolves.toMatchObject({ finalContent: expect.any(String) })
+
+    expect(thinking.length).toBeGreaterThan(0)
+  })
+
   it("revises once when review returns blocking errors", async () => {
     const deps = createDeps([
       {
@@ -551,5 +609,24 @@ describe("runDeepChapterGeneration", () => {
     )).rejects.toThrow("已停止生成")
 
     expect(deps.reviewChapter).not.toHaveBeenCalled()
+  })
+  it("forwards the stop signal into the review stage", async () => {
+    const deps = createDeps()
+    const controller = new AbortController()
+
+    await runDeepChapterGeneration(
+      { projectPath: "E:/Novel", userRequest: "生成第3章", chapterNumber: 3, llmConfig },
+      {},
+      deps,
+      controller.signal,
+    )
+
+    expect(deps.reviewChapter).toHaveBeenCalledWith(
+      "E:/Novel",
+      expect.any(String),
+      3,
+      undefined,
+      controller.signal,
+    )
   })
 })

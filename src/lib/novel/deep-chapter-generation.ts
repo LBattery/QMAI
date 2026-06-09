@@ -159,7 +159,12 @@ export async function runDeepChapterGeneration(
   assertNotAborted(signal)
   const resumeCheckpoint = input.resumeCheckpoint
   const writingConfig = resolveWritingConfig(input.llmConfig)
-  const contextPack = await deps.buildContextPack(input.projectPath, input.userRequest, input.chapterNumber)
+  const contextPack = await safeBuildChapterContextPack(
+    deps,
+    input.projectPath,
+    input.userRequest,
+    input.chapterNumber,
+  )
   assertNotAborted(signal)
   const contextPrompt = [
     deps.contextPackToPrompt(contextPack),
@@ -260,7 +265,9 @@ export async function runDeepChapterGeneration(
       "阶段4：AI审稿",
       "正在检查正文完整性、剧情连续性、是否被截断以及是否存在阻断问题。",
     ))
-    reviewResults = await deps.reviewChapter(input.projectPath, draftContent, input.chapterNumber)
+    reviewResults = signal
+      ? await deps.reviewChapter(input.projectPath, draftContent, input.chapterNumber, undefined, signal)
+      : await deps.reviewChapter(input.projectPath, draftContent, input.chapterNumber)
     assertNotAborted(signal)
     callbacks.onThinking?.(formatReviewThinking(reviewResults))
     callbacks.onCheckpoint?.(createResumeCheckpoint(input, "after_review", { taskBrief, draftContent, reviewResults }))
@@ -795,13 +802,16 @@ function trimToChapterCharLimit(content: string, maxChars: number): string {
 }
 
 function formatContextThinking(input: DeepChapterGenerationInput, pack: ContextPack): string {
+  const recentSummaries = Array.isArray(pack.recentSummaries) ? pack.recentSummaries : []
+  const goldenThreeHints = resolveGoldenThreeThinkingHints(input.goldenThreeChapter)
   return formatStageThinking(
     "阶段1：上下文分析",
     [
+      ...goldenThreeHints,
       input.chapterNumber ? `目标章节：第${input.chapterNumber}章` : "目标章节：从用户请求中识别",
       `章节目标：${fallback(pack.chapterGoal, "未读取到明确章节目标")}`,
       `上一章结尾：${fallback(pack.previousChapterEnding, "未读取到上一章结尾")}`,
-      `近期剧情：${pack.recentSummaries.length} 条`,
+      `近期剧情：${recentSummaries.length} 条`,
       `人物状态：${summaryText(pack.characterStates)}`,
       `伏笔状态：${summaryText(pack.foreshadowingStates)}`,
       `时间线：${summaryText(pack.timeline)}`,
@@ -840,13 +850,13 @@ function formatReviewIssueList(reviewResults: NovelReviewResult[]): string {
     .join("\n")
 }
 
-function fallback(value: string, fallbackText: string): string {
-  const trimmed = value.trim()
+function fallback(value: string | null | undefined, fallbackText: string): string {
+  const trimmed = typeof value === "string" ? value.trim() : ""
   return trimmed ? trimForThinking(trimmed, 180) : fallbackText
 }
 
-function summaryText(value: string): string {
-  const trimmed = value.trim()
+function summaryText(value: string | null | undefined): string {
+  const trimmed = typeof value === "string" ? value.trim() : ""
   return trimmed ? trimForThinking(trimmed, 140) : "暂无"
 }
 
@@ -860,4 +870,53 @@ function severityLabel(severity: NovelReviewResult["severity"]): string {
   if (severity === "error") return "严重"
   if (severity === "warning") return "提醒"
   return "信息"
+}
+
+function resolveGoldenThreeThinkingHints(goldenThreeChapter?: GoldenThreeChapterRequest): string[] {
+  if (!goldenThreeChapter?.enabled || !goldenThreeChapter.targetChapter) return []
+  if (goldenThreeChapter.outputMode === "first_chapter_with_directions") {
+    return [
+      "黄金三章：已启用",
+      "执行策略：当前按黄金三章规则生成第1章正文，并在正文后给出第2章、第3章写作方向。",
+    ]
+  }
+  return [
+    "黄金三章：已启用",
+    `执行策略：当前按黄金三章规则生成第${goldenThreeChapter.targetChapter}章正文。`,
+  ]
+}
+
+
+async function safeBuildChapterContextPack(
+  deps: DeepChapterGenerationDeps,
+  projectPath: string,
+  userRequest: string,
+  chapterNumber?: number,
+): Promise<ContextPack> {
+  try {
+    return await deps.buildContextPack(projectPath, userRequest, chapterNumber)
+  } catch {
+    return {
+      task: userRequest,
+      chapterGoal: "",
+      outline: "",
+      recentSummaries: [],
+      previousChapterEnding: "",
+      characterStates: "",
+      soulDoc: "",
+      characterAuras: "",
+      cognitionStates: "",
+      foreshadowingStates: "",
+      timeline: "",
+      relatedSettings: "",
+      canonRules: "",
+      writingStyle: "",
+      searchResults: "",
+      graphSearchResults: "",
+      mustDo: "",
+      mustAvoid: "",
+      nextChapterAdvice: "",
+      revisionDirectives: "",
+    }
+  }
 }

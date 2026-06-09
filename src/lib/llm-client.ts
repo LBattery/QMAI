@@ -1,4 +1,5 @@
 import type { LlmConfig } from "@/stores/wiki-store"
+import { isAzureOpenAiEndpoint } from "@/lib/azure-openai"
 import { getProviderConfig, type RequestOverrides } from "./llm-providers"
 import { getHttpFetch, isFetchNetworkError } from "./tauri-fetch"
 import { countReasoningCharsInLine, extractReasoningTextFromLine } from "./reasoning-detector"
@@ -192,6 +193,18 @@ export async function streamChat(
       if (body) errorDetail += ` — ${body}`
     } catch {
       // ignore body read failure
+    }
+    if (
+      response.status === 404 &&
+      (config.provider === "azure" ||
+        (config.provider === "custom" && isAzureOpenAiEndpoint(config.customEndpoint)))
+    ) {
+      onError(
+        new Error(
+          `${errorDetail}。Azure OpenAI 返回 404 通常表示部署名称不正确。请确认模型栏填写的是 Azure deployment name，而不是模型 SKU；接口地址填写 https://<resource>.openai.azure.com 或包含 /openai/deployments/<deployment-name> 的地址。`,
+        ),
+      )
+      return
     }
     if (shouldRetryWithBrowserFetch(errorDetail) && typeof globalThis.fetch === "function") {
       try {

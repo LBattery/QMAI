@@ -41,21 +41,24 @@ export async function runDeepOutlineGeneration(
   deps: DeepOutlineGenerationDeps = defaultDeps,
   signal?: AbortSignal,
 ): Promise<DeepOutlineGenerationResult> {
+  const safeContext = ensureString(input.context)
+  const safeUserRequest = ensureString(input.userRequest)
   const history = formatRecentHistory(input.historyMessages ?? [])
+
   callbacks.onThinking?.(formatStageThinking(
     "阶段1：大纲上下文分析",
     [
-      `用户要求：${input.userRequest}`,
-      input.context.trim()
-        ? `已读取大纲/章节上下文，约 ${input.context.length} 字。`
-        : "未读取到现有大纲或章节上下文，将只基于本次要求生成。",
+      `用户要求：${safeUserRequest || "未提供用户要求"}`,
+      safeContext.trim()
+        ? `已读取大纲/章节上下文，约 ${safeContext.length} 字。`
+        : "未读取到现有大纲或章节上下文，将仅基于本次要求生成。",
       history ? "已纳入本轮大纲对话历史。" : "暂无可用的大纲对话历史。",
     ].join("\n"),
   ))
 
   const taskBrief = await collectModelText(
     input.llmConfig,
-    [{ role: "user", content: buildOutlineTaskBriefPrompt(input.context, history, input.userRequest) }],
+    [{ role: "user", content: buildOutlineTaskBriefPrompt(safeContext, history, safeUserRequest) }],
     deps,
     signal,
     (partial) => callbacks.onThinking?.(formatStageThinking("阶段2：大纲任务书", partial)),
@@ -64,7 +67,7 @@ export async function runDeepOutlineGeneration(
 
   const draftContent = await collectModelText(
     input.llmConfig,
-    [{ role: "user", content: buildOutlineDraftPrompt(input.context, history, taskBrief, input.userRequest) }],
+    [{ role: "user", content: buildOutlineDraftPrompt(safeContext, history, taskBrief, safeUserRequest) }],
     deps,
     signal,
     (partial) => callbacks.onThinking?.(formatStageThinking("阶段3：大纲草稿", partial)),
@@ -77,7 +80,7 @@ export async function runDeepOutlineGeneration(
 
   const selfCheck = await collectModelText(
     input.llmConfig,
-    [{ role: "user", content: buildOutlineSelfCheckPrompt(input.context, history, taskBrief, draftContent, input.userRequest) }],
+    [{ role: "user", content: buildOutlineSelfCheckPrompt(safeContext, history, taskBrief, draftContent, safeUserRequest) }],
     deps,
     signal,
     (partial) => callbacks.onThinking?.(formatStageThinking("阶段4：大纲自检", partial)),
@@ -198,10 +201,14 @@ function formatRecentHistory(messages: ChatMessage[]): string {
   return messages
     .filter((message) => message.role === "user" || message.role === "assistant")
     .slice(-6)
-    .map((message) => `${message.role === "user" ? "用户" : "AI"}：${String(message.content).slice(0, 1200)}`)
+    .map((message) => `${message.role === "user" ? "用户" : "AI"}：${ensureString(message.content).slice(0, 1200)}`)
     .join("\n\n")
 }
 
 function formatStageThinking(title: string, content: string): string {
-  return `## ${title}\n${content.trim()}`
+  return `## ${title}\n${ensureString(content).trim()}`
+}
+
+function ensureString(value: unknown): string {
+  return typeof value === "string" ? value : ""
 }

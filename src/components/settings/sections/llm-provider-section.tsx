@@ -1,21 +1,17 @@
 import { useEffect, useMemo, useState } from "react"
 import { ChevronDown, ChevronRight, AlertCircle, CheckCircle2, Loader2, XCircle } from "lucide-react"
 import { useTranslation } from "react-i18next"
-import { Button } from "@/components/ui/button"
+import { invoke } from "@tauri-apps/api/core"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useWikiStore, type ProviderOverride, type ReasoningConfig, type ReasoningMode } from "@/stores/wiki-store"
-import { fetchLlmModelList } from "@/lib/settings-model-list"
 import { LLM_PRESETS, type LlmPreset } from "../llm-presets"
 import { ContextSizeSelector } from "../context-size-selector"
-import { ModelSelectInput } from "../model-select-input"
-import { ResourceLink } from "../resource-link"
 import { resolveConfig } from "../preset-resolver"
-import { isTauri } from "@/lib/platform"
 import { normalizeEndpoint } from "@/lib/endpoint-normalizer"
-import { testSettingsLlmModel } from "@/lib/settings-model-test"
-
-const BAILIAN_FREE_MODEL_URL = "https://bailian.console.aliyun.com/"
+import { isTauri } from "@/lib/platform"
+import { AZURE_OPENAI_API_VERSION } from "@/lib/azure-openai"
+import { testLlmConnection, testLlmFunction, type ProviderTestResult } from "@/lib/connection-tests"
 
 export function LlmProviderSection() {
   const { t } = useTranslation()
@@ -66,11 +62,6 @@ export function LlmProviderSection() {
   function toggleActive(id: string) {
     const next = id === activePresetId ? null : id
     setActivePresetId(next)
-    if (next === id) {
-      setExpanded((prev) => ({ ...prev, [id]: true }))
-    } else {
-      setExpanded((prev) => ({ ...prev, [id]: false }))
-    }
     persist(providerConfigs, next).catch(() => {})
   }
 
@@ -78,6 +69,9 @@ export function LlmProviderSection() {
     <div className="space-y-4">
       <div>
         <h2 className="text-xl font-semibold">{t("settings.sections.llm.title")}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {t("settings.sections.llm.description")}
+        </p>
       </div>
 
       <div className="space-y-2">
@@ -110,6 +104,11 @@ interface PresetRowProps {
   onChange: (patch: ProviderOverride) => void
 }
 
+type ProviderTestState =
+  | { kind: "idle" }
+  | { kind: "running"; label: string }
+  | { kind: "done"; result: ProviderTestResult }
+
 function PresetRow({
   preset,
   override,
@@ -121,15 +120,20 @@ function PresetRow({
   onChange,
 }: PresetRowProps) {
   const { t } = useTranslation()
-  const llmConfig = useWikiStore((s) => s.llmConfig)
   const ov = override ?? {}
   const model = ov.model ?? preset.defaultModel ?? ""
   const apiKey = ov.apiKey ?? ""
   const apiMode = ov.apiMode ?? preset.apiMode ?? "chat_completions"
   const baseUrl = ov.baseUrl ?? preset.baseUrl ?? ""
+  const azureApiVersion = ov.azureApiVersion ?? preset.azureApiVersion ?? AZURE_OPENAI_API_VERSION
+  const azureModelFamily = ov.azureModelFamily ?? preset.azureModelFamily ?? "auto"
   const context = ov.maxContextSize ?? preset.suggestedContextSize ?? 131072
   const reasoning = ov.reasoning ?? { mode: "auto" as const }
-  const hasConfig = !!apiKey || !!ov.baseUrl || !!ov.model
+  const localCliIsolation = ov.localCliIsolation === true
+  const codexCliTimeoutMinutes = Math.max(1, Math.min(240, ov.codexCliTimeoutMinutes ?? 10))
+  const isLocalCliProvider = preset.provider === "claude-code" || preset.provider === "codex-cli"
+  const [testState, setTestState] = useState<ProviderTestState>({ kind: "idle" })
+  const hasConfig = !!apiKey || !!ov.baseUrl || !!ov.model || !!ov.azureApiVersion || !!ov.azureModelFamily
   // Local CLI providers authenticate via their own existing login state
   // (inherited by the spawned subprocess), so no API key field is shown.
   // Ollama ditto for its local-only model.
@@ -137,79 +141,23 @@ function PresetRow({
     preset.provider !== "ollama" &&
     preset.provider !== "claude-code" &&
     preset.provider !== "codex-cli"
-  const [testState, setTestState] = useState<{
-    loading: boolean
-    success: boolean
-    message: string
-  } | null>(null)
-  const [modelOptions, setModelOptions] = useState<string[]>([])
-  const [modelListState, setModelListState] = useState<{
-    loading: boolean
-    success: boolean
-    message: string
-  } | null>(null)
 
-  useEffect(() => {
-    setModelOptions([])
-    setModelListState(null)
-  }, [preset.provider, baseUrl, apiKey, apiMode])
+  const resolvedConfig = useMemo(
+    () => resolveConfig(preset, ov, useWikiStore.getState().llmConfig),
+    [apiKey, apiMode, azureApiVersion, azureModelFamily, baseUrl, context, model, preset, reasoning, ov],
+  )
 
-  async function handleTest() {
-    const config = resolveConfig(preset, override, llmConfig)
-    const hasModel = config.model.trim().length > 0
-
-    if (hasModel) {
-      setTestState({
-        loading: true,
-        success: false,
-        message: t("settings.sections.shared.testing"),
-      })
-
-      try {
-        const result = await testSettingsLlmModel(config)
-        setTestState({
-          loading: false,
-          success: true,
-          message: t("settings.sections.shared.testSuccessWithModel", { model: result.model }),
-        })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        setTestState({
-          loading: false,
-          success: false,
-          message: t("settings.sections.shared.testFailed", {
-            message,
-          }),
-        })
-        return
-      }
-    } else {
-      setTestState(null)
-    }
-
-    setModelListState({
-      loading: true,
-      success: false,
-      message: t("settings.sections.shared.loadingModels"),
+  async function runProviderTest(kind: "connection" | "function") {
+    setTestState({
+      kind: "running",
+      label: kind === "connection"
+        ? t("settings.sections.llm.testingConnection")
+        : t("settings.sections.llm.testingFunction"),
     })
-
-    try {
-      const modelList = await fetchLlmModelList(config)
-      setModelOptions(modelList.models)
-      setModelListState({
-        loading: false,
-        success: true,
-        message: t("settings.sections.shared.modelListSuccess", { count: modelList.models.length }),
-      })
-    } catch (error) {
-      setModelListState({
-        loading: false,
-        success: false,
-        message: t("settings.sections.shared.modelListFailed", {
-          message: error instanceof Error ? error.message : String(error),
-        }),
-      })
-    }
+    const result = kind === "connection"
+      ? await testLlmConnection(resolvedConfig)
+      : await testLlmFunction(resolvedConfig)
+    setTestState({ kind: "done", result })
   }
 
   return (
@@ -311,9 +259,6 @@ function PresetRow({
                         if (nextBaseUrl) patch.baseUrl = nextBaseUrl
                         onChange(patch)
                       }}
-                      title={m.value === "responses"
-                        ? "Responses API：用于 OpenAI 新接口。接口地址填写 /v1 基础地址，程序会自动请求 /responses；模型填写支持 Responses 的模型 ID。"
-                        : undefined}
                       className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
                         active
                           ? "border-primary bg-primary text-primary-foreground"
@@ -325,25 +270,120 @@ function PresetRow({
                   )
                 })}
               </div>
-              {apiMode === "responses" ? (
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  Responses API 使用方法：接口地址填写例如 https://api.openai.com/v1 或兼容服务的 /v1 基础地址，模型填写支持 Responses 的模型 ID。程序会自动发送到 /responses，并读取流式返回。
-                </p>
-              ) : null}
             </div>
           )}
 
-          {(preset.provider === "custom" || preset.provider === "ollama") && (
+          {(preset.provider === "custom" || preset.provider === "ollama" || preset.provider === "azure") && (
             <EndpointField
               value={baseUrl}
-              mode={apiMode}
+              mode={preset.provider === "azure" ? "azure" : apiMode}
               placeholder={preset.baseUrl ?? "https://your-api.example.com/v1"}
               onChange={(v) => onChange({ baseUrl: v })}
             />
           )}
 
+          {preset.provider === "azure" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>{t("settings.sections.llm.azureApiVersion")}</Label>
+                <Input
+                  value={azureApiVersion}
+                  onChange={(e) => onChange({ azureApiVersion: e.target.value })}
+                  placeholder="2024-10-21"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.sections.llm.azureApiVersionHint")}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>{t("settings.sections.llm.azureModelFamily")}</Label>
+                <select
+                  className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  value={azureModelFamily}
+                  onChange={(e) => onChange({ azureModelFamily: e.target.value as typeof azureModelFamily })}
+                >
+                  <option value="auto">{t("settings.sections.llm.azureModelFamilyAuto")}</option>
+                  <option value="gpt5">{t("settings.sections.llm.azureModelFamilyGpt5")}</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.sections.llm.azureModelFamilyHint")}
+                </p>
+              </div>
+            </div>
+          )}
+
           {preset.provider === "claude-code" && <ClaudeCliStatusPill />}
           {preset.provider === "codex-cli" && <CodexCliStatusPill />}
+
+          {isLocalCliProvider && (
+            <div className="space-y-2 rounded-md border p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">
+                    {t("settings.sections.llm.localCliIsolation")}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("settings.sections.llm.localCliIsolationHint")}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onChange({ localCliIsolation: !localCliIsolation })}
+                  className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors ${
+                    localCliIsolation
+                      ? "border-primary bg-primary"
+                      : "border-muted-foreground/30 bg-muted-foreground/20 hover:bg-muted-foreground/30"
+                  }`}
+                  title={
+                    localCliIsolation
+                      ? t("settings.sections.llm.localCliIsolationOn")
+                      : t("settings.sections.llm.localCliIsolationOff")
+                  }
+                  aria-label={t("settings.sections.llm.localCliIsolation")}
+                >
+                  <span
+                    className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm ring-1 ring-black/10 transition-transform ${
+                      localCliIsolation ? "translate-x-4" : "translate-x-0.5"
+                    }`}
+                  />
+                </button>
+              </div>
+              <div className="rounded-md bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
+                {localCliIsolation
+                  ? t("settings.sections.llm.localCliIsolationOn")
+                  : t("settings.sections.llm.localCliIsolationOff")}
+              </div>
+            </div>
+          )}
+
+          {preset.provider === "codex-cli" && (
+            <div className="space-y-2 rounded-md border p-3">
+              <Label>{t("settings.sections.llm.codexCliTimeout")}</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min={1}
+                  max={240}
+                  className="w-28"
+                  value={codexCliTimeoutMinutes}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    onChange({
+                      codexCliTimeoutMinutes: Number.isFinite(n)
+                        ? Math.max(1, Math.min(240, Math.floor(n)))
+                        : undefined,
+                    })
+                  }}
+                />
+                <span className="text-xs text-muted-foreground">
+                  {t("settings.sections.llm.codexCliTimeoutUnit")}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.sections.llm.codexCliTimeoutHint")}
+              </p>
+            </div>
+          )}
 
           {needsApiKey && (
             <div className="space-y-2">
@@ -362,36 +402,15 @@ function PresetRow({
           )}
 
           <div className="space-y-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={testState?.loading || modelListState?.loading}
-              onClick={() => void handleTest()}
-            >
-              {testState?.loading || modelListState?.loading
-                ? t("settings.sections.shared.testing")
-                : t("settings.sections.shared.testModel")}
-            </Button>
-            {testState?.message ? (
-              <p className={`text-xs ${testState.success ? "text-emerald-600" : "text-destructive"}`}>
-                {testState.message}
-              </p>
-            ) : null}
-            {modelListState?.message ? (
-              <p className={`text-xs ${modelListState.success ? "text-emerald-600" : "text-destructive"}`}>
-                {modelListState.message}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="space-y-2">
-            <Label>{t("settings.sections.llm.model")}</Label>
-            <ModelSelectInput
+            <Label>
+              {preset.provider === "azure"
+                ? t("settings.sections.llm.deploymentName", "Deployment name")
+                : t("settings.sections.llm.model")}
+            </Label>
+            <ModelPicker
               value={model}
-              options={[...(preset.suggestedModels ?? []), ...modelOptions]}
-              selectPlaceholder={t("settings.sections.shared.modelSelectPlaceholder")}
-              inputPlaceholder={t("settings.sections.shared.modelManualPlaceholder")}
+              suggestions={preset.suggestedModels ?? []}
+              placeholder={preset.defaultModel ?? "e.g. gpt-4o"}
               onChange={(v) => onChange({ model: v })}
             />
           </div>
@@ -408,6 +427,49 @@ function PresetRow({
             value={reasoning}
             onChange={(reasoning) => onChange({ reasoning })}
           />
+
+          <div className="space-y-2 rounded-md border p-3">
+            <div>
+              <div className="text-sm font-medium">
+                {t("settings.sections.llm.providerTests")}
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t("settings.sections.llm.providerTestsHint")}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void runProviderTest("connection")}
+                disabled={testState.kind === "running"}
+                className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t("settings.sections.llm.testConnection")}
+              </button>
+              <button
+                type="button"
+                onClick={() => void runProviderTest("function")}
+                disabled={testState.kind === "running"}
+                className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t("settings.sections.llm.testFunction")}
+              </button>
+            </div>
+            {testState.kind === "running" && (
+              <p className="text-xs text-muted-foreground">{testState.label}</p>
+            )}
+            {testState.kind === "done" && (
+              <div
+                className={`rounded-md border px-3 py-2 text-xs ${
+                  testState.result.ok
+                    ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
+                    : "border-destructive/40 bg-destructive/5 text-destructive"
+                }`}
+              >
+                {testState.result.message}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -485,7 +547,7 @@ function ReasoningControls({
 
 interface EndpointFieldProps {
   value: string
-  mode: "chat_completions" | "responses" | "anthropic_messages"
+  mode: "chat_completions" | "responses" | "anthropic_messages" | "azure"
   placeholder: string
   onChange: (value: string) => void
 }
@@ -510,15 +572,7 @@ function EndpointField({ value, mode, placeholder, onChange }: EndpointFieldProp
 
   return (
     <div className="space-y-1.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <Label>{t("settings.sections.llm.endpoint")}</Label>
-        <ResourceLink
-          href={BAILIAN_FREE_MODEL_URL}
-          title="阿里百炼提供通义系列模型和免费额度，适合作为自定义 OpenAI 兼容接口。"
-        >
-          阿里百炼免费模型
-        </ResourceLink>
-      </div>
+      <Label>{t("settings.sections.llm.endpoint")}</Label>
       <Input
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -543,7 +597,7 @@ function EndpointField({ value, mode, placeholder, onChange }: EndpointFieldProp
               <div>
                 {t("settings.sections.llm.endpointPreviewWillUse")}{" "}
                 <code className="break-all rounded bg-background/60 px-1 py-0.5 font-mono">
-                  {preview.normalized || t("settings.sections.llm.emptyValue")}
+                  {preview.normalized || "(empty)"}
                 </code>
                 <span className="ml-1 text-muted-foreground">
                   {t("settings.sections.llm.endpointPreviewAutoApply")}
@@ -554,6 +608,75 @@ function EndpointField({ value, mode, placeholder, onChange }: EndpointFieldProp
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+interface ModelPickerProps {
+  value: string
+  suggestions: string[]
+  placeholder: string
+  onChange: (value: string) => void
+}
+
+/**
+ * Model input with a chip-based suggestion row above it. The input stays
+ * free-text so users can always type unlisted models (fine-tunes, preview
+ * IDs, local Ollama tags, etc.). Clicking a chip just fills the input.
+ *
+ * The currently-selected chip (if the value matches one of the suggestions)
+ * gets the accent highlight so users can see at a glance which preset
+ * model is active without reading the text field. Presets with no
+ * `suggestedModels` render the input alone.
+ */
+function ModelPicker({ value, suggestions, placeholder, onChange }: ModelPickerProps) {
+  const { t } = useTranslation()
+  const hasSuggestions = suggestions.length > 0
+  const isCustom = hasSuggestions && value.length > 0 && !suggestions.includes(value)
+
+  return (
+    <div className="space-y-2">
+      {hasSuggestions && (
+        <div className="flex flex-wrap gap-1.5">
+          {suggestions.map((m) => {
+            const active = m === value
+            return (
+              <button
+                key={m}
+                type="button"
+                onClick={() => onChange(m)}
+                className={`rounded-md border px-2 py-0.5 text-xs font-mono transition-colors ${
+                  active
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border bg-background hover:bg-accent hover:text-accent-foreground"
+                }`}
+                title={t("settings.sections.llm.useModel", { model: m })}
+              >
+                {m}
+              </button>
+            )
+          })}
+          <button
+            type="button"
+            onClick={() => onChange("")}
+            className={`rounded-md border px-2 py-0.5 text-xs transition-colors ${
+              isCustom
+                ? "border-primary/60 bg-primary/10 text-primary"
+                : "border-dashed border-muted-foreground/40 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            }`}
+            title={t("settings.sections.llm.typeCustomModel")}
+          >
+            {isCustom
+              ? t("settings.sections.llm.customModelBadge", { model: value })
+              : t("settings.sections.llm.customModel")}
+          </button>
+        </div>
+      )}
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+      />
     </div>
   )
 }
@@ -585,7 +708,6 @@ function ClaudeCliStatusPill() {
       return
     }
     try {
-      const { invoke } = await import("@tauri-apps/api/core")
       const r = await invoke<DetectResult>("claude_cli_detect")
       setResult(r)
       setState(r.installed ? "ok" : "err")
@@ -690,7 +812,6 @@ function CodexCliStatusPill() {
       return
     }
     try {
-      const { invoke } = await import("@tauri-apps/api/core")
       const r = await invoke<DetectResult>("codex_cli_detect")
       setResult(r)
       setState(r.installed ? "ok" : "err")

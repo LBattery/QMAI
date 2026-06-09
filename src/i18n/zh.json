@@ -347,8 +347,9 @@
     "language": "语言",
     "languageHint": "界面语言（Wiki 内容语言以原始资料为准）",
     "categories": {
-      "llm": "模型设置",
-      "embedding": "向量嵌入",
+      "llm": "大语言/LLM模型",
+      "rerank": "重排/Reranker模型",
+      "embedding": "向量检索/Embedding模型",
       "multimodal": "图片描述",
       "webSearch": "网页搜索",
       "network": "网络",
@@ -370,11 +371,11 @@
         "testing": "测试中...",
         "testFailed": "模型测试失败：{{message}}",
         "testSuccessWithModel": "模型测试成功：{{model}}",
-        "loadingModels": "\u62c9\u53d6\u6a21\u578b\u4e2d...",
-        "modelListSuccess": "\u5df2\u62c9\u53d6 {{count}} \u4e2a\u6a21\u578b\u3002",
-        "modelListFailed": "\u6a21\u578b\u5217\u8868\u62c9\u53d6\u5931\u8d25\uff1a{{message}}",
-        "modelSelectPlaceholder": "\u8bf7\u9009\u62e9\u5df2\u62c9\u53d6\u7684\u6a21\u578b",
-        "modelManualPlaceholder": "\u4e5f\u53ef\u624b\u52a8\u8f93\u5165\u6a21\u578b"
+        "loadingModels": "拉取模型中...",
+        "modelListSuccess": "已拉取 {{count}} 个模型。",
+        "modelListFailed": "模型列表拉取失败：{{message}}",
+        "modelSelectPlaceholder": "请选择已拉取的模型",
+        "modelManualPlaceholder": "也可手动输入模型"
       },
       "usageGuide": {
         "title": "软件使用说明",
@@ -403,53 +404,53 @@
         }
       },
       "llm": {
-        "title": "LLM 模型",
-        "description": "仅保留 Custom 模型。可配置 OpenAI 兼容或 Anthropic 兼容 endpoint，配置改动即时保存。",
+        "title": "大语言/LLM模型",
+        "description": "配置不同大语言模型服务商的 API Key、模型和连接方式。自定义模型保留在最上方，LLM Wiki 预设模型在下方可单独启用。",
         "expand": "展开配置",
-        "collapse": "收起",
-        "toggleOff": "点击关闭",
-        "toggleOn": "点击启用（会关闭其他 provider）",
+        "collapse": "收起配置",
+        "toggleOff": "关闭当前模型",
+        "toggleOn": "启用为当前模型",
         "deactivate": "停用",
         "activate": "启用",
         "apiMode": "API 模式",
-        "endpoint": "\u63a5\u53e3\u5730\u5740",
-        "apiKey": "API\u5bc6\u94a5",
-        "model": "\u6a21\u578b",
+        "endpoint": "接口地址",
+        "apiKey": "API 密钥",
+        "model": "模型",
         "contextWindow": "上下文窗口",
         "wireOpenAi": "OpenAI 兼容",
         "wireResponses": "Responses API",
         "wireAnthropic": "Anthropic 兼容",
-        "apiKeyPlaceholderCustom": "无 Key 可留空（本地模型）",
-        "apiKeyPlaceholder": "请输入 API Key",
+        "apiKeyPlaceholderCustom": "输入 Key，留空表示使用本地或免密服务",
+        "apiKeyPlaceholder": "输入 API Key",
         "savedBadge": "已保存",
         "configuredBadge": "已配置",
-        "activeBadge": "● 活跃",
+        "activeBadge": "当前使用",
         "useModel": "使用 {{model}}",
         "typeCustomModel": "输入自定义模型 ID",
-        "customModel": "自定义…",
+        "customModel": "自定义...",
         "customModelBadge": "自定义：{{model}}",
-        "emptyValue": "（空）",
+        "emptyValue": "未填写",
         "endpointPreviewWillUse": "将使用",
-        "endpointPreviewAutoApply": "（离开输入框时自动套用）",
+        "endpointPreviewAutoApply": "，失焦后自动应用",
         "cliStatus": {
           "title": "CLI 状态",
-          "checking": "检查中…",
+          "checking": "检查中...",
           "recheck": "重新检查",
-          "claudeDetecting": "正在检测本地 Claude 可执行文件…",
-          "codexDetecting": "正在检测本地 Codex 可执行文件…",
-          "claudeReady": "已检测到{{versionSuffix}}。可直接使用本地订阅，无需 API Key。",
-          "codexReady": "已检测到{{versionSuffix}}。可直接使用本地登录，无需 API Key。",
-          "authErrorPrefix": "如果对话时出现鉴权错误，请先在终端运行",
-          "claudeAuthErrorSuffix": "以刷新 OAuth 登录。",
-          "codexAuthErrorSuffix": "以刷新登录状态。",
+          "claudeDetecting": "正在检查 claude 命令...",
+          "codexDetecting": "正在检查 codex 命令...",
+          "claudeReady": "Claude CLI 可用{{versionSuffix}}，无需填写 API Key。",
+          "codexReady": "Codex CLI 可用{{versionSuffix}}，无需填写 API Key。",
+          "authErrorPrefix": "如果运行时报认证错误，请先在终端执行",
+          "claudeAuthErrorSuffix": "完成 Claude OAuth 登录。",
+          "codexAuthErrorSuffix": "完成 Codex 登录。",
           "claudeUnavailable": "未检测到 Claude CLI。",
           "codexUnavailable": "未检测到 Codex CLI。",
-          "desktopOnly": "仅桌面端可用",
-          "installPrefix": "可先执行",
+          "desktopOnly": "仅桌面应用可检测 CLI 状态。",
+          "installPrefix": "可执行",
           "installSuffix": "安装后再重新检查。"
         },
         "reasoning": {
-          "title": "Reasoning / thinking",
+          "title": "推理 / thinking",
           "auto": "自动",
           "off": "关闭",
           "low": "低",
@@ -458,19 +459,39 @@
           "max": "最大",
           "custom": "自定义",
           "budgetTokens": "thinking token 预算",
-          "hint": "结构化任务（如 ingest）可能会自动关闭 reasoning，避免模型只输出思考过程而没有正文。"
-        }
+          "hint": "不同服务商对 reasoning 参数支持不同；不支持时会自动降级为普通请求。"
+        },
+        "deploymentName": "部署名称",
+        "testingConnection": "正在测试连接...",
+        "testingFunction": "正在测试功能...",
+        "azureApiVersion": "Azure API 版本",
+        "azureApiVersionHint": "不同 Azure 资源可能需要不同的 api-version，请按 Azure 控制台填写。",
+        "azureModelFamily": "Azure 模型类型",
+        "azureModelFamilyAuto": "自动",
+        "azureModelFamilyGpt5": "GPT-5 / o 系列",
+        "azureModelFamilyHint": "Azure 部署名可自定义，必要时手动声明 GPT-5 或 o 系列行为。",
+        "localCliIsolation": "隔离本地 CLI 配置",
+        "localCliIsolationHint": "为 Claude/Codex CLI 使用隔离配置目录，避免读写用户全局 CLI 配置。",
+        "localCliIsolationOn": "已隔离，不会使用全局 CLI 配置。",
+        "localCliIsolationOff": "未隔离，将继承本机 CLI 登录状态。",
+        "codexCliTimeout": "Codex CLI 超时",
+        "codexCliTimeoutUnit": "分钟",
+        "codexCliTimeoutHint": "长文本生成的子进程总超时时间，可设置 1-240 分钟。",
+        "providerTests": "模型测试",
+        "providerTestsHint": "连接测试用于检查是否可访问；功能测试会要求模型返回指定标记，确认模型能正常生成可用内容。",
+        "testConnection": "测试连接",
+        "testFunction": "测试功能"
       },
       "embedding": {
-        "title": "向量嵌入",
+        "title": "向量检索/Embedding模型",
         "description": "启用语义搜索。支持 OpenAI 兼容的 /v1/embeddings endpoint，也支持 Google Gemini 原生 embedContent endpoint。本地模型（如 LM Studio、Ollama embedding）不需要 API Key。",
         "enableLabel": "启用向量搜索",
         "enableHint": "关掉后搜索只走 token 匹配。",
-        "endpoint": "\u63a5\u53e3\u5730\u5740",
+        "endpoint": "接口地址",
         "endpointHint": "OpenAI 兼容示例：http://127.0.0.1:1234/v1/embeddings。Gemini 示例：https://generativelanguage.googleapis.com/v1beta，模型填 gemini-embedding-001。",
-        "apiKey": "API\u5bc6\u94a5\uff08\u53ef\u9009\uff09",
+        "apiKey": "API密钥（可选）",
         "apiKeyPlaceholder": "本地模型留空即可",
-        "model": "\u6a21\u578b",
+        "model": "模型",
         "outputDimensionality": "输出维度（仅 Gemini）",
         "outputDimensionalityHint": "可选。仅对 Gemini 原生 embedContent endpoint 作为 `output_dimensionality` 发送；OpenAI 兼容 endpoint 会忽略此项。留空则使用模型默认值。修改模型或维度后需要重建嵌入。",
         "chunking": "切分参数",
@@ -491,7 +512,7 @@
         "testSuccessWithDimensions": "嵌入模型测试成功：{{model}}（{{dimensions}}维）"
       },
       "rerank": {
-        "title": "重排模型",
+        "title": "重排/Reranker模型",
         "description": "在检索候选展示或注入上下文前，再做一次模型重排。",
         "enableLabel": "启用重排",
         "enableHint": "会用于搜索面板、聊天检索、剧情搜索和写作上下文组装。",
@@ -505,9 +526,9 @@
         "wireResponses": "Responses API",
         "wireAnthropic": "Anthropic 兼容",
         "endpoint": "接口地址",
-        "apiKey": "API\u5bc6\u94a5",
+        "apiKey": "API密钥",
         "apiKeyPlaceholder": "请输入 API Key",
-        "model": "\u6a21\u578b",
+        "model": "模型",
         "modelPlaceholder": "输入重排模型 ID",
         "modelHint": "这里可以用更便宜、更快的模型，只要它能稳定遵循指令并返回 JSON。",
         "testSuccessUsingMainModel": "已通过主模型完成重排测试：{{model}}"
@@ -730,10 +751,10 @@
     "deleteFolderConfirm": "确认将文件夹「{{name}}」及其下 {{count}} 个大纲移入回收站吗？",
     "deleteEmptyFolderConfirm": "确认删除空文件夹「{{name}}」吗？",
     "deleteFolderBlocked": "文件夹「{{name}}」中仍有未移入回收站的其他文件，已保留文件夹本身。",
-    "move": "\u79fb\u52a8",
-    "cancelMove": "\u53d6\u6d88\u79fb\u52a8",
-    "moveModeHint": "\u5148\u70b9\u8981\u79fb\u52a8\u7684\u7ae0\u8282\uff0c\u518d\u70b9\u76ee\u6807\u7ae0\u8282",
-    "moveSourceSelected": "\u5df2\u9009\u62e9\u5f85\u79fb\u52a8\u7ae0\u8282",
+    "move": "移动",
+    "cancelMove": "取消移动",
+    "moveModeHint": "先点要移动的章节，再点目标章节",
+    "moveSourceSelected": "已选择待移动章节",
     "rawSources": "原始来源",
     "deletingTitle": "正在移入回收站：{{name}}…",
     "confirmDeleteTitle": "再次点击确认移入回收站：{{name}}",
@@ -838,7 +859,6 @@
     "editNodeStatusDefault": "保存后会写入真实 wiki 档案页，并刷新图谱、脑图与可用检索内容。",
     "saveNode": "保存档案页",
     "savingNode": "保存中...",
-    "allPlaceholder": "全部",
     "editRealProfilePage": "编辑真实档案页",
     "editProfileInline": "编辑档案",
     "saveProfileInline": "保存档案",
@@ -899,8 +919,8 @@
     },
     "history": {
       "delete": "删除",
-      "deleteConfirm": "确定要删除这条历史记录吗？",
-      "emptyResult": "这条历史记录没有结果"
+      "deleteConfirm": "确认删除这条历史记录吗？删除后可在回收站中恢复。",
+      "emptyResult": "本次没有发现问题"
     },
     "mode": {
       "label": "小说模式",
@@ -909,8 +929,10 @@
       "description": "开启后，界面文案将适配为小说写作模式"
     },
     "search": {
-      "placeholder": "搜索剧情、角色、设定...",
-      "noResults": "未找到匹配的剧情内容",
+      "title": "剧情搜索",
+      "placeholder": "搜索人物、事件、伏笔...",
+      "noResults": "未找到相关剧情",
+      "startSearching": "输入关键词搜索剧情内容",
       "keyword": "关键词",
       "vector": "向量",
       "graph": "图谱",
@@ -991,15 +1013,71 @@
       "typeAMessage": "输入写作需求..."
     },
     "lint": {
-      "historyTitle": "连贯性检查历史",
-      "historySummary": "{{warnings}} 个警告，{{infos}} 条提示",
+      "title": "连贯性检查",
+      "runLint": "开始检查",
+      "runLintHint": "检查人设、时间线、伏笔等连贯性",
+      "allClear": "连贯性良好！",
+      "historyTitle": "历史检查记录",
       "historyEntryTitle": "第{{chapter}}章连贯性检查",
-      "historyEntryTitleNoChapter": "连贯性检查"
+      "historyEntryTitleNoChapter": "连贯性检查",
+      "historySummary": "{{warnings}} 个警告，{{infos}} 个提示"
     },
     "review": {
+      "title": "AI 审稿",
+      "allClear": "审稿通过，无需修改",
+      "clearResolved": "清除已解决",
+      "clearAll": "清空全部",
+      "historyTitle": "历史审稿记录",
+      "chapterReviewTitle": "第{{chapter}}章审稿",
+      "historySummary": "{{errors}} 个严重问题，{{warnings}} 个警告",
+      "dismissHistoryEntry": "忽略",
+      "resolvedSeparator": "已解决",
+      "pages": "章节",
+      "startReview": "开始审稿",
+      "reviewing": "审稿中...",
+      "resultsTitle": "审稿结果",
       "historyEntryTitle": "第{{chapter}}章审稿",
-      "historyEntryTitleNoChapter": "审稿",
-      "runFailed": "审稿失败，请稍后重试"
+      "historyEntryTitleNoChapter": "AI 审稿",
+      "runFailed": "审稿失败，请稍后重试",
+      "notifications": {
+        "savedToWiki": "已保存到章节库",
+        "savedToChapterLibrary": "已保存到章节库",
+        "saveFailed": "保存失败",
+        "deleted": "已删除",
+        "deleteFailed": "删除失败",
+        "openedChapter": "已打开章节：{{page}}",
+        "created": "已创建：{{title}}",
+        "createFailed": "创建失败"
+      },
+      "fallbacks": {
+        "savedQueryTitle": "已保存查询",
+        "untitled": "未命名",
+        "stripTitlePrefixes": "创建|保存|添加",
+        "openActionLabel": "已打开",
+        "genericActionLabel": "已处理"
+      },
+      "results": {
+        "severity": {
+          "error": "严重",
+          "warning": "警告",
+          "info": "提示"
+        },
+        "type": {
+          "character_consistency": "人物一致性",
+          "timeline": "时间线",
+          "foreshadowing": "伏笔",
+          "setting": "设定",
+          "plot": "剧情",
+          "style": "文风"
+        }
+      },
+      "typeLabels": {
+        "contradiction": "矛盾",
+        "duplicate": "可能重复",
+        "missingPage": "缺失章节",
+        "confirm": "需要确认",
+        "suggestion": "建议"
+      }
     },
     "sources": {
       "title": "大纲库",
@@ -1091,7 +1169,7 @@
       "sectionRequestLabel": "分项生成要求",
       "sectionRequestPlaceholder": "例如：生成第2章到第20章细纲，重点围绕黑玉令反噬推进",
       "sectionGenerating": "正在生成{{title}}...",
-        "sectionGeneratingHint": "已选择{{title}}，可补充要求后点击下方生成按钮。",
+      "sectionGeneratingHint": "已选择{{title}}，可补充要求后点击下方生成按钮。",
       "sectionGenerated": "{{title}}已生成并保存到大纲页面",
       "sectionGenerateFailed": "{{title}}生成失败：{{message}}",
       "refineWriteModeLabel": "生成内容保存方式",
@@ -1124,89 +1202,6 @@
         "medium": "中篇（50万字）",
         "long": "长篇（100万字）",
         "epic": "超长篇（200万字以上）"
-      }
-    },
-    "search": {
-      "title": "剧情搜索",
-      "placeholder": "搜索人物、事件、伏笔...",
-      "noResults": "未找到相关剧情",
-      "startSearching": "输入关键词搜索剧情内容",
-      "keyword": "关键词",
-      "vector": "向量",
-      "graph": "图谱",
-      "recentChapters": "最近章节",
-      "canon": "正史库"
-    },
-    "lint": {
-      "title": "连贯性检查",
-      "runLint": "开始检查",
-      "runLintHint": "检查人设、时间线、伏笔等连贯性",
-      "allClear": "连贯性良好！",
-      "historyTitle": "历史检查记录",
-      "historyEntryTitle": "第{{chapter}}章连贯性检查",
-      "historyEntryTitleNoChapter": "连贯性检查",
-      "historySummary": "{{warnings}} 个警告，{{infos}} 个提示"
-    },
-    "history": {
-      "delete": "删除",
-      "deleteConfirm": "确认删除这条历史记录吗？删除后可在回收站中恢复。",
-      "emptyResult": "本次没有发现问题"
-    },
-    "review": {
-      "title": "AI 审稿",
-      "allClear": "审稿通过，无需修改",
-      "clearResolved": "清除已解决",
-      "clearAll": "清空全部",
-      "historyTitle": "历史审稿记录",
-      "chapterReviewTitle": "第{{chapter}}章审稿",
-      "historySummary": "{{errors}} 个严重问题，{{warnings}} 个警告",
-      "dismissHistoryEntry": "忽略",
-      "resolvedSeparator": "已解决",
-      "pages": "章节",
-      "startReview": "开始审稿",
-      "reviewing": "审稿中...",
-      "resultsTitle": "审稿结果",
-      "historyEntryTitle": "第{{chapter}}章审稿",
-      "historyEntryTitleNoChapter": "AI 审稿",
-      "runFailed": "审稿失败，请稍后重试",
-      "notifications": {
-        "savedToWiki": "已保存到章节库",
-        "savedToChapterLibrary": "已保存到章节库",
-        "saveFailed": "保存失败",
-        "deleted": "已删除",
-        "deleteFailed": "删除失败",
-        "openedChapter": "已打开章节：{{page}}",
-        "created": "已创建：{{title}}",
-        "createFailed": "创建失败"
-      },
-      "fallbacks": {
-        "savedQueryTitle": "已保存查询",
-        "untitled": "未命名",
-        "stripTitlePrefixes": "创建|保存|添加",
-        "openActionLabel": "已打开",
-        "genericActionLabel": "已处理"
-      },
-      "results": {
-        "severity": {
-          "error": "严重",
-          "warning": "警告",
-          "info": "提示"
-        },
-        "type": {
-          "character_consistency": "人物一致性",
-          "timeline": "时间线",
-          "foreshadowing": "伏笔",
-          "setting": "设定",
-          "plot": "剧情",
-          "style": "文风"
-        }
-      },
-      "typeLabels": {
-        "contradiction": "矛盾",
-        "duplicate": "可能重复",
-        "missingPage": "缺失章节",
-        "confirm": "需要确认",
-        "suggestion": "建议"
       }
     },
     "graph": {

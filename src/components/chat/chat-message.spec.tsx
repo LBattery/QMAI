@@ -69,4 +69,13 @@ describe("deep chapter unfinished continuation action", () => {
     expect(source).toContain("resolveNovelModel")
     expect(source).toContain("onContinueUnfinished={isLastAssistant ? () => handleContinueUnfinished(msg) : undefined}")
   })
+
+  it("keeps the ai chat footer labels as readable Chinese text", () => {
+    const source = readFileSync(resolve(__dirname, "chat-panel.tsx"), "utf8")
+
+    expect(source).toContain("深度章节生成")
+    expect(source).toContain("修改模式")
+    expect(source).toContain("AI会话模型")
+    expect(source).toContain("跟随当前主模型")
+  })
 })

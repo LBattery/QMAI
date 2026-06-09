@@ -162,7 +162,7 @@ export async function buildOutlineGenerationPrompt(
   scale: string,
   premise: string,
 ): Promise<string> {
-  const pack = await buildContextPack(projectPath, `生成大纲：${premise || genre}`)
+  const pack = await safeBuildOutlineContextPack(projectPath, `?????${premise || genre}`)
   return PROMPTS.outlineGeneration(genre, scale, premise, formatOutlineGenerationContext(pack))
 }
 
@@ -180,10 +180,43 @@ export async function buildOutlineRefinementContext(
   projectPath: string,
   userRequest: string,
 ): Promise<{ context: string; hasOutline: boolean }> {
-  const pack = await buildContextPack(projectPath, userRequest)
+  const pack = await safeBuildOutlineContextPack(projectPath, userRequest)
   return {
     context: formatOutlineRefinementContext(pack),
     hasOutline: Boolean(pack.outline.trim()),
+  }
+}
+
+function emptyOutlineContextPack(task: string): ContextPack {
+  return {
+    task,
+    chapterGoal: "",
+    outline: "",
+    recentSummaries: [],
+    previousChapterEnding: "",
+    characterStates: "",
+    soulDoc: "",
+    characterAuras: "",
+    cognitionStates: "",
+    foreshadowingStates: "",
+    timeline: "",
+    relatedSettings: "",
+    canonRules: "",
+    writingStyle: "",
+    searchResults: "",
+    graphSearchResults: "",
+    mustDo: "",
+    mustAvoid: "",
+    nextChapterAdvice: "",
+    revisionDirectives: "",
+  }
+}
+
+async function safeBuildOutlineContextPack(projectPath: string, task: string): Promise<ContextPack> {
+  try {
+    return await buildContextPack(projectPath, task)
+  } catch {
+    return emptyOutlineContextPack(task)
   }
 }
 
