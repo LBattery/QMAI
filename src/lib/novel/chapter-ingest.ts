@@ -67,6 +67,8 @@ export interface ChapterSnapshot {
   summary: string
   characters: string[]
   characterAliases?: Record<string, string[]>
+  characterAppearanceAndStatus: string[]
+  femaleCharacterSexualEvents: string[]
   locations: string[]
   organizations: string[]
   items: string[]
@@ -179,6 +181,8 @@ function normalizeChapterSnapshot(
     summary: normalizeSnapshotText(raw.summary),
     characters: normalizeSnapshotList(raw.characters),
     characterAliases: normalizeSnapshotAliasRecord(raw.characterAliases),
+    characterAppearanceAndStatus: normalizeSnapshotList(raw.characterAppearanceAndStatus),
+    femaleCharacterSexualEvents: normalizeSnapshotList(raw.femaleCharacterSexualEvents),
     locations: normalizeSnapshotList(raw.locations),
     organizations: normalizeSnapshotList(raw.organizations),
     items: normalizeSnapshotList(raw.items),
@@ -531,9 +535,11 @@ ${chapterBody.slice(0, 8000)}
 {
   "chapterId": "chapter-${chapterNumber}",
   "chapterNumber": ${chapterNumber},
-  "summary": "章节摘要（200字以内）",
+  "summary": "章节摘要（400字以内）",
   "characters": ["出场人物列表"],
   "characterAliases": { "人物正式名": ["昵称", "小名", "旧名"] },
+  "characterAppearanceAndStatus": ["角色穿着和当前状态描述"],
+  "femaleCharacterSexualEvents": ["女角色的边缘性行为及性行为事件"],
   "locations": ["出场地点列表"],
   "organizations": ["出场组织列表"],
   "items": ["出场物品列表"],
@@ -593,6 +599,8 @@ ${chapterBody.slice(0, 8000)}
 }
 
 注意：如果同一个人物在正文里有昵称、小名、旧名或全名，请把正式名放进 characters，把其他称呼放进 characterAliases，不要把同一人物拆成多个 characters。
+注意：characterAppearanceAndStatus 记录角色在本章的穿着打扮和当前状态，格式如"角色名：穿着描述，当前状态描述"。
+注意：femaleCharacterSexualEvents 仅记录女性角色涉及的边缘性行为或性行为相关事件，如亲密接触、暧昧行为、性暗示或实际性行为等，无相关内容时留空数组。
 注意：characterDetails、locationDetails、organizationDetails、itemDetails、eventDetails 仅在章节中确实有相关信息时才填写；如果某个字段没有相关信息，直接省略该字段即可。`
 
   try {
@@ -628,6 +636,8 @@ ${chapterBody.slice(0, 8000)}
       chapterNumber: parsed.chapterNumber || chapterNumber,
       entityIsNew: {},
       validationWarnings: [],
+      characterAppearanceAndStatus: parsed.characterAppearanceAndStatus || [],
+      femaleCharacterSexualEvents: parsed.femaleCharacterSexualEvents || [],
       characterDetails: parsed.characterDetails || undefined,
       locationDetails: parsed.locationDetails || undefined,
       organizationDetails: parsed.organizationDetails || undefined,
@@ -649,6 +659,12 @@ function snapshotToMarkdown(snapshot: ChapterSnapshot): string {
     "",
     `## 出场人物`,
     ...(snapshot.characters.length > 0 ? snapshot.characters.map(c => `- ${c}`) : ["（无）"]),
+    "",
+    `## 角色穿着和当前状态`,
+    ...(snapshot.characterAppearanceAndStatus.length > 0 ? snapshot.characterAppearanceAndStatus.map(c => `- ${c}`) : ["（无）"]),
+    "",
+    `## 女角色边缘性行为及性行为事件`,
+    ...(snapshot.femaleCharacterSexualEvents.length > 0 ? snapshot.femaleCharacterSexualEvents.map(e => `- ${e}`) : ["（无）"]),
     "",
     `## 出场地点`,
     ...(snapshot.locations.length > 0 ? snapshot.locations.map(l => `- ${l}`) : ["（无）"]),
@@ -1446,6 +1462,8 @@ ${body}
       chapterTitle: outlineName,
       entityIsNew: {},
       validationWarnings: [],
+      characterAppearanceAndStatus: parsed.characterAppearanceAndStatus || [],
+      femaleCharacterSexualEvents: parsed.femaleCharacterSexualEvents || [],
     }, { chapterId, chapterNumber: outlineNumber })
     if (!snapshot) {
       throw new Error("Outline snapshot payload is invalid.")
