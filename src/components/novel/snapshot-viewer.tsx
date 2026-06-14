@@ -193,6 +193,8 @@ export function SnapshotViewer({ projectPath, chapterNumber, onClose }: Snapshot
   const renderReadOnly = (data: ChapterSnapshot) => (
     <div className="space-y-2">
       <TextSection title={t("novel.snapshot.summary")} content={data.summary} />
+      <Section title="角色穿着和当前状态" items={data.characterAppearanceAndStatus} />
+      <Section title="女角色边缘性行为及性行为事件" items={data.femaleCharacterSexualEvents} />
       <Section title={t("novel.snapshot.characters")} items={data.characters} />
       <Section title={t("novel.snapshot.locations")} items={data.locations} />
       <Section title={t("novel.snapshot.organizations")} items={data.organizations} />
@@ -214,6 +216,8 @@ export function SnapshotViewer({ projectPath, chapterNumber, onClose }: Snapshot
   const renderEditor = (data: ChapterSnapshot) => (
     <div className="space-y-2">
       <EditableTextSection title={t("novel.snapshot.summary")} value={data.summary} onChange={(value) => editText("summary", value)} />
+      <EditableListSection title="角色穿着和当前状态" value={data.characterAppearanceAndStatus} onChange={(value) => editList("characterAppearanceAndStatus", value)} />
+      <EditableListSection title="女角色边缘性行为及性行为事件" value={data.femaleCharacterSexualEvents} onChange={(value) => editList("femaleCharacterSexualEvents", value)} />
       <EditableListSection title={t("novel.snapshot.characters")} value={data.characters} onChange={(value) => editList("characters", value)} />
       <EditableListSection title={t("novel.snapshot.locations")} value={data.locations} onChange={(value) => editList("locations", value)} />
       <EditableListSection title={t("novel.snapshot.organizations")} value={data.organizations} onChange={(value) => editList("organizations", value)} />

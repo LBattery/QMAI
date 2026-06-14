@@ -43,6 +43,8 @@ export interface ContextPack {
   recentSummaries: string[]
   previousChapterEnding: string
   characterStates: string
+  characterAppearance: string
+  femaleCharacterEvents: string
   soulDoc: string
   characterAuras: string
   cognitionStates: string
@@ -134,12 +136,15 @@ async function buildContextPackFromRawData(
     || rawData.fallbackPreviousEnding
   
   const characterStates = joinNonEmpty([
-    rawData.snapshots.characterStates, 
+    rawData.snapshots.characterStates,
     rawData.fallbackCharacterStates
   ], "\n\n")
-  
+
+  const characterAppearance = rawData.snapshots.characterAppearance || ""
+  const femaleCharacterEvents = rawData.snapshots.femaleCharacterEvents || ""
+
   const timeline = joinNonEmpty([
-    rawData.snapshots.timeline, 
+    rawData.snapshots.timeline,
     rawData.fallbackTimeline
   ], "\n\n")
   
@@ -188,6 +193,8 @@ async function buildContextPackFromRawData(
     recentSummaries,
     previousChapterEnding,
     characterStates,
+    characterAppearance,
+    femaleCharacterEvents,
     soulDoc: rawData.soulDoc,
     characterAuras,
     cognitionStates: rawData.cognitionText,
@@ -336,6 +343,8 @@ function emptyPack(task: string): ContextPack {
     recentSummaries: [],
     previousChapterEnding: "",
     characterStates: "",
+    characterAppearance: "",
+    femaleCharacterEvents: "",
     soulDoc: "",
     characterAuras: "",
     cognitionStates: "",
@@ -487,6 +496,8 @@ async function readSnapshotContext(
   recentSummaries: string[]
   previousChapterEnding: string
   characterStates: string
+  characterAppearance: string
+  femaleCharacterEvents: string
   foreshadowingSignals: string[]
   timeline: string
 }> {
@@ -496,6 +507,8 @@ async function readSnapshotContext(
       recentSummaries: [],
       previousChapterEnding: "",
       characterStates: "",
+      characterAppearance: "",
+      femaleCharacterEvents: "",
       foreshadowingSignals: [],
       timeline: "",
     }
@@ -523,6 +536,16 @@ async function readSnapshotContext(
       .flatMap((snapshot) => snapshot.characterStateChanges.map((change) => `第${snapshot.chapterNumber}章：${change}`)),
     "\n",
   )
+  const characterAppearance = joinNonEmpty(
+    validLookback
+      .flatMap((snapshot) => snapshot.characterAppearanceAndStatus.map((status) => `第${snapshot.chapterNumber}章：${status}`)),
+    "\n",
+  )
+  const femaleCharacterEvents = joinNonEmpty(
+    validLookback
+      .flatMap((snapshot) => snapshot.femaleCharacterSexualEvents.map((event) => `第${snapshot.chapterNumber}章：${event}`)),
+    "\n",
+  )
   const foreshadowingSignals = validLookback.flatMap((snapshot) => snapshot.foreshadowingChanges)
   const timeline = joinNonEmpty(
     validLookback
@@ -534,6 +557,8 @@ async function readSnapshotContext(
     recentSummaries,
     previousChapterEnding: previousSnapshot?.endingHook || "",
     characterStates,
+    characterAppearance,
+    femaleCharacterEvents,
     foreshadowingSignals,
     timeline,
   }
@@ -984,6 +1009,8 @@ const FIELD_CONFIGS: FieldConfig[] = [
   { titleKey: "novel.contextPack.recentPlotSummaries", fieldKey: "recentSummaries" },
   { titleKey: "novel.contextPack.previousChapterEnding", fieldKey: "previousChapterEnding" },
   { titleKey: "novel.contextPack.characterStates", fieldKey: "characterStates" },
+  { titleKey: "novel.contextPack.characterAppearance", fieldKey: "characterAppearance" },
+  { titleKey: "novel.contextPack.femaleCharacterEvents", fieldKey: "femaleCharacterEvents" },
   { titleKey: "novel.contextPack.characterAuras", fieldKey: "characterAuras" },
   { titleKey: "novel.contextPack.cognitionStates", fieldKey: "cognitionStates" },
   { titleKey: "novel.contextPack.foreshadowingStates", fieldKey: "foreshadowingStates" },
