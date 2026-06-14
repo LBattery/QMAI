@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Bot,
   BookOpen,
+  Database,
+  ListFilter,
   Palette,
   Network,
   History,
@@ -33,6 +35,8 @@ import { ContactSupportSection } from "./sections/contact-support-section"
 
 type CategoryId =
   | "llm"
+  | "rerank"
+  | "embedding"
   | "network"
   | "interface"
   | "novel"
@@ -53,6 +57,8 @@ interface Category {
 
 const CATEGORIES: Category[] = [
   { id: "llm", labelKey: "settings.categories.llm", icon: Bot },
+  { id: "rerank", labelKey: "settings.categories.rerank", icon: ListFilter },
+  { id: "embedding", labelKey: "settings.categories.embedding", icon: Database },
   { id: "network", labelKey: "settings.categories.network", icon: Network },
   { id: "interface", labelKey: "settings.categories.interface", icon: Palette },
   { id: "novel", labelKey: "settings.categories.novel", icon: BookOpen },
@@ -96,9 +102,12 @@ function initialDraft(
     model: llm.model,
     ollamaUrl: llm.ollamaUrl,
     customEndpoint: llm.customEndpoint,
+    azureApiVersion: llm.azureApiVersion ?? "2024-10-21",
+    azureModelFamily: llm.azureModelFamily ?? "auto",
     maxContextSize: llm.maxContextSize ?? 204800,
     apiMode: llm.apiMode,
     reasoning: llm.reasoning,
+    localCliIsolation: llm.localCliIsolation === true,
     embeddingEnabled: embed.enabled,
     embeddingEndpoint: embed.endpoint,
     embeddingApiKey: embed.apiKey,
@@ -114,6 +123,8 @@ function initialDraft(
     multimodalModel: multimodal.model,
     multimodalOllamaUrl: multimodal.ollamaUrl,
     multimodalCustomEndpoint: multimodal.customEndpoint,
+    multimodalAzureApiVersion: multimodal.azureApiVersion ?? "2024-10-21",
+    multimodalAzureModelFamily: multimodal.azureModelFamily ?? "auto",
     multimodalApiMode: multimodal.apiMode,
     multimodalConcurrency: multimodal.concurrency,
     outputLanguage,
@@ -301,9 +312,12 @@ export function SettingsView() {
       model: draft.model,
       ollamaUrl: draft.ollamaUrl,
       customEndpoint: draft.customEndpoint,
+      azureApiVersion: draft.provider === "azure" ? draft.azureApiVersion.trim() : undefined,
+      azureModelFamily: draft.provider === "azure" ? draft.azureModelFamily : undefined,
       maxContextSize: draft.maxContextSize,
       apiMode: draft.provider === "custom" ? draft.apiMode : undefined,
       reasoning: draft.reasoning,
+      localCliIsolation: draft.localCliIsolation,
     }
     const newEmbed = {
       enabled: draft.embeddingEnabled,
@@ -327,6 +341,8 @@ export function SettingsView() {
       model: draft.multimodalModel,
       ollamaUrl: draft.multimodalOllamaUrl,
       customEndpoint: draft.multimodalCustomEndpoint,
+      azureApiVersion: draft.multimodalProvider === "azure" ? draft.multimodalAzureApiVersion.trim() : undefined,
+      azureModelFamily: draft.multimodalProvider === "azure" ? draft.multimodalAzureModelFamily : undefined,
       apiMode: draft.multimodalProvider === "custom" ? draft.multimodalApiMode : undefined,
       // Clamp at save time so a hand-edited persisted store with a
       // ridiculous concurrency value (e.g. someone setting 1000 in
@@ -441,13 +457,11 @@ export function SettingsView() {
   const body = useMemo(() => {
     switch (active) {
       case "llm":
-        return (
-          <div className="space-y-8">
-            <LlmProviderSection />
-            <EmbeddingSection draft={draft} setDraft={setDraft} />
-            <RerankSection draft={draft} setDraft={setDraft} />
-          </div>
-        )
+        return <LlmProviderSection />
+      case "rerank":
+        return <RerankSection draft={draft} setDraft={setDraft} />
+      case "embedding":
+        return <EmbeddingSection draft={draft} setDraft={setDraft} />
       case "network":
         return <NetworkSection draft={draft} setDraft={setDraft} />
       case "interface":

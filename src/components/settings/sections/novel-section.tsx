@@ -258,6 +258,27 @@ export function NovelSection({ draft, setDraft }: Props) {
             </p>
           </div>
 
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Label>{t("novel.settings.chapterTargetChars")}</Label>
+              {settingTooltip("chapterTargetCharsHint")}
+            </div>
+            <Input
+              type="number"
+              min={2000}
+              max={6000}
+              step={100}
+              value={draft.novelConfig.chapterTargetChars}
+              onChange={(e) => updateNovelConfig({
+                chapterTargetChars: Math.max(2000, Math.min(6000, Number(e.target.value) || 3000)),
+              })}
+              className="w-32"
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("novel.settings.chapterTargetCharsHint")}
+            </p>
+          </div>
+
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-1.5">
               <Label>{t("novel.settings.autoIngestOnSave")}</Label>

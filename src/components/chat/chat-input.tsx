@@ -14,6 +14,7 @@ interface ChatInputProps {
   isStreaming: boolean
   placeholder?: string
   leadingControls?: ReactNode
+  footerControls?: ReactNode
 }
 
 function resolveResizePanelHeight(root: HTMLDivElement | null): number {
@@ -27,7 +28,7 @@ function resolveResizePanelHeight(root: HTMLDivElement | null): number {
   return panelHeight
 }
 
-export function ChatInput({ onSend, onStop, isStreaming, placeholder, leadingControls }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, isStreaming, placeholder, leadingControls, footerControls }: ChatInputProps) {
   const [value, setValue] = useState("")
   const [inputHeight, setInputHeight] = useState(DEFAULT_RESIZABLE_INPUT_HEIGHT)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -122,8 +123,12 @@ export function ChatInput({ onSend, onStop, isStreaming, placeholder, leadingCon
       >
         <span className="h-0.5 w-10 rounded-full bg-border" />
       </div>
+      {footerControls ?? leadingControls ? (
+        <div className="px-3 pb-2">
+          {footerControls ?? leadingControls}
+        </div>
+      ) : null}
       <div className="flex items-end gap-2 px-3 pb-3">
-        {leadingControls ? <div className="shrink-0">{leadingControls}</div> : null}
         <textarea
           ref={textareaRef}
           value={value}

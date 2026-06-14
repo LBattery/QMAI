@@ -96,7 +96,9 @@ export async function reviewChapter(
   chapterContent: string,
   chapterNumber?: number,
   callbacks: NovelReviewCallbacks = {},
+  signal?: AbortSignal,
 ): Promise<NovelReviewResult[]> {
+  if (signal?.aborted) throw new Error("已停止生成")
   const llmConfig = resolveNovelModel(
     useWikiStore.getState().llmConfig,
     useWikiStore.getState().novelConfig,
@@ -113,6 +115,7 @@ export async function reviewChapter(
     chapterNumber,
   )
 
+  if (signal?.aborted) throw new Error("已停止生成")
   const outputLang = getOutputLanguage()
   const langReminder = buildLanguageReminder(outputLang)
 
@@ -131,6 +134,7 @@ ${langReminder}`
       "阶段1：审查任务识别 / 阶段2：上下文检索",
       callbacks,
       stageThinking,
+      signal,
     )
     const stageTwo = await runReviewStage(
       llmConfig,
@@ -139,6 +143,7 @@ ${langReminder}`
       "阶段3：章节目标对齐 / 阶段4：事实与记忆核对",
       callbacks,
       stageThinking,
+      signal,
     )
     const stageThree = await runReviewStage(
       llmConfig,
@@ -147,6 +152,7 @@ ${langReminder}`
       "阶段5：逐维度审查 / 阶段6：阻断判定",
       callbacks,
       stageThinking,
+      signal,
     )
 
     const result = await runReviewStage(
@@ -171,13 +177,20 @@ ${langReminder}`
       "阶段7：二次复核",
       callbacks,
       stageThinking,
+      signal,
     )
 
     const jsonMatch = result.match(/\[[\s\S]*\]/)
-    if (!jsonMatch) return []
+    if (!jsonMatch) {
+      console.warn("[Novel Review] No JSON array found in result:", result.slice(0, 500))
+      return []
+    }
 
     const parsed = JSON.parse(jsonMatch[0])
-    if (!Array.isArray(parsed)) return []
+    if (!Array.isArray(parsed)) {
+      console.warn("[Novel Review] Parsed result is not an array:", parsed)
+      return []
+    }
 
     return parsed.map((item: Record<string, unknown>) => ({
       severity: validateSeverity(item.severity),
@@ -211,6 +224,8 @@ async function runReviewStage(
   stageTitle: string,
   callbacks: NovelReviewCallbacks,
   stageThinking: Map<string, string>,
+  signal?: AbortSignal,
+  retryCount = 0,
 ): Promise<string> {
   publishReviewStageThinking(stageThinking, callbacks, stageTitle, "正在分析...")
   const messages: ChatMessage[] = [
@@ -230,15 +245,51 @@ async function runReviewStage(
     },
   }
 
-  await streamChat(
-    llmConfig,
-    messages,
-    streamCallbacks,
-    AbortSignal.timeout(120000),
-    { reasoning: { mode: "high" } },
-  )
+  const timeoutController = new AbortController()
+  const timeoutId = setTimeout(() => timeoutController.abort(), 300000)
 
+  const combinedSignal = signal
+    ? combineSignals(signal, timeoutController.signal)
+    : timeoutController.signal
+
+  try {
+    await streamChat(
+      llmConfig,
+      messages,
+      streamCallbacks,
+      combinedSignal,
+      { reasoning: { mode: "high" } },
+    )
+    clearTimeout(timeoutId)
+  } catch (err) {
+    clearTimeout(timeoutId)
+    if (signal?.aborted) throw new Error("已停止生成")
+    if (retryCount < 2) {
+      console.warn(`[Novel Review] Stage "${stageTitle}" failed, retrying (${retryCount + 1}/2)...`)
+      publishReviewStageThinking(stageThinking, callbacks, stageTitle, "网络波动，正在重试...")
+      await new Promise(resolve => setTimeout(resolve, 2000))
+      return runReviewStage(llmConfig, systemPrompt, userPrompt, stageTitle, callbacks, stageThinking, signal, retryCount + 1)
+    }
+    throw err
+  }
+
+  if (signal?.aborted) throw new Error("已停止生成")
   return result.trim()
+}
+
+function combineSignals(signalA: AbortSignal, signalB: AbortSignal): AbortSignal {
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  for (const signal of [signalA, signalB]) {
+    // 信号在组合前就已经中止时（例如用户在审稿开始前点了停止），
+    // addEventListener 不会再触发，必须立即同步中止组合信号。
+    if (signal.aborted) {
+      controller.abort()
+      return controller.signal
+    }
+    signal.addEventListener("abort", abort, { once: true })
+  }
+  return controller.signal
 }
 
 function publishReviewStageThinking(

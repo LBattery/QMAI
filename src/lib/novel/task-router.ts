@@ -250,6 +250,10 @@ export function routeTask(userInput: string): TaskRouteResult {
 }
 
 function extractChapterNumber(text: string): number | undefined {
+  // “下一章”类续写请求的目标章节由章节库/会话状态推算，
+  // 文本中顺带提到的其他章节号（如“不要重复第一章内容”）只是引用。
+  if (hasNextChapterContinuationWording(text)) return undefined
+
   const openingChapterNumber = extractOpeningChapterNumber(text)
   if (openingChapterNumber !== undefined) return openingChapterNumber
 
@@ -265,31 +269,62 @@ function extractChapterNumber(text: string): number | undefined {
   return undefined
 }
 
+// “继续生成下一章”类请求：续写语义优先于开篇关键词。
+// 修复 issue #9：自定义下一章提示词中出现“开篇200字内必须制造钩子”
+// 之类的写作要求时，“开篇/第一章”字样不应把目标章节劫持为第1章。
+const NEXT_CHAPTER_CONTINUATION_RE = /下一章|下1章|下章|新的?一章/
+
+function hasNextChapterContinuationWording(text: string): boolean {
+  return NEXT_CHAPTER_CONTINUATION_RE.test(text.replace(/\s+/g, ""))
+}
+
+// 全文出现明确的“第N章”（N>3）时，说明用户的目标章节并非开篇章节，
+// 文本里顺带提到的“开篇/第一章”只是写作要求或剧情引用。
+function hasExplicitLaterChapterNumber(text: string): boolean {
+  const compact = text.replace(/\s+/g, "")
+  const explicit = compact.match(/第(\d+)章/)
+  return Boolean(explicit?.[1] && Number(explicit[1]) > 3)
+}
+
+// “开篇/开局/首章/开头”这类弱关键词：仅当紧跟写作动词，或请求本身
+// 就是一句很短的开篇指令时，才视为“写开篇章节”。避免长提示词里的
+// “开篇200字内必须制造钩子”这类局部写作要求被误判。
+function isAmbientOpeningKeywordRequest(text: string): boolean {
+  const compact = text.replace(/\s+/g, "")
+  if (/(写|生成|创作|撰写|开始)(一?个)?(小说)?(开篇|开局|首章|开头)/.test(compact)) return true
+  return compact.length <= 12 && /开篇|开局|首章|小说开头/.test(compact)
+}
+
 function isOpeningChapterRequest(text: string): boolean {
-  return [
+  if (hasNextChapterContinuationWording(text)) return false
+  if (hasExplicitLaterChapterNumber(text)) return false
+  if ([
     /生成前三章/,
     /写前三章/,
     /黄金三章/,
-    /写?首章/,
     /第一章/,
     /第\s*1\s*章/,
     /开篇章节/,
-    /写?开篇/,
-    /写?开局/,
     /小说开头/,
     /(生成|写|创作|撰写)\s*(第二章|第\s*2\s*章|第\s*二\s*章)/,
     /(生成|写|创作|撰写)\s*(第三章|第\s*3\s*章|第\s*三\s*章)/,
-  ].some((pattern) => pattern.test(text))
+  ].some((pattern) => pattern.test(text))) {
+    return true
+  }
+  return isAmbientOpeningKeywordRequest(text)
 }
 
 function extractOpeningChapterNumber(text: string): number | undefined {
+  if (hasNextChapterContinuationWording(text)) return undefined
+  if (hasExplicitLaterChapterNumber(text)) return undefined
   const digitMatch = text.match(/第\s*([123])\s*章/)
   if (digitMatch) return Number(digitMatch[1])
-  if (/首章|第一章|第\s*1\s*章|开篇章节|写?开篇|写?开局|小说开头|生成前三章|写前三章|黄金三章/.test(text)) {
+  if (/首章|第一章|第\s*1\s*章|开篇章节|小说开头|生成前三章|写前三章|黄金三章/.test(text)) {
     return 1
   }
   if (/第二章|第\s*二\s*章/.test(text)) return 2
   if (/第三章|第\s*三\s*章/.test(text)) return 3
+  if (isAmbientOpeningKeywordRequest(text)) return 1
   return undefined
 }
 

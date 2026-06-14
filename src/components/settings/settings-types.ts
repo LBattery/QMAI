@@ -1,5 +1,5 @@
 import type { CustomApiMode } from "./llm-presets"
-import type { ReasoningConfig, SourceWatchConfig, RevisionFeedbackWindowConfig, NovelConfig, RerankConfig } from "@/stores/wiki-store"
+import type { AzureModelFamily, ReasoningConfig, SourceWatchConfig, RevisionFeedbackWindowConfig, NovelConfig, RerankConfig } from "@/stores/wiki-store"
 
 /**
  * Shape of the draft state each section reads from and writes into.
@@ -9,14 +9,17 @@ import type { ReasoningConfig, SourceWatchConfig, RevisionFeedbackWindowConfig, 
  */
 export interface SettingsDraft {
   // LLM provider
-  provider: "openai" | "anthropic" | "google" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
+  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
   apiKey: string
   model: string
   ollamaUrl: string
   customEndpoint: string
+  azureApiVersion: string
+  azureModelFamily: AzureModelFamily
   maxContextSize: number
   apiMode: CustomApiMode | undefined
   reasoning: ReasoningConfig | undefined
+  localCliIsolation: boolean
 
   // Embedding
   embeddingEnabled: boolean
@@ -33,11 +36,13 @@ export interface SettingsDraft {
   // Multimodal (image captioning at ingest time)
   multimodalEnabled: boolean
   multimodalUseMainLlm: boolean
-  multimodalProvider: "openai" | "anthropic" | "google" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
+  multimodalProvider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
   multimodalApiKey: string
   multimodalModel: string
   multimodalOllamaUrl: string
   multimodalCustomEndpoint: string
+  multimodalAzureApiVersion: string
+  multimodalAzureModelFamily: AzureModelFamily
   multimodalApiMode: CustomApiMode | undefined
   multimodalConcurrency: number
 

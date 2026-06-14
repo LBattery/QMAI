@@ -17,7 +17,6 @@
 //! capabilities JSON.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +26,11 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+
+use super::cli_resolver::find_cli_command;
+use super::local_cli_config::{
+    apply_local_cli_environment, read_claude_local_config, resolve_home_dir, LocalCliConfigInfo,
+};
 
 /// Shared state holding running `claude` child processes keyed by the
 /// frontend-generated stream id. Registered via .manage() in lib.rs.
@@ -40,6 +44,7 @@ pub struct DetectResult {
     installed: bool,
     version: Option<String>,
     path: Option<String>,
+    model: Option<String>,
     /// When !installed, a short human-readable reason (missing from PATH,
     /// quarantined on macOS, spawn failed, etc). The frontend shows this
     /// verbatim in the status pill.
@@ -50,21 +55,82 @@ pub struct DetectResult {
 pub struct ClaudeMessage {
     /// "system" | "user" | "assistant"
     role: String,
-    content: String,
+    content: ClaudeContent,
 }
 
-fn find_claude_command() -> Result<PathBuf, String> {
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+enum ClaudeContent {
+    Text(String),
+    Blocks(Vec<ClaudeContentBlock>),
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(tag = "type")]
+enum ClaudeContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image {
+        #[serde(rename = "mediaType")]
+        media_type: String,
+        #[serde(rename = "dataBase64")]
+        data_base64: String,
+    },
+}
+
+fn claude_content_text_only(content: &ClaudeContent) -> String {
+    match content {
+        ClaudeContent::Text(text) => text.clone(),
+        ClaudeContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                ClaudeContentBlock::Text { text } => Some(text.as_str()),
+                ClaudeContentBlock::Image { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+    }
+}
+
+fn claude_content_blocks(content: &ClaudeContent) -> Vec<serde_json::Value> {
+    match content {
+        ClaudeContent::Text(text) => vec![serde_json::json!({ "type": "text", "text": text })],
+        ClaudeContent::Blocks(blocks) => blocks
+            .iter()
+            .map(|block| match block {
+                ClaudeContentBlock::Text { text } => {
+                    serde_json::json!({ "type": "text", "text": text })
+                }
+                ClaudeContentBlock::Image {
+                    media_type,
+                    data_base64,
+                } => serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data_base64,
+                    },
+                }),
+            })
+            .collect(),
+    }
+}
+
+async fn find_claude_command() -> Result<std::path::PathBuf, String> {
+    find_cli_command("claude", &["claude.cmd", "claude.exe"]).await
+}
+
+fn suppress_windows_console(_cmd: &mut Command) {
     #[cfg(windows)]
     {
-        if let Ok(path) = which::which("claude.cmd") {
-            return Ok(path);
-        }
-        if let Ok(path) = which::which("claude.exe") {
-            return Ok(path);
-        }
-    }
+        #[allow(unused_imports)]
+        use std::os::windows::process::CommandExt;
 
-    which::which("claude").map_err(|_| "`claude` not found on PATH".to_string())
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        _cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 }
 
 /// Locate `claude` on PATH and confirm it's runnable by calling
@@ -72,13 +138,15 @@ fn find_claude_command() -> Result<PathBuf, String> {
 /// mount of the settings panel.
 #[tauri::command]
 pub async fn claude_cli_detect() -> Result<DetectResult, String> {
-    let path = match find_claude_command() {
+    let local_config = read_current_claude_local_config();
+    let path = match find_claude_command().await {
         Ok(p) => p,
         Err(error) => {
             return Ok(DetectResult {
                 installed: false,
                 version: None,
                 path: None,
+                model: local_config.model,
                 error: Some(error),
             });
         }
@@ -86,11 +154,10 @@ pub async fn claude_cli_detect() -> Result<DetectResult, String> {
 
     let path_str = path.to_string_lossy().to_string();
 
-    let output = tokio::time::timeout(
-        Duration::from_secs(3),
-        Command::new(&path).arg("--version").output(),
-    )
-    .await;
+    let mut cmd = Command::new(&path);
+    suppress_windows_console(&mut cmd);
+    apply_local_cli_environment(&mut cmd);
+    let output = tokio::time::timeout(Duration::from_secs(3), cmd.arg("--version").output()).await;
 
     match output {
         Ok(Ok(out)) if out.status.success() => {
@@ -99,6 +166,7 @@ pub async fn claude_cli_detect() -> Result<DetectResult, String> {
                 installed: true,
                 version: Some(version),
                 path: Some(path_str),
+                model: local_config.model,
                 error: None,
             })
         }
@@ -120,6 +188,7 @@ pub async fn claude_cli_detect() -> Result<DetectResult, String> {
                 installed: false,
                 version: None,
                 path: Some(path_str),
+                model: local_config.model,
                 error,
             })
         }
@@ -127,12 +196,14 @@ pub async fn claude_cli_detect() -> Result<DetectResult, String> {
             installed: false,
             version: None,
             path: Some(path_str),
+            model: local_config.model,
             error: Some(format!("Failed to spawn `claude`: {e}")),
         }),
         Err(_) => Ok(DetectResult {
             installed: false,
             version: None,
             path: Some(path_str),
+            model: local_config.model,
             error: Some("`claude --version` timed out after 3s".to_string()),
         }),
     }
@@ -151,6 +222,7 @@ pub async fn claude_cli_spawn(
     stream_id: String,
     model: String,
     messages: Vec<ClaudeMessage>,
+    isolate_local_config: bool,
 ) -> Result<(), String> {
     // Build the turn list: fold any system messages into a preamble on
     // the first user turn rather than using a CLI flag, because
@@ -159,7 +231,7 @@ pub async fn claude_cli_spawn(
     let system_preamble: String = messages
         .iter()
         .filter(|m| m.role == "system")
-        .map(|m| m.content.clone())
+        .map(|m| claude_content_text_only(&m.content))
         .collect::<Vec<_>>()
         .join("\n\n");
 
@@ -174,29 +246,27 @@ pub async fn claude_cli_spawn(
 
     // Synthesize turns with the preamble merged into the first user turn.
     let mut first_user_seen = false;
-    let turns: Vec<(String, String)> = conversation
+    let turns: Vec<(String, Vec<serde_json::Value>)> = conversation
         .iter()
         .map(|m| {
             let role = m.role.clone();
-            let mut content = m.content.clone();
+            let mut content = claude_content_blocks(&m.content);
             if !first_user_seen && role == "user" && !system_preamble.is_empty() {
-                content = format!("{system_preamble}\n\n{content}");
+                content.insert(
+                    0,
+                    serde_json::json!({ "type": "text", "text": format!("{system_preamble}\n\n") }),
+                );
                 first_user_seen = true;
             }
             (role, content)
         })
         .collect();
 
-    let claude = find_claude_command()?;
+    let claude = find_claude_command().await?;
     let mut cmd = Command::new(&claude);
-    cmd.arg("-p")
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--input-format")
-        .arg("stream-json")
-        .arg("--verbose")
-        .arg("--model")
-        .arg(&model);
+    suppress_windows_console(&mut cmd);
+    apply_local_cli_environment(&mut cmd);
+    cmd.args(build_claude_cli_args(&model, isolate_local_config));
 
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -235,7 +305,7 @@ pub async fn claude_cli_spawn(
             "type": role,
             "message": {
                 "role": role,
-                "content": [{ "type": "text", "text": content }],
+                "content": content,
             }
         });
         let line = format!("{}\n", event);
@@ -323,6 +393,43 @@ pub async fn claude_cli_spawn(
     Ok(())
 }
 
+fn build_claude_cli_args(model: &str, isolate_local_config: bool) -> Vec<String> {
+    let mut args = vec![
+        "-p".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--input-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+    ];
+
+    if isolate_local_config {
+        args.extend([
+            "--setting-sources".to_string(),
+            "project".to_string(),
+            "--strict-mcp-config".to_string(),
+            "--mcp-config".to_string(),
+            "{\"mcpServers\":{}}".to_string(),
+            "--disable-slash-commands".to_string(),
+            "--tools".to_string(),
+            "".to_string(),
+            "--no-session-persistence".to_string(),
+            "--prompt-suggestions".to_string(),
+            "false".to_string(),
+        ]);
+    }
+
+    if !model.trim().is_empty() {
+        args.extend(["--model".to_string(), model.to_string()]);
+    }
+    args
+}
+
+fn read_current_claude_local_config() -> LocalCliConfigInfo {
+    let home = resolve_home_dir();
+    read_claude_local_config(home.as_deref())
+}
+
 /// Kill a running child registered under `stream_id`. Called on
 /// AbortSignal in the frontend. No-op if the id is unknown (e.g. the
 /// process already exited).
@@ -338,4 +445,84 @@ pub async fn claude_cli_kill(
         // enough; kill_on_drop ensures the SIGKILL is sent.
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_content_blocks_maps_frontend_image_blocks_to_anthropic_shape() {
+        let content: ClaudeContent = serde_json::from_value(serde_json::json!([
+            { "type": "text", "text": "describe this" },
+            { "type": "image", "mediaType": "image/png", "dataBase64": "abc123" }
+        ]))
+        .expect("content block payload should deserialize");
+
+        let blocks = claude_content_blocks(&content);
+
+        assert_eq!(
+            blocks,
+            vec![
+                serde_json::json!({ "type": "text", "text": "describe this" }),
+                serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "abc123",
+                    },
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn system_text_drops_images_before_inlining_preamble() {
+        let content: ClaudeContent = serde_json::from_value(serde_json::json!([
+            { "type": "text", "text": "system rule" },
+            { "type": "image", "mediaType": "image/png", "dataBase64": "abc123" }
+        ]))
+        .expect("content block payload should deserialize");
+
+        assert_eq!(claude_content_text_only(&content), "system rule");
+    }
+
+    #[test]
+    fn claude_args_do_not_isolate_local_config_by_default() {
+        let args = build_claude_cli_args("sonnet", false);
+
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"sonnet".to_string()));
+        assert!(!args.contains(&"--setting-sources".to_string()));
+        assert!(!args.contains(&"--strict-mcp-config".to_string()));
+        assert!(!args.contains(&"--disable-slash-commands".to_string()));
+    }
+
+    #[test]
+    fn claude_args_can_isolate_user_config_tools_and_mcp() {
+        let args = build_claude_cli_args("sonnet", true);
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--setting-sources" && pair[1] == "project"));
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--mcp-config" && pair[1] == "{\"mcpServers\":{}}"));
+        assert!(args.contains(&"--disable-slash-commands".to_string()));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--tools" && pair[1].is_empty()));
+        assert!(args.contains(&"--no-session-persistence".to_string()));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--prompt-suggestions" && pair[1] == "false"));
+    }
+
+    #[test]
+    fn claude_args_skip_model_flag_when_model_is_empty() {
+        let args = build_claude_cli_args("", false);
+        assert!(!args.contains(&"--model".to_string()));
+    }
 }

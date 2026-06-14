@@ -1,7 +1,6 @@
 import { createDirectory, fileExists, listDirectory, readFile, writeFile } from "@/commands/fs"
 import { streamChat } from "@/lib/llm-client"
 import { getOutputLanguage } from "@/lib/output-language"
-import { searchWiki } from "@/lib/search"
 import { getFileName, normalizePath } from "@/lib/path-utils"
 import i18n from "@/i18n"
 import type { ChatMessage } from "@/lib/llm-providers"
@@ -162,15 +161,23 @@ export async function buildOutlineGenerationPrompt(
   scale: string,
   premise: string,
 ): Promise<string> {
-  const pack = await buildContextPack(projectPath, `生成大纲：${premise || genre}`)
+  const pack = await safeBuildOutlineContextPack(projectPath, `?????${premise || genre}`)
   return PROMPTS.outlineGeneration(genre, scale, premise, formatOutlineGenerationContext(pack))
 }
 
 export async function hasOutlineForRefinement(projectPath: string): Promise<boolean> {
   try {
     const pp = normalizePath(projectPath)
-    const results = await searchWiki(pp, "outline type:outline")
-    return results.length > 0
+    const tree = await listDirectory(`${pp}/wiki/outlines`)
+    const flattenFiles = (nodes: typeof tree): typeof tree => {
+      const files: typeof tree = []
+      for (const node of nodes) {
+        if (node.is_dir && node.children) files.push(...flattenFiles(node.children))
+        else if (!node.is_dir && node.name.endsWith(".md")) files.push(node)
+      }
+      return files
+    }
+    return flattenFiles(tree).length > 0
   } catch {
     return false
   }
@@ -180,10 +187,43 @@ export async function buildOutlineRefinementContext(
   projectPath: string,
   userRequest: string,
 ): Promise<{ context: string; hasOutline: boolean }> {
-  const pack = await buildContextPack(projectPath, userRequest)
+  const pack = await safeBuildOutlineContextPack(projectPath, userRequest)
   return {
     context: formatOutlineRefinementContext(pack),
     hasOutline: Boolean(pack.outline.trim()),
+  }
+}
+
+function emptyOutlineContextPack(task: string): ContextPack {
+  return {
+    task,
+    chapterGoal: "",
+    outline: "",
+    recentSummaries: [],
+    previousChapterEnding: "",
+    characterStates: "",
+    soulDoc: "",
+    characterAuras: "",
+    cognitionStates: "",
+    foreshadowingStates: "",
+    timeline: "",
+    relatedSettings: "",
+    canonRules: "",
+    writingStyle: "",
+    searchResults: "",
+    graphSearchResults: "",
+    mustDo: "",
+    mustAvoid: "",
+    nextChapterAdvice: "",
+    revisionDirectives: "",
+  }
+}
+
+async function safeBuildOutlineContextPack(projectPath: string, task: string): Promise<ContextPack> {
+  try {
+    return await buildContextPack(projectPath, task)
+  } catch {
+    return emptyOutlineContextPack(task)
   }
 }
 

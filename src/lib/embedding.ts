@@ -85,11 +85,14 @@ export async function fetchEmbedding(
   if (!cfg.endpoint) return null
 
   const isGoogleNative = isGoogleEmbeddingConfig(cfg)
+  const isDashScope = isDashScopeEmbeddingConfig(cfg)
   const endpoint = isGoogleNative ? googleEmbeddingEndpoint(cfg) : cfg.endpoint
   const headers: Record<string, string> = { "Content-Type": "application/json" }
   if (cfg.apiKey) {
     if (isGoogleNative) {
       headers["x-goog-api-key"] = cfg.apiKey
+    } else if (isDashScope) {
+      headers.Authorization = `Bearer ${cfg.apiKey}`
     } else {
       headers.Authorization = `Bearer ${cfg.apiKey}`
     }
@@ -107,6 +110,8 @@ export async function fetchEmbedding(
         body: JSON.stringify(
           isGoogleNative
             ? googleEmbeddingBody(cfg.model, current, cfg.outputDimensionality)
+            : isDashScope
+            ? dashScopeEmbeddingBody(cfg.model, current)
             : { model: cfg.model, input: current },
         ),
       })
@@ -115,12 +120,18 @@ export async function fetchEmbedding(
         const data = await resp.json()
         const embedding = isGoogleNative
           ? data?.embedding?.values ?? null
+          : isDashScope
+          ? data?.output?.embeddings?.[0]?.embedding ?? null
           : data?.data?.[0]?.embedding ?? null
         if (isNonEmptyNumberArray(embedding)) {
           lastEmbeddingError = null
           return embedding
         }
-        const expectedShape = isGoogleNative ? "embedding.values" : "data[0].embedding"
+        const expectedShape = isGoogleNative
+          ? "embedding.values"
+          : isDashScope
+          ? "output.embeddings[0].embedding"
+          : "data[0].embedding"
         lastEmbeddingError = `Embedding response missing ${expectedShape} (got ${JSON.stringify(data).slice(0, 200)})`
         console.warn(`[Embedding] ${lastEmbeddingError}`)
         return null
@@ -185,6 +196,20 @@ function isGoogleEmbeddingConfig(cfg: EmbeddingConfig): boolean {
   const endpoint = cfg.endpoint.toLowerCase()
   return endpoint.includes("generativelanguage.googleapis.com")
     || /:embedcontent(\?|$)/i.test(endpoint)
+}
+
+function isDashScopeEmbeddingConfig(cfg: EmbeddingConfig): boolean {
+  const endpoint = cfg.endpoint.toLowerCase()
+  return endpoint.includes("dashscope.aliyuncs.com") && endpoint.includes("/embeddings/")
+}
+
+function dashScopeEmbeddingBody(model: string, text: string): Record<string, unknown> {
+  return {
+    model: model.trim(),
+    input: {
+      texts: [text]
+    }
+  }
 }
 
 function googleEmbeddingEndpoint(cfg: EmbeddingConfig): string {

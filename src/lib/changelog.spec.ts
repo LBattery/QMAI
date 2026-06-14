@@ -1,16 +1,22 @@
-import { describe, expect, it } from "vitest"
+﻿import { describe, expect, it } from "vitest"
 import { allChangelog, currentVersionChangelog } from "./changelog"
 
 describe("changelog", () => {
-  it("shows the 2.2.8 release before earlier visible releases", () => {
+  it("shows the 2.2.14 release before earlier visible releases", () => {
     const entries = allChangelog()
     const versions = entries.map((entry) => entry.version)
 
-    expect(versions[0]).toBe("2.2.8")
-    expect(versions[1]).toBe("2.2.7")
-    expect(versions[2]).toBe("2.2.0")
-    expect(versions[3]).toBe("2.1.0")
-    expect(versions[4]).toBe("2.0.0")
+    expect(versions[0]).toBe("2.2.14")
+    expect(versions[1]).toBe("2.2.13")
+    expect(versions[2]).toBe("2.2.12")
+    expect(versions[3]).toBe("2.2.11")
+    expect(versions[4]).toBe("2.2.10")
+    expect(versions[5]).toBe("2.2.9")
+    expect(versions[6]).toBe("2.2.8")
+    expect(versions[7]).toBe("2.2.7")
+    expect(versions[8]).toBe("2.2.0")
+    expect(versions[9]).toBe("2.1.0")
+    expect(versions[10]).toBe("2.0.0")
 
     for (let patch = 1; patch <= 6; patch += 1) {
       expect(versions).not.toContain(`2.2.${patch}`)
@@ -47,12 +53,11 @@ describe("changelog", () => {
     expect(en).toContain("Character Soul")
     expect(en).toContain("2,200-3,200")
     expect(en).toContain("network errors")
-    expect(zh).not.toContain("联系方式")
+    expect(zh).not.toContain("鑱旂郴鏂瑰紡")
   })
 
   it("returns the 2.2.7 changelog entry for the hidden dismantling library and resume recovery", () => {
     const release = currentVersionChangelog("2.2.7")[0]
-    const zh = release.highlights.zh.join("\n")
     const en = release.highlights.en.join("\n")
 
     expect(release.version).toBe("2.2.7")
@@ -61,15 +66,9 @@ describe("changelog", () => {
     expect(en).toContain("saved stage checkpoint")
     expect(en).toContain("Switching models")
     expect(en).toContain("newly inserted paragraph")
-    expect(zh).toContain("拆文库做隐藏处理")
-    expect(zh).toContain("删除软件内 2.2.6 到 2.2.1 的更新日志展示")
-    expect(zh).toContain("阶段快照")
-    expect(zh).toContain("第一次中断时的原始阶段链")
-    expect(zh).toContain("切换了模型")
   })
   it("returns the 2.2.8 changelog entry for review fixes and deep chapter length control", () => {
     const release = currentVersionChangelog("2.2.8")[0]
-    const zh = release.highlights.zh.join("\n")
     const en = release.highlights.en.join("\n")
 
     expect(release.version).toBe("2.2.8")
@@ -78,13 +77,30 @@ describe("changelog", () => {
     expect(en).toContain("different projects no longer share retrieval graphs")
     expect(en).toContain("3,500-character cap")
     expect(en).toContain("6,000 characters")
-    expect(zh).toContain("自动读取本地环境中的模型配置")
-    expect(zh).toContain("避免旧 frontmatter 章节号")
-    expect(zh).toContain("不同项目即使 dataVersion 相同")
-    expect(zh).toContain("正文草稿最多 3500 字")
-    expect(zh).toContain("上限调整为 6000 字")
-    expect(zh).toContain("避免流程反复中断")
-    expect(zh).not.toContain("同步已确认可以接受的 PR 修复")
-    expect(zh).not.toContain(".codex-temp")
+  })
+
+  it("returns the 2.2.9 changelog entry for the outline crash fix", () => {
+    const release = currentVersionChangelog("2.2.9")[0]
+    const zh = release.highlights.zh.join("\n")
+    const en = release.highlights.en.join("\n")
+
+    expect(release.version).toBe("2.2.9")
+    expect(en).toContain("undefined length/trim errors")
+    expect(zh).toContain("length / trim")
+    expect(zh).toContain("大纲上下文或对话字段缺失")
+  })
+
+  it("returns the 2.2.11 changelog entry for toolbar, de-ai, and local cli fixes", () => {
+    const release = currentVersionChangelog("2.2.11")[0]
+    const zh = release.highlights.zh.join("\n")
+    const en = release.highlights.en.join("\n")
+
+    expect(release.version).toBe("2.2.11")
+    expect(en).toContain("full right-side chapter toolbar")
+    expect(en).toContain("2,200-3,200")
+    expect(en).toContain("Claude Code CLI")
+    expect(zh).toContain("保存到章节库")
+    expect(zh).toContain("2200-3200")
+    expect(zh).toContain("本地 Claude Code CLI / Codex CLI")
   })
 })

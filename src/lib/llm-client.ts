@@ -1,7 +1,9 @@
 import type { LlmConfig } from "@/stores/wiki-store"
+import { isAzureOpenAiEndpoint } from "@/lib/azure-openai"
 import { getProviderConfig, type RequestOverrides } from "./llm-providers"
 import { getHttpFetch, isFetchNetworkError } from "./tauri-fetch"
 import { countReasoningCharsInLine, extractReasoningTextFromLine } from "./reasoning-detector"
+import { resolveRuntimeLocalCliConfig } from "./local-cli-config"
 
 export type { ChatMessage, RequestOverrides } from "./llm-providers"
 export { isFetchNetworkError } from "./tauri-fetch"
@@ -79,20 +81,21 @@ export async function streamChat(
    */
   requestOverrides?: RequestOverrides,
 ): Promise<void> {
+  const runtimeConfig = await resolveRuntimeLocalCliConfig(config)
   const { onToken, onDone, onError } = callbacks
 
   // Claude Code CLI uses a subprocess transport (stdin/stdout), not
   // HTTP. Dispatch before getProviderConfig — that function throws for
   // this provider because it has no URL/headers.
-  if (config.provider === "claude-code") {
-    return streamViaClaudeCodeCli(config, messages, callbacks, signal, requestOverrides)
+  if (runtimeConfig.provider === "claude-code") {
+    return streamViaClaudeCodeCli(runtimeConfig, messages, callbacks, signal, requestOverrides)
   }
 
-  if (config.provider === "codex-cli") {
-    return streamViaCodexCli(config, messages, callbacks, signal, requestOverrides)
+  if (runtimeConfig.provider === "codex-cli") {
+    return streamViaCodexCli(runtimeConfig, messages, callbacks, signal, requestOverrides)
   }
 
-  const providerConfig = getProviderConfig(config)
+  const providerConfig = getProviderConfig(runtimeConfig)
 
   // Combined abort: (a) user cancel, (b) our long-horizon timeout.
   // The long timeout is a backstop for truly stuck requests; it's NOT
@@ -192,6 +195,18 @@ export async function streamChat(
       if (body) errorDetail += ` — ${body}`
     } catch {
       // ignore body read failure
+    }
+    if (
+      response.status === 404 &&
+      (runtimeConfig.provider === "azure" ||
+        (runtimeConfig.provider === "custom" && isAzureOpenAiEndpoint(runtimeConfig.customEndpoint)))
+    ) {
+      onError(
+        new Error(
+          `${errorDetail}。Azure OpenAI 返回 404 通常表示部署名称不正确。请确认模型栏填写的是 Azure deployment name，而不是模型 SKU；接口地址填写 https://<resource>.openai.azure.com 或包含 /openai/deployments/<deployment-name> 的地址。`,
+        ),
+      )
+      return
     }
     if (shouldRetryWithBrowserFetch(errorDetail) && typeof globalThis.fetch === "function") {
       try {

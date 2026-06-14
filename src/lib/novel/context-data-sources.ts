@@ -159,7 +159,7 @@ export const fallbackRecentSummariesDataSource: DataSource<string[]> = {
           if (meta) {
             const bodyStart = content.indexOf("---", 4)
             const body = bodyStart >= 0 ? content.slice(bodyStart + 3).trim() : content
-            summaries.push(`第${meta.chapterNumber}章 (${meta.status}): ${body.slice(0, 500)}`)
+            summaries.push(`第${meta.chapterNumber}章 (${meta.status}): ${body.slice(0, 800)}`)
           }
         } catch {}
       }
@@ -180,8 +180,10 @@ export const fallbackPreviousEndingDataSource: DataSource<string> = {
       const results = await searchWiki(context.projectPath, `chapter_number:${context.chapterNumber - 1}`)
       if (results.length > 0) {
         const content = await readFile(results[0].path)
-        const lines = content.split("\n")
-        return lines.slice(-10).join("\n")
+        const bodyStart = content.indexOf("---", 4)
+        const body = bodyStart >= 0 ? content.slice(bodyStart + 3).trim() : content
+        const lines = body.split("\n")
+        return lines.slice(-30).join("\n").slice(-1200)
       }
     } catch {}
     return ""

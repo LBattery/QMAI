@@ -38,6 +38,7 @@ export async function addToRecentProjects(
 }
 
 const LLM_CONFIG_KEY = "llmConfig"
+const AI_CHAT_MODEL_KEY = "aiChatModel"
 const PROVIDER_CONFIGS_KEY = "providerConfigs"
 const ACTIVE_PRESET_KEY = "activePresetId"
 
@@ -49,6 +50,16 @@ export async function saveLlmConfig(config: LlmConfig): Promise<void> {
 export async function loadLlmConfig(): Promise<LlmConfig | null> {
   const store = await getStore()
   return (await store.get<LlmConfig>(LLM_CONFIG_KEY)) ?? null
+}
+
+export async function saveAiChatModel(model: string): Promise<void> {
+  const store = await getStore()
+  await store.set(AI_CHAT_MODEL_KEY, model)
+}
+
+export async function loadAiChatModel(): Promise<string | null> {
+  const store = await getStore()
+  return (await store.get<string>(AI_CHAT_MODEL_KEY)) ?? null
 }
 
 export async function saveProviderConfigs(configs: ProviderConfigs): Promise<void> {
@@ -605,6 +616,7 @@ function normalizeNovelConfig(
     contextTokenBudget: Math.max(0, config.contextTokenBudget ?? DEFAULT_NOVEL_CONFIG.contextTokenBudget),
     recentSummaryWindow: Math.max(1, Math.min(30, config.recentSummaryWindow ?? DEFAULT_NOVEL_CONFIG.recentSummaryWindow)),
     searchTopK: Math.max(1, Math.min(20, config.searchTopK ?? DEFAULT_NOVEL_CONFIG.searchTopK)),
+    chapterTargetChars: Math.max(500, Math.min(20000, config.chapterTargetChars ?? DEFAULT_NOVEL_CONFIG.chapterTargetChars)),
     autoIngestOnSave: config.autoIngestOnSave ?? DEFAULT_NOVEL_CONFIG.autoIngestOnSave,
     autoExtractOnImport: config.autoExtractOnImport ?? DEFAULT_NOVEL_CONFIG.autoExtractOnImport,
     reviewBeforeSave: config.reviewBeforeSave ?? DEFAULT_NOVEL_CONFIG.reviewBeforeSave,

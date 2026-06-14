@@ -32,6 +32,31 @@ function createDeps(): DeepOutlineGenerationDeps {
 }
 
 describe("runDeepOutlineGeneration", () => {
+  it("falls back safely when outline context is missing", async () => {
+    const deps = createDeps()
+    const thinking: string[] = []
+    const final: string[] = []
+
+    const result = await runDeepOutlineGeneration(
+      {
+        llmConfig,
+        userRequest: "生成第八章细纲",
+        context: undefined as unknown as string,
+        historyMessages: undefined,
+      },
+      {
+        onThinking: (content) => thinking.push(content),
+        onFinalContent: (content) => final.push(content),
+      },
+      deps,
+    )
+
+    expect(result.finalContent).toContain("第八章细纲")
+    expect(final.join("")).toContain("第八章细纲")
+    expect(thinking.join("\n")).toContain("阶段1：大纲上下文分析")
+    expect(thinking.join("\n")).toContain("未读取到现有大纲或章节上下文")
+  })
+
   it("publishes staged outline thinking and returns the final outline", async () => {
     const deps = createDeps()
     const thinking: string[] = []

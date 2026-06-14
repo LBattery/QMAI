@@ -19,13 +19,13 @@ const firstThreePatterns = [
 ]
 
 const firstChapterPatterns = [
-  /首章/,
   /第一章/,
   /第\s*1\s*章/,
   /开篇章节/,
-  /开篇/,
-  /开局/,
   /小说开头/,
+  // “开篇/开局/首章/开头”属于弱关键词：仅当紧跟写作动词时才视为
+  // “写开篇章节”，避免“开篇200字内必须制造钩子”这类写作要求误触发。
+  /(写|生成|创作|撰写|开始)(一?个)?(小说)?(开篇|开局|首章|开头)/,
 ]
 
 const secondChapterPatterns = [
@@ -43,7 +43,37 @@ export function detectGoldenThreeChapterRequest(text: string, chapterNumber?: nu
   if (!normalized) return disabledGoldenThreeChapterRequest
 
   const requestedFirstThree = firstThreePatterns.some((pattern) => pattern.test(normalized))
-  if (requestedFirstThree || firstChapterPatterns.some((pattern) => pattern.test(normalized)) || chapterNumber === 1) {
+
+  // 已解析出明确目标章节号时，以章节号为准。文本中顺带出现的
+  // “开篇/第一章”字样（例如“开篇200字内必须制造钩子”这类写作要求）
+  // 不再把目标章节改写成第1章（issue #9）。
+  if (typeof chapterNumber === "number" && chapterNumber > 0) {
+    if (chapterNumber === 1) {
+      return {
+        enabled: true,
+        targetChapter: 1,
+        outputMode: "first_chapter_with_directions",
+        requestedFirstThree,
+      }
+    }
+    if (chapterNumber === 2 || chapterNumber === 3) {
+      return {
+        enabled: true,
+        targetChapter: chapterNumber,
+        outputMode: "chapter_only",
+        requestedFirstThree: false,
+      }
+    }
+    return disabledGoldenThreeChapterRequest
+  }
+
+  // “继续生成下一章”类请求：目标章节由章节库/会话状态决定，
+  // 不按文本关键词启用黄金三章。
+  if (/下一章|下1章|下章|新的?一章/.test(normalized.replace(/\s+/g, ""))) {
+    return disabledGoldenThreeChapterRequest
+  }
+
+  if (requestedFirstThree || firstChapterPatterns.some((pattern) => pattern.test(normalized))) {
     return {
       enabled: true,
       targetChapter: 1,
@@ -52,7 +82,7 @@ export function detectGoldenThreeChapterRequest(text: string, chapterNumber?: nu
     }
   }
 
-  if (secondChapterPatterns.some((pattern) => pattern.test(normalized)) || chapterNumber === 2) {
+  if (secondChapterPatterns.some((pattern) => pattern.test(normalized))) {
     return {
       enabled: true,
       targetChapter: 2,
@@ -61,7 +91,7 @@ export function detectGoldenThreeChapterRequest(text: string, chapterNumber?: nu
     }
   }
 
-  if (thirdChapterPatterns.some((pattern) => pattern.test(normalized)) || chapterNumber === 3) {
+  if (thirdChapterPatterns.some((pattern) => pattern.test(normalized))) {
     return {
       enabled: true,
       targetChapter: 3,

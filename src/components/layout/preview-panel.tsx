@@ -717,12 +717,14 @@ export function PreviewPanel() {
       setDeAiProcessing(false)
       return
     }
+    const { loadCustomDeAiSkill } = await import("@/lib/novel/de-ai-adapter")
+    const customDeAiSkill = await loadCustomDeAiSkill(project?.path)
     const source = fileContent
     let result = ""
     try {
       await streamChat(
         llmConfig,
-        buildDeAiRewriteMessages(source),
+        buildDeAiRewriteMessages(source, customDeAiSkill || undefined),
         {
           onToken: (token) => {
             result += token
@@ -784,13 +786,16 @@ export function PreviewPanel() {
     const actionLabel = action === "polish" ? "AI润色" : "去AI味"
     setSaveStatus(`${actionLabel}处理中...`)
 
+    const { loadCustomDeAiSkill } = await import("@/lib/novel/de-ai-adapter")
+    const customDeAiSkill = await loadCustomDeAiSkill(project?.path)
+
     let result = ""
     try {
       await streamChat(
         llmConfig,
         action === "polish"
           ? buildPolishSelectionMessages(selection.text)
-          : buildDeAiRewriteMessages(selection.text),
+          : buildDeAiRewriteMessages(selection.text, customDeAiSkill || undefined),
         {
           onToken: (token) => {
             result += token

@@ -107,6 +107,7 @@ type SpawnPayload = Record<string, unknown> & {
   streamId: string
   model: string
   messages: ChatMessage[]
+  isolateLocalConfig: boolean
 }
 
 /**
@@ -143,6 +144,12 @@ export async function streamClaudeCodeCli(
   let unlistenData: UnlistenFn | undefined
   let unlistenDone: UnlistenFn | undefined
   let finished = false
+  let aborted = signal?.aborted ?? false
+  let emittedToken = false
+  let resolveCompletion: () => void = () => {}
+  const completion = new Promise<void>((resolve) => {
+    resolveCompletion = resolve
+  })
 
   // Diagnostic capture for failure paths. The Rust side emits every
   // stdout line; lines the parser doesn't recognize (non-JSON,
@@ -173,14 +180,20 @@ export async function streamClaudeCodeCli(
     finished = true
     cleanup()
     cb()
+    resolveCompletion()
   }
 
   const abortListener = () => {
+    aborted = true
     void invoke("claude_cli_kill", { streamId }).catch(() => {
       // Kill is best-effort; if the process already exited, the Rust
       // side returns Ok and the done handler fires normally.
     })
     finishWith(onDone)
+  }
+  if (aborted) {
+    finishWith(onDone)
+    return
   }
   signal?.addEventListener("abort", abortListener)
 
@@ -189,6 +202,7 @@ export async function streamClaudeCodeCli(
     unlistenData = await listen<string>(`claude-cli:${streamId}`, (event) => {
       const token = parse(event.payload)
       if (token !== null) {
+        emittedToken = true
         onToken(token)
       } else {
         // Parser didn't recognize this line. Stash it in case the
@@ -198,6 +212,10 @@ export async function streamClaudeCodeCli(
         captureUnparsed(event.payload)
       }
     })
+    if (aborted || finished) {
+      cleanup()
+      return
+    }
 
     unlistenDone = await listen<{ code: number | null; stderr: string }>(
       `claude-cli:${streamId}:done`,
@@ -210,18 +228,39 @@ export async function streamClaudeCodeCli(
               new Error(buildExitError(code, stderr, unparsedLines.join("\n"))),
             ),
           )
+        } else if (!emittedToken) {
+          const details = stderr || unparsedLines.join("\n").trim()
+          finishWith(() =>
+            onError(new Error(
+              details
+                ? `Claude Code CLI completed but returned no content:\n${details}`
+                : "Claude Code CLI completed but returned no content. Try running `claude -p` in a terminal to inspect the output, or switch to the Anthropic API in Settings.",
+            )),
+          )
         } else {
           finishWith(onDone)
         }
       },
     )
+    if (aborted || finished) {
+      cleanup()
+      return
+    }
 
     const payload: SpawnPayload = {
       streamId,
       model: config.model,
       messages,
+      isolateLocalConfig: config.localCliIsolation === true,
     }
     await invoke("claude_cli_spawn", payload)
+    if (aborted || signal?.aborted) {
+      aborted = true
+      await invoke("claude_cli_kill", { streamId }).catch(() => {})
+      finishWith(onDone)
+      return
+    }
+    await completion
   } catch (err) {
     finishWith(() => {
       const message = err instanceof Error ? err.message : String(err)

@@ -152,4 +152,66 @@ describe("review-adapter staged review", () => {
       suggestion: "改为通过族谱缺页和行为细节推断异常。",
     }])
   })
+  it("passes the provided abort signal into staged review streaming", async () => {
+    const controller = new AbortController()
+    const receivedSignals: Array<AbortSignal | undefined> = []
+    streamChatMock.mockImplementation(async (
+      _config: LlmConfig,
+      _messages: Array<{ role: string; content: string }>,
+      callbacks: StreamCallbacks,
+      signal?: AbortSignal,
+    ) => {
+      receivedSignals.push(signal)
+      callbacks.onToken("[]")
+      callbacks.onDone()
+    })
+
+    await reviewChapter(
+      "E:/Novel",
+      "测试正文",
+      8,
+      undefined,
+      controller.signal,
+    )
+
+    expect(streamChatMock).toHaveBeenCalledTimes(4)
+    // 审稿阶段使用“外部停止信号 + 超时信号”的组合信号；
+    // 外部信号中止后，传入流式审稿的组合信号必须立即中止。
+    for (const signal of receivedSignals) {
+      expect(signal).toBeDefined()
+      expect(signal?.aborted).toBe(false)
+    }
+    controller.abort()
+    for (const signal of receivedSignals) {
+      expect(signal?.aborted).toBe(true)
+    }
+  })
+
+  it("starts the staged review already aborted when the stop signal fired beforehand", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const receivedSignals: Array<AbortSignal | undefined> = []
+    streamChatMock.mockImplementation(async (
+      _config: LlmConfig,
+      _messages: Array<{ role: string; content: string }>,
+      callbacks: StreamCallbacks,
+      signal?: AbortSignal,
+    ) => {
+      receivedSignals.push(signal)
+      callbacks.onToken("[]")
+      callbacks.onDone()
+    })
+
+    await reviewChapter(
+      "E:/Novel",
+      "测试正文",
+      8,
+      undefined,
+      controller.signal,
+    ).catch(() => undefined)
+
+    for (const signal of receivedSignals) {
+      expect(signal?.aborted).toBe(true)
+    }
+  })
 })

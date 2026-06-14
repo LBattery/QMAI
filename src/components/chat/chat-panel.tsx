@@ -1,20 +1,22 @@
 import { useRef, useEffect, useCallback, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { BookOpen, Brain, Plus, Trash2, MessageSquare } from "lucide-react"
+import { BookOpen, Brain, PencilLine, Plus, Trash2, MessageSquare, FileEdit } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ChatMessage, StreamingMessage } from "./chat-message"
 import { ChatDockControls } from "./chat-dock-controls"
 import { setLastQueryPages, useSourceFiles } from "./chat-shared"
 import { ChatInput } from "./chat-input"
 import { useChatStore, chatMessagesToLLM, type DisplayMessage } from "@/stores/chat-store"
 import { useWikiStore } from "@/stores/wiki-store"
+import { resolveChapterLengthSpec } from "@/lib/novel/deep-chapter-prompts"
 import { streamChat, type ChatMessage as LLMMessage } from "@/lib/llm-client"
 import { executeIngestWrites } from "@/lib/ingest"
 import { routeTask, buildTaskDirective } from "@/lib/novel/task-router"
 import { listDirectory, readFile, writeFile, createDirectory, deleteFile } from "@/commands/fs"
 import { searchWiki, tokenizeQuery } from "@/lib/search"
-import { getNextChapterNumber, resolveTargetChapterNumberForChat } from "@/lib/novel/chapter-utils"
+import { detectLastGeneratedChapterNumber, findChapterFileByNumber, getNextChapterNumber, readSelectedChapterNumberForFile, resolveTargetChapterNumberForChat } from "@/lib/novel/chapter-utils"
 import { buildQmQuaiSystemPrompt, injectDeAiDirective } from "@/lib/novel/de-ai-adapter"
 import { cleanGeneratedChapterContentForSave } from "@/lib/novel/chapter-content-cleanup"
 import { normalizePath, getFileName, getRelativePath } from "@/lib/path-utils"
@@ -25,6 +27,8 @@ import { getConversationTabTitle, sortConversationsByUpdatedAt } from "@/lib/wor
 import { resolveUserVisibleReasoning } from "@/lib/user-visible-reasoning"
 import { createDeepThinkingStreamRenderer } from "@/lib/deep-thinking-stream"
 import { resolveNovelModel } from "@/lib/novel/model-resolver"
+import { fetchLlmModelList } from "@/lib/settings-model-list"
+import { saveAiChatModel } from "@/lib/project-store"
 import {
   buildGoldenThreeChapterDirective,
   detectGoldenThreeChapterRequest,
@@ -37,6 +41,11 @@ import {
   stripContinueUnfinishedDeepChapterContext,
 } from "./chat-resume"
 import { getCopyableAssistantContent } from "@/lib/chat-copy-content"
+import { buildModelSelectOptions } from "@/components/settings/model-select-input"
+import { isChatEditRequest, resolveChatEditTarget, validateStructuredChapterEditResult } from "@/lib/novel/chat-edit-mode"
+import { backupChapterFile } from "@/lib/novel/chapter-backup"
+import { decideChapterSaveStrategy, detectGeneratedTargetChapterNumber } from "@/lib/novel/chapter-save-strategy"
+import { normalizeChapterEditFile } from "@/lib/novel/chapter-edit-file"
 
 function formatDate(timestamp: number): string {
   const d = new Date(timestamp)
@@ -173,6 +182,10 @@ export function ChatPanel() {
   const project = useWikiStore((s) => s.project)
   const novelMode = useWikiStore((s) => s.novelMode)
   const llmConfig = useWikiStore((s) => s.llmConfig)
+  const aiChatModel = useWikiStore((s) => s.aiChatModel)
+  const setAiChatModel = useWikiStore((s) => s.setAiChatModel)
+  const chatEditModeEnabled = useWikiStore((s) => s.chatEditModeEnabled)
+  const setChatEditModeEnabled = useWikiStore((s) => s.setChatEditModeEnabled)
   const setFileTree = useWikiStore((s) => s.setFileTree)
   const selectedFile = useWikiStore((s) => s.selectedFile)
 
@@ -189,7 +202,7 @@ export function ChatPanel() {
   const [isSavingChapter, setIsSavingChapter] = useState(false)
   const [pendingSoulDialog, setPendingSoulDialog] = useState({ open: false, summary: "" })
   const [deepChapterEnabled, setDeepChapterEnabled] = useState(true)
-
+  const [aiChatModelOptions, setAiChatModelOptions] = useState<string[]>([])
   const closeSoulDialog = useCallback((confirmed: boolean) => {
     const resolver = soulDialogResolverRef.current
     soulDialogResolverRef.current = null
@@ -204,52 +217,81 @@ export function ChatPanel() {
     })
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    void fetchLlmModelList(llmConfig)
+      .then((result) => {
+        if (!cancelled) setAiChatModelOptions(result.models)
+      })
+      .catch(() => {
+        if (!cancelled) setAiChatModelOptions([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [llmConfig])
+
   const handleSaveAsChapter = useCallback(async (content: string) => {
     if (!project) return
     const pp = normalizePath(project.path)
     setIsSavingChapter(true)
     setChapterSaveStatus("")
     try {
-      const nextNum = await getNextChapterNumber(pp)
-      const paddedNum = String(nextNum).padStart(3, "0")
-      const fileName = `chapter-${paddedNum}.md`
-      const chapterDir = `${pp}/wiki/chapters`
-      await createDirectory(chapterDir)
-      const chapterPath = `${chapterDir}/${fileName}`
-      const chapterTitle = `第${nextNum}章`
       const cleanedContent = cleanGeneratedChapterContentForSave(getCopyableAssistantContent(content))
+      const selectedChapterNumber = await readSelectedChapterNumberForFile(selectedFile)
+      const generatedTargetChapterNumber = detectGeneratedTargetChapterNumber(cleanedContent)
+      const explicitTargetPath = generatedTargetChapterNumber ? await findChapterFileByNumber(pp, generatedTargetChapterNumber) : null
+      const strategy = decideChapterSaveStrategy({
+        selectedChapterNumber: selectedChapterNumber ?? null,
+        selectedChapterHasBody: false,
+        generatedTargetChapterNumber,
+        generatedTargetExists: Boolean(explicitTargetPath),
+      })
 
-      const now = new Date().toISOString().slice(0, 10)
-      const frontmatter = [
-        "---",
-        `type: chapter`,
-        `chapter_number: ${nextNum}`,
-        `chapter_status: draft`,
-        `title: "${chapterTitle}"`,
-        `created: ${now}`,
-        "---",
-        "",
-      ].join("\n")
-      const fullContent = `${frontmatter}# ${chapterTitle}\n\n${cleanedContent}\n`
+      const buildDraftContent = (chapterNumber: number) => {
+        const chapterTitle = `第${chapterNumber}章`
+        const now = new Date().toISOString().slice(0, 10)
+        const frontmatter = [
+          "---",
+          "type: chapter",
+          `chapter_number: ${chapterNumber}`,
+          "chapter_status: draft",
+          `title: "${chapterTitle}"`,
+          `created: ${now}`,
+          "---",
+          "",
+        ].join("\n")
+        return `${frontmatter}# ${chapterTitle}\n\n${cleanedContent}\n`
+      }
 
-      await writeFile(chapterPath, fullContent)
-
-      setChapterSaveStatus(t("chat.savedChapterDraft", { chapter: nextNum, defaultValue: `已保存为第${nextNum}章草稿` }))
+      if (strategy.action === "direct_explicit_target_new") {
+        const chapterDir = `${pp}/wiki/chapters`
+        await createDirectory(chapterDir)
+        const chapterPath = `${chapterDir}/chapter-${String(strategy.targetChapterNumber).padStart(3, "0")}.md`
+        await writeFile(chapterPath, buildDraftContent(strategy.targetChapterNumber))
+        setChapterSaveStatus(`已创建并保存到第${strategy.targetChapterNumber}章`)
+        useWikiStore.getState().setSelectedFile(chapterPath)
+      } else {
+        const nextNum = await getNextChapterNumber(pp)
+        const chapterDir = `${pp}/wiki/chapters`
+        await createDirectory(chapterDir)
+        const chapterPath = `${chapterDir}/chapter-${String(nextNum).padStart(3, "0")}.md`
+        await writeFile(chapterPath, buildDraftContent(nextNum))
+        setChapterSaveStatus(`已保存为第${nextNum}章草稿`)
+        useWikiStore.getState().setSelectedFile(chapterPath)
+      }
 
       const tree = await listDirectory(pp)
       useWikiStore.getState().setFileTree(tree)
       useWikiStore.getState().bumpDataVersion()
-
-      // 自动跳转到刚保存的章节
       useWikiStore.getState().setActiveView("wiki")
-      useWikiStore.getState().setSelectedFile(chapterPath)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setChapterSaveStatus(t("chat.saveFailed", { message }))
     } finally {
       setIsSavingChapter(false)
     }
-  }, [project])
+  }, [project, selectedFile, t])
 
   // Auto-scroll to bottom when messages change or streaming content updates
   // But stop if user manually scrolled up
@@ -312,6 +354,14 @@ export function ChatPanel() {
       let langReminder: string | undefined
       const taskRoute = novelMode ? routeTask(text) : null
       const pp = project ? normalizePath(project.path) : ""
+      // 会话内上次生成的章节号：未保存到章节库时也能正确推进“下一章”
+      const lastGeneratedChapterNumber = novelMode && project
+        ? detectLastGeneratedChapterNumber(
+          useChatStore.getState().getActiveMessages()
+            .filter((m) => m.role === "assistant" && !m.discarded)
+            .map((m) => m.content),
+        )
+        : undefined
       const targetChapterNumber = novelMode && project && taskRoute
         ? await resolveTargetChapterNumberForChat({
           projectPath: pp,
@@ -319,6 +369,7 @@ export function ChatPanel() {
           routeIntent: taskRoute.intent,
           routeChapterNumber: taskRoute.chapterNumber,
           selectedFile,
+          lastGeneratedChapterNumber,
         })
         : undefined
       const effectiveTaskRoute = taskRoute && targetChapterNumber
@@ -331,12 +382,162 @@ export function ChatPanel() {
           },
         }
         : taskRoute
+      const effectiveChatLlmConfig = aiChatModel.trim()
+        ? { ...llmConfig, model: aiChatModel.trim() }
+        : llmConfig
+      const shouldUseEditMode = novelMode && chatEditModeEnabled && isChatEditRequest(text)
       const goldenThreeChapter = novelMode
         ? detectGoldenThreeChapterRequest(text, effectiveTaskRoute?.chapterNumber)
         : undefined
       const dismantlingDirective = novelMode && project
         ? await loadEnabledDismantlingDirective(pp).catch(() => "")
         : ""
+      if (shouldUseEditMode) {
+        const resolvedTarget = resolveChatEditTarget({
+          userRequest: text,
+          selectedChapterNumber: await readSelectedChapterNumberForFile(selectedFile) ?? null,
+        })
+        if (!resolvedTarget.ok) {
+          finalizeStream(resolvedTarget.message, [])
+          setStreaming(false)
+          activeStreamSessionRef.current = null
+          return
+        }
+
+        const chapterPayloads = await Promise.all(
+          resolvedTarget.target.chapterNumbers.map(async (chapterNumber) => {
+            const chapterPath = await findChapterFileByNumber(pp, chapterNumber)
+            if (!chapterPath) {
+              return { chapterNumber, chapterPath: null, content: "" }
+            }
+            const original = await readFile(chapterPath).catch(() => "")
+            return { chapterNumber, chapterPath, content: original }
+          }),
+        )
+
+        if (chapterPayloads.some((item) => !item.chapterPath)) {
+          const missing = chapterPayloads.filter((item) => !item.chapterPath).map((item) => item.chapterNumber).join("、")
+          finalizeStream(`未找到以下章节，暂时无法执行修改：第${missing}章`, [])
+          setStreaming(false)
+          activeStreamSessionRef.current = null
+          return
+        }
+
+        const editPrompt = [
+          "你正在执行小说章节修改任务。",
+          "请严格按照用户要求修改指定章节内容。",
+          "如果是多章修改，必须逐章返回完整修改稿。",
+          "输出格式必须严格如下：",
+          "【第11章】",
+          "修改后的完整正文",
+          "",
+          "【第12章】",
+          "修改后的完整正文",
+          "",
+          "不要解释，不要补充说明。",
+          "",
+          `用户要求：${text}`,
+          "",
+          "待修改章节如下：",
+          ...chapterPayloads.map((item) => `【第${item.chapterNumber}章原文】\n${item.content}`),
+        ].join("\n")
+
+        const controller = new AbortController()
+        abortRef.current = controller
+        let editResult = ""
+        let editError: Error | null = null
+
+        await streamChat(
+          effectiveChatLlmConfig,
+          [{ role: "user", content: editPrompt }],
+          {
+            onToken: (token) => {
+              if (!streamSessionGuardRef.current.isActive(sessionId)) return
+              editResult += token
+              appendStreamToken(token)
+            },
+            onDone: () => {},
+            onError: (error) => {
+              editError = error
+            },
+          },
+          controller.signal,
+          { reasoning: resolveUserVisibleReasoning(effectiveChatLlmConfig.reasoning) },
+        )
+
+        if (editError) {
+          const editErrorMessage = String(editError)
+          finalizeStream(`修改失败：${editErrorMessage}`, [])
+          setStreaming(false)
+          activeStreamSessionRef.current = null
+          return
+        }
+
+        const validatedEdits = resolvedTarget.target.mode === "single"
+          ? {
+            ok: true as const,
+            files: [{
+              chapterNumber: resolvedTarget.target.chapterNumbers[0],
+              content: editResult,
+            }],
+          }
+          : validateStructuredChapterEditResult({
+            content: editResult,
+            targetChapterNumbers: resolvedTarget.target.chapterNumbers,
+          })
+
+        if (!validatedEdits.ok) {
+          finalizeStream(validatedEdits.message, [])
+          setStreaming(false)
+          activeStreamSessionRef.current = null
+          return
+        }
+
+        for (const chapter of chapterPayloads) {
+          if (!chapter.chapterPath) continue
+          const rawResult = validatedEdits.files.find((item) => item.chapterNumber === chapter.chapterNumber)?.content
+          if (!rawResult) {
+            finalizeStream(`第${chapter.chapterNumber}章缺少修改结果，已停止写回。`, [])
+            setStreaming(false)
+            activeStreamSessionRef.current = null
+            return
+          }
+          const normalizedResult = normalizeChapterEditFile({
+            targetChapterNumber: chapter.chapterNumber,
+            content: rawResult,
+            originalContent: chapter.content,
+          })
+          if (!normalizedResult.ok) {
+            finalizeStream(normalizedResult.message, [])
+            setStreaming(false)
+            activeStreamSessionRef.current = null
+            return
+          }
+          await backupChapterFile({
+            projectPath: pp,
+            chapterPath: chapter.chapterPath,
+            chapterNumber: chapter.chapterNumber,
+            content: chapter.content,
+          })
+          await writeFile(chapter.chapterPath, normalizedResult.content)
+        }
+
+        const tree = await listDirectory(pp)
+        useWikiStore.getState().setFileTree(tree)
+        useWikiStore.getState().bumpDataVersion()
+        if (chapterPayloads[0]?.chapterPath) {
+          useWikiStore.getState().setSelectedFile(chapterPayloads[0].chapterPath)
+        }
+        finalizeStream(
+          resolvedTarget.target.mode === "single"
+            ? `已完成第${resolvedTarget.target.chapterNumbers[0]}章修改，并已自动备份原内容。`
+            : `已完成 ${resolvedTarget.target.chapterNumbers.length} 个章节的批量修改，并已分别备份原内容。`,
+          [],
+        )
+        setStreaming(false)
+        activeStreamSessionRef.current = null
+        return
+      }
       if (novelMode && project && deepChapterEnabled) {
         const { runDeepChapterGeneration } = await import("@/lib/novel/deep-chapter-generation")
         const controller = new AbortController()
@@ -358,7 +559,7 @@ export function ChatPanel() {
               chapterNumber: effectiveTaskRoute?.chapterNumber,
               goldenThreeChapter: goldenThreeChapter?.enabled ? goldenThreeChapter : undefined,
               dismantlingReferenceDirective: dismantlingDirective,
-              llmConfig,
+              llmConfig: effectiveChatLlmConfig,
             },
             {
               onThinking: appendThinkingBlock,
@@ -566,7 +767,28 @@ export function ChatPanel() {
             const taskDirective = buildTaskDirective(effectiveTaskRoute)
             const goldenDirective = buildGoldenThreeChapterDirective(goldenThreeChapter)
             const { buildContextPack, contextPackToPrompt } = await import("@/lib/novel/context-engine")
-            const contextPack = await buildContextPack(pp, text, effectiveTaskRoute.chapterNumber)
+            const contextPack = await buildContextPack(pp, text, effectiveTaskRoute.chapterNumber).catch(() => ({
+              task: text,
+              chapterGoal: "",
+              outline: "",
+              recentSummaries: [],
+              previousChapterEnding: "",
+              characterStates: "",
+              soulDoc: "",
+              characterAuras: "",
+              cognitionStates: "",
+              foreshadowingStates: "",
+              timeline: "",
+              relatedSettings: "",
+              canonRules: "",
+              writingStyle: "",
+              searchResults: "",
+              graphSearchResults: "",
+              mustDo: "",
+              mustAvoid: "",
+              nextChapterAdvice: "",
+              revisionDirectives: "",
+            }))
             if (contextPack.characterAuras.trim()) {
             const confirmed = await requestSoulDialog(contextPack.characterAuras)
             if (!confirmed) {
@@ -739,7 +961,7 @@ export function ChatPanel() {
       }
 
       await streamChat(
-        llmConfig,
+        effectiveChatLlmConfig,
         llmMessages,
         {
           onToken: (token) => {
@@ -767,10 +989,10 @@ export function ChatPanel() {
           },
         },
         controller.signal,
-        { reasoning: resolveUserVisibleReasoning(llmConfig.reasoning) },
+        { reasoning: resolveUserVisibleReasoning(effectiveChatLlmConfig.reasoning) },
       )
     },
-    [llmConfig, addMessage, setStreaming, setStreamingContent, appendStreamToken, finalizeStream, createConversation, maxHistoryMessages, requestSoulDialog, deepChapterEnabled, project, novelMode, selectedFile],
+    [aiChatModel, llmConfig, chatEditModeEnabled, addMessage, setStreaming, setStreamingContent, appendStreamToken, finalizeStream, createConversation, maxHistoryMessages, requestSoulDialog, deepChapterEnabled, project, novelMode, selectedFile],
   )
 
   const handleStop = useCallback(() => {
@@ -813,7 +1035,10 @@ export function ChatPanel() {
 
   const handleContinueNextChapter = useCallback(() => {
     if (isStreaming) return
-    handleSend("请根据当前小说上下文、记忆库、最新章节结尾、下一章推进建议和章纲，继续生成下一章正文。只输出可直接保存到章节库的小说正文，不要解释，不要列提纲。正文必须是完整章节，目标约 3000 字，建议 2800-3300 字，低于 2600 字视为未完成。")
+    // 按设置中的单章目标字数生成提示词（issue #8）
+    const lengthSpec = resolveChapterLengthSpec(useWikiStore.getState().novelConfig?.chapterTargetChars)
+    const target = lengthSpec.targetChars
+    handleSend(`请根据当前小说上下文、记忆库、最新章节结尾、下一章推进建议和章纲，继续生成下一章正文。只输出可直接保存到章节库的小说正文，不要解释，不要列提纲。正文必须是完整章节，目标约 ${target} 字，建议 ${target - 200}-${target + 300} 字，低于 ${target - 400} 字视为未完成。`)
   }, [handleSend, isStreaming])
 
   const handleContinueUnfinished = useCallback(async (assistantMessage: DisplayMessage) => {
@@ -917,7 +1142,28 @@ export function ChatPanel() {
           const taskDirective = resumeRoute ? buildTaskDirective(resumeRoute) : ""
           const goldenDirective = buildGoldenThreeChapterDirective(goldenResume)
           const { buildContextPack, contextPackToPrompt } = await import("@/lib/novel/context-engine")
-           const contextPack = await buildContextPack(pp, originalRequest, resumeRoute?.chapterNumber)
+           const contextPack = await buildContextPack(pp, originalRequest, resumeRoute?.chapterNumber).catch(() => ({
+             task: originalRequest,
+             chapterGoal: "",
+             outline: "",
+             recentSummaries: [],
+             previousChapterEnding: "",
+             characterStates: "",
+             soulDoc: "",
+             characterAuras: "",
+             cognitionStates: "",
+             foreshadowingStates: "",
+             timeline: "",
+             relatedSettings: "",
+             canonRules: "",
+             writingStyle: "",
+             searchResults: "",
+             graphSearchResults: "",
+             mustDo: "",
+             mustAvoid: "",
+             nextChapterAdvice: "",
+             revisionDirectives: "",
+           }))
            const budget = novelConfig.contextTokenBudget > 0 ? novelConfig.contextTokenBudget : undefined
            const dismantlingDirective = await loadEnabledDismantlingDirective(pp).catch(() => "")
            continuationSystemPrompt = [
@@ -1098,23 +1344,83 @@ export function ChatPanel() {
             onStop={handleStop}
             isStreaming={isStreaming}
             leadingControls={
-              <div className="flex items-center gap-1">
-                <ChatDockControls />
-                {novelMode ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    aria-pressed={deepChapterEnabled}
-                    className={getDeepChapterToggleButtonClass(deepChapterEnabled)}
-                    onClick={() => setDeepChapterEnabled((enabled) => !enabled)}
-                    title={deepChapterEnabled ? "深度章节生成已开启" : "深度章节生成已关闭"}
-                    aria-label={deepChapterEnabled ? "关闭深度章节生成" : "开启深度章节生成"}
-                  >
-                    <Brain className="h-4 w-4" />
-                  </Button>
-                ) : null}
-              </div>
+              <TooltipProvider delay={200}>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <ChatDockControls />
+                    {novelMode ? (
+                      <>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          aria-pressed={deepChapterEnabled}
+                          className={getDeepChapterToggleButtonClass(deepChapterEnabled)}
+                          onClick={() => setDeepChapterEnabled(true)}
+                          title="深度思考"
+                          aria-label="深度思考"
+                        >
+                          <Brain className="mr-1 h-4 w-4" />
+                          深度思考
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          aria-pressed={!deepChapterEnabled}
+                          className={!deepChapterEnabled ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground" : ""}
+                          onClick={() => setDeepChapterEnabled(false)}
+                          title="普通模式"
+                          aria-label="普通模式"
+                        >
+                          <PencilLine className="mr-1 h-4 w-4" />
+                          普通模式
+                        </Button>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={(
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                aria-pressed={chatEditModeEnabled}
+                                className={chatEditModeEnabled ? "border-amber-500 bg-amber-50 text-amber-900 hover:bg-amber-100" : ""}
+                                onClick={() => setChatEditModeEnabled(!chatEditModeEnabled)}
+                              />
+                            )}
+                          >
+                            <FileEdit className="mr-1 h-4 w-4" />
+                            编辑章节
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="max-w-xs leading-5">
+                            开启后，AI会话会读取当前章节或识别到的章节范围进行修改，并在写回前自动备份原内容。
+                          </TooltipContent>
+                        </Tooltip>
+                      </>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">AI会话模型</span>
+                    <select
+                      value={aiChatModel.trim() || "__default__"}
+                      onChange={(event) => {
+                        const nextValue = event.target.value === "__default__" ? "" : event.target.value
+                        setAiChatModel(nextValue)
+                        void saveAiChatModel(nextValue)
+                      }}
+                      className="h-8 min-w-48 rounded-md border border-input bg-background px-2 text-sm"
+                      aria-label="AI会话模型"
+                    >
+                      <option value="__default__">跟随当前主模型</option>
+                      {buildModelSelectOptions(aiChatModel, aiChatModelOptions).map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </TooltipProvider>
             }
             placeholder={
               mode === "ingest"

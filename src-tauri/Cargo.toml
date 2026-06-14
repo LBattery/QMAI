@@ -1,6 +1,6 @@
 [package]
 name = "llm-wiki"
-version = "2.2.8"
+version = "2.2.14"
 description = "LLM Wiki - A personal knowledge base for LLM concepts"
 authors = []
 edition = "2021"
@@ -46,14 +46,15 @@ futures = "0.3"
 tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "rt"] }
 which = "7"
 uuid = { version = "1", features = ["v4"] }
+toml = "0.8"
 # Multimodal image extraction (Phase 1):
 #   `image` re-encodes pdfium's raw bitmap output to PNG so the IPC
 #   payload is self-contained (the frontend doesn't need to know
 #   about pdfium's internal RGBA layout).
 #   `base64` serializes binary image data for Tauri IPC, which is
-#   JSON-only — Vec<u8> roundtrips ~1.33× larger than raw bytes but
+#   JSON-only 鈥?Vec<u8> roundtrips ~1.33脳 larger than raw bytes but
 #   that's acceptable for our ~MB-scale per-image payloads.
-#   `sha2` is for the dedup cache (Phase 3) — same image hash =
+#   `sha2` is for the dedup cache (Phase 3) 鈥?same image hash =
 #   same caption, no redundant VLM calls. Pulled in here so the
 #   extraction layer can also expose the hash if a caller wants it.
 image = { version = "0.25", default-features = false, features = ["png"] }

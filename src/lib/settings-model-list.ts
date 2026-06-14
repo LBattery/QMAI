@@ -1,10 +1,16 @@
-import { getProviderConfig } from "@/lib/llm-providers"
+import { getProviderConfig, withCustomOriginHeader } from "@/lib/llm-providers"
+import { detectLocalCliConfig } from "@/lib/local-cli-config"
 import { isDirectRerankEndpoint } from "@/lib/rerank-api"
 import { getHttpFetch } from "@/lib/tauri-fetch"
 import type { EmbeddingConfig, LlmConfig, RerankConfig } from "@/stores/wiki-store"
 
 export interface LlmModelListResult {
   models: string[]
+}
+
+const MODEL_LIST_COMPAT_HEADERS: Record<string, string> = {
+  Accept: "application/json",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) QMaiWrite",
 }
 
 function uniqueSortedModels(models: string[]): string[] {
@@ -120,30 +126,60 @@ function buildModelsUrl(config: LlmConfig): { url: string; headers: Record<strin
     modelsUrl = `${url.replace(/\/+$/, "")}/models`
   }
 
-  const { "Content-Type": _contentType, ...headers } = providerConfig.headers
-  return { url: modelsUrl, headers }
+  const headers = config.provider === "custom"
+    ? withCustomOriginHeader(providerConfig.headers, modelsUrl)
+    : providerConfig.headers
+  const { "Content-Type": _contentType, ...modelListHeaders } = headers
+  return { url: modelsUrl, headers: modelListHeaders }
 }
 
 async function fetchModelList(url: string, headers: Record<string, string>, _currentModel: string): Promise<LlmModelListResult> {
   const httpFetch = await getHttpFetch()
-  const response = await httpFetch(url, {
+  let response = await httpFetch(url, {
     method: "GET",
     headers,
   })
+  let original403Text: string | null = null
+
+  if (response.status === 403) {
+    original403Text = await response.text().catch(() => "")
+    try {
+      response = await httpFetch(url, {
+        method: "GET",
+        headers: {
+          ...headers,
+          ...MODEL_LIST_COMPAT_HEADERS,
+        },
+      })
+      original403Text = null
+    } catch {
+      throw new Error(`模型列表拉取失败：HTTP 403${original403Text ? ` ${original403Text.slice(0, 200)}` : ""}`)
+    }
+  }
 
   if (!response.ok) {
-    const text = await response.text().catch(() => "")
+    const text = original403Text ?? await response.text().catch(() => "")
     throw new Error(`模型列表拉取失败：HTTP ${response.status}${text ? ` ${text.slice(0, 200)}` : ""}`)
   }
 
   return toModelListResult(parseModelListResponse(await response.json()))
 }
 
+async function fetchLocalCliModel(config: LlmConfig): Promise<LlmModelListResult> {
+  const explicitModel = config.model.trim()
+  if (explicitModel) return { models: [explicitModel] }
+
+  const detect = await detectLocalCliConfig(config.provider)
+  const localModel = detect?.model?.trim() ?? ""
+  if (!localModel) {
+    throw new Error("当前本地 CLI 未配置默认模型，请先在本地 CLI 中设置模型，或在软件里手动填写模型。")
+  }
+  return { models: [localModel] }
+}
+
 export async function fetchLlmModelList(config: LlmConfig): Promise<LlmModelListResult> {
   if (config.provider === "claude-code" || config.provider === "codex-cli") {
-    const model = config.model.trim()
-    if (!model) throw new Error("当前 CLI 模型配置为空，无法拉取模型列表。")
-    return { models: [model] }
+    return fetchLocalCliModel(config)
   }
 
   const { url, headers } = buildModelsUrl(config)
