@@ -15,6 +15,7 @@ import { OUTLINE_SECTION_GENERATION_CONFIGS } from "@/lib/novel/outline-generati
 import { prepareOutlineSaveDraft } from "@/lib/outline-save"
 import { resolveUserVisibleReasoning } from "@/lib/user-visible-reasoning"
 import { runDeepOutlineGeneration } from "@/lib/novel/deep-outline-generation"
+import { resolveNovelModel } from "@/lib/novel/model-resolver"
 import { createDeepThinkingStreamRenderer } from "@/lib/deep-thinking-stream"
 import { ChatInput } from "@/components/chat/chat-input"
 import {
@@ -196,6 +197,7 @@ function OutlineAssistantMessage({ msg, index, isStreaming, streamingContent, ac
 export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const project = useWikiStore((s) => s.project)
   const llmConfig = useWikiStore((s) => s.llmConfig)
+  const novelConfig = useWikiStore((s) => s.novelConfig)
 
   const conversations = useOutlineChatStore((s) => s.conversations)
   const activeConversationId = useOutlineChatStore((s) => s.activeConversationId)
@@ -260,7 +262,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const handleSend = useCallback(async (inputText: string) => {
     const prompt = inputText.trim()
     if (!prompt || !project || isStreaming) return
-    if (!hasUsableLlm(llmConfig)) return
+    const effectiveLlmConfig = resolveNovelModel(llmConfig, novelConfig, "writing")
+    if (!hasUsableLlm(effectiveLlmConfig)) return
 
     let convId = activeConversationId
     if (!convId) {
@@ -345,7 +348,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           appendToResult("</think>")
         }
 
-        await streamChat(llmConfig, chatMessages, {
+        await streamChat(effectiveLlmConfig, chatMessages, {
           onToken: (token) => {
             closeReasoning()
             appendToResult(token)
@@ -357,11 +360,11 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           onError: () => {
             closeReasoning()
           },
-        }, controller.signal, { reasoning: resolveUserVisibleReasoning(llmConfig.reasoning) })
+        }, controller.signal, { reasoning: resolveUserVisibleReasoning(effectiveLlmConfig.reasoning) })
       } else {
         await runDeepOutlineGeneration(
           {
-            llmConfig,
+            llmConfig: effectiveLlmConfig,
             userRequest: prompt,
             context: outlineContext,
             historyMessages,
@@ -390,7 +393,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       setIsStreaming(false)
       abortRef.current = null
     }
-  }, [project, isStreaming, llmConfig, activeConversationId, createConversation, addMessage, replaceLastAssistant, removeLastMessage, setIsStreaming, setStreamingContent])
+  }, [project, isStreaming, llmConfig, novelConfig, activeConversationId, createConversation, addMessage, replaceLastAssistant, removeLastMessage, setIsStreaming, setStreamingContent])
 
   const handleGenerateSection = useCallback((title: string, requestHint: string) => {
     void handleSend(`请继续生成「${title}」。${requestHint} 请基于已有大纲、章节内容和项目记忆直接输出该分项内容，结构清晰，可保存为大纲。`)
@@ -410,7 +413,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
 
   const handleRegenerate = useCallback(async (msgIndex: number) => {
     if (!project || isStreaming || !activeConversationId) return
-    if (!hasUsableLlm(llmConfig)) return
+    const effectiveLlmConfig = resolveNovelModel(llmConfig, novelConfig, "writing")
+    if (!hasUsableLlm(effectiveLlmConfig)) return
 
     // Remove messages from msgIndex onwards
     const conv = useOutlineChatStore.getState().conversations.find(c => c.id === activeConversationId)
@@ -449,7 +453,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
 
       await runDeepOutlineGeneration(
         {
-          llmConfig,
+          llmConfig: effectiveLlmConfig,
           userRequest: lastUserRequest,
           context,
           historyMessages: chatMessages,
@@ -472,7 +476,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       setIsStreaming(false)
       abortRef.current = null
     }
-  }, [project, isStreaming, llmConfig, activeConversationId, addMessage, replaceLastAssistant, setIsStreaming, setStreamingContent])
+  }, [project, isStreaming, llmConfig, novelConfig, activeConversationId, addMessage, replaceLastAssistant, setIsStreaming, setStreamingContent])
 
   const handleCopy = useCallback((content: string, id: string) => {
     navigator.clipboard.writeText(content).then(() => {
