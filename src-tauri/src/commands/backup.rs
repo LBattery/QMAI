@@ -5,6 +5,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tauri::Manager;
+use tauri_plugin_store::StoreExt;
 use walkdir::WalkDir;
 use zip::write::ZipWriter;
 use zip::CompressionMethod;
@@ -118,6 +119,31 @@ fn emit_progress(
             message: message.to_string(),
         },
     );
+}
+
+fn restore_app_state_via_store(
+    app: &tauri::AppHandle,
+    app_state_json: &serde_json::Value,
+) -> Result<(), String> {
+    let store = app
+        .store("app-state.json")
+        .map_err(|e| format!("无法加载应用状态存储: {e}"))?;
+
+    store.clear();
+
+    let obj = app_state_json
+        .as_object()
+        .ok_or_else(|| "app-state.json 格式错误，应为 JSON 对象".to_string())?;
+
+    for (key, value) in obj {
+        store.set(key.clone(), value.clone());
+    }
+
+    store
+        .save()
+        .map_err(|e| format!("保存应用状态存储失败: {e}"))?;
+
+    Ok(())
 }
 
 fn add_dir_to_zip(
@@ -271,11 +297,27 @@ pub async fn export_backup(
         );
 
         // 2. global/app-state.json
-        let app_data_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("无法获取 app_data_dir: {e}"))?;
-        let app_state_path = app_data_dir.join("app-state.json");
+        // 先通过 plugin-store 保存，确保磁盘文件是最新内存状态
+        let app_state_path = match app.store("app-state.json") {
+            Ok(store) => {
+                if let Err(e) = store.save() {
+                    warnings.push(format!("保存 app-state 存储失败: {e}"));
+                }
+                let app_data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|err| format!("无法获取 app_data_dir: {err}"))?;
+                app_data_dir.join("app-state.json")
+            }
+            Err(e) => {
+                warnings.push(format!("无法获取 app-state 存储句柄: {e}"));
+                let app_data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|err| format!("无法获取 app_data_dir: {err}"))?;
+                app_data_dir.join("app-state.json")
+            }
+        };
 
         zip.start_file("global/app-state.json", options)
             .map_err(|e| format!("创建 app-state zip 条目失败: {e}"))?;
@@ -463,13 +505,9 @@ pub async fn import_backup(
                 let app_state_json: serde_json::Value = serde_json::from_slice(&app_state_bytes)
                     .map_err(|e| format!("解析 app-state.json 失败: {e}"))?;
 
-                let app_data_dir = app
-                    .path()
-                    .app_data_dir()
-                    .map_err(|e| format!("无法获取 app_data_dir: {e}"))?;
-                let app_state_path = app_data_dir.join("app-state.json");
-                fs::write(&app_state_path, &app_state_bytes)
-                    .map_err(|e| format!("写入 app-state.json 失败: {e}"))?;
+                // 通过 plugin-store API 恢复，确保内存中的缓存状态也被替换，
+                // 避免应用关闭/重启时旧状态覆盖导入的新状态。
+                restore_app_state_via_store(&app, &app_state_json)?;
 
                 app_state = Some(app_state_json);
             }
