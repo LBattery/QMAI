@@ -718,11 +718,10 @@ function StreamingThinkingBlock({ content }: { content: string }) {
     .filter((p) => p.length > 0)
 
   return (
-    <div className="rounded-md border border-dashed border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20 px-2.5 py-2">
+    <div className="rounded-md border border-dashed border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20 px-2.5 py-2 min-h-[3rem]">
       <div className="flex items-center gap-1.5 mb-1.5">
         <span className="text-sm animate-pulse">💭</span>
         <span className="text-xs font-medium text-amber-700 dark:text-amber-400">思考中...</span>
-        <span className="text-[10px] text-amber-600/50 dark:text-amber-500/40">{paragraphs.length} 段</span>
       </div>
       <div className="max-h-72 overflow-y-auto pr-1 text-xs text-amber-800/70 dark:text-amber-300/60 font-mono leading-relaxed whitespace-pre-wrap break-words">
         {paragraphs.map((p, i) => (
@@ -745,7 +744,7 @@ function ThinkingBlock({ content }: { content: string }) {
     .filter((p) => p.length > 0)
 
   return (
-    <div className="mb-2 rounded-md border border-dashed border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20">
+    <div className="mb-2 rounded-md border border-dashed border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20 min-h-[3rem]">
       <div className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-400">
         <span className="text-sm">💭</span>
         <span className="font-medium">思考过程</span>

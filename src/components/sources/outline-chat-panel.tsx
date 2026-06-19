@@ -1,4 +1,4 @@
-import { useRef, useCallback, useEffect, useMemo } from "react"
+import React, { useRef, useCallback, useEffect, useMemo, useState } from "react"
 import { X, Save, Copy, RefreshCw, FileText, Plus, Trash2 } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useOutlineChatStore, type OutlineChatMessage } from "@/stores/outline-chat-store"
@@ -8,7 +8,6 @@ import { readFile, writeFile, listDirectory, createDirectory, fileExists } from 
 import { streamChat, type ChatMessage } from "@/lib/llm-client"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import ReactMarkdown from "react-markdown"
-import { useState } from "react"
 import { FileEditPreview } from "@/components/chat/file-edit-preview"
 import { ChatDockControls } from "@/components/chat/chat-dock-controls"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -92,21 +91,19 @@ function separateThinking(text: string): { thinking: string | null; answer: stri
   }
 }
 
-function OutlineThinkingBlock({ content, open }: { content: string; open: boolean }) {
-  const lines = content.split("\n").filter((line) => line.trim())
+const OutlineThinkingBlock = React.memo(function OutlineThinkingBlock({ content, open }: { content: string; open: boolean }) {
   return (
-    <div className="mb-2 rounded-md border border-dashed border-amber-500/30 bg-amber-50/50 px-3 py-2 text-xs dark:bg-amber-950/20">
+    <div className="mb-2 rounded-md border border-dashed border-amber-500/30 bg-amber-50/50 px-3 py-2 text-xs dark:bg-amber-950/20 min-h-[3rem]">
       <div className="mb-1.5 flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
         <span className={open ? "animate-pulse" : undefined}>💭</span>
         <span className="font-medium">{open ? "思考中..." : "思考过程"}</span>
-        <span className="text-[10px] text-amber-600/60 dark:text-amber-500/60">{lines.length} 行</span>
       </div>
       <div className="max-h-72 overflow-y-auto border-t border-amber-500/20 pt-2 pr-1 whitespace-pre-wrap break-words font-mono leading-5 text-amber-800/80 dark:text-amber-300/70">
         {content}
       </div>
     </div>
   )
-}
+})
 
 function OutlineAssistantMessage({ msg, index, isStreaming, streamingContent, activeMessagesLength, copied, projectPath, onSaveAsOutline, onCopy, onRegenerate }: {
   msg: import("@/stores/outline-chat-store").OutlineChatMessage
@@ -260,7 +257,11 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     const prompt = inputText.trim()
     if (!prompt || !project || isStreaming) return
     const effectiveLlmConfig = resolveNovelModel(llmConfig, novelConfig, "writing")
-    if (!hasUsableLlm(effectiveLlmConfig)) return
+    if (!hasUsableLlm(effectiveLlmConfig)) {
+      const convId = activeConversationId ?? createConversation()
+      addMessage(convId, { id: crypto.randomUUID(), role: "assistant", content: "请先在设置中配置可用的AI模型（API Key 和模型名称），或在AI会话中选择一个模型。" })
+      return
+    }
 
     let convId = activeConversationId
     if (!convId) {
@@ -377,13 +378,18 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
 
       replaceLastAssistant(convId, result, outlineSources)
       setStreamingContent("")
-    } catch {
-      // If aborted, keep partial content
+    } catch (err) {
+      // If aborted, keep partial content; otherwise show error
       const partial = useOutlineChatStore.getState().streamingContent
       if (partial) {
         replaceLastAssistant(convId!, partial)
       } else {
-        removeLastMessage(convId!)
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        if (errorMsg && !errorMsg.includes("aborted")) {
+          replaceLastAssistant(convId!, `生成失败：${errorMsg}`)
+        } else {
+          removeLastMessage(convId!)
+        }
       }
       setStreamingContent("")
     } finally {
@@ -411,7 +417,10 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const handleRegenerate = useCallback(async (msgIndex: number) => {
     if (!project || isStreaming || !activeConversationId) return
     const effectiveLlmConfig = resolveNovelModel(llmConfig, novelConfig, "writing")
-    if (!hasUsableLlm(effectiveLlmConfig)) return
+    if (!hasUsableLlm(effectiveLlmConfig)) {
+      addMessage(activeConversationId, { id: crypto.randomUUID(), role: "assistant", content: "请先在设置中配置可用的AI模型（API Key 和模型名称），或在AI会话中选择一个模型。" })
+      return
+    }
 
     // Remove messages from msgIndex onwards
     const conv = useOutlineChatStore.getState().conversations.find(c => c.id === activeConversationId)
@@ -465,9 +474,16 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
 
       replaceLastAssistant(activeConversationId, result, sources)
       setStreamingContent("")
-    } catch {
+    } catch (err) {
       const partial = useOutlineChatStore.getState().streamingContent
-      if (partial) replaceLastAssistant(activeConversationId, partial)
+      if (partial) {
+        replaceLastAssistant(activeConversationId, partial)
+      } else {
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        if (errorMsg && !errorMsg.includes("aborted")) {
+          replaceLastAssistant(activeConversationId, `生成失败：${errorMsg}`)
+        }
+      }
       setStreamingContent("")
     } finally {
       setIsStreaming(false)
