@@ -7,14 +7,14 @@ import { useEffect, useState } from "react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useBookAnalysisStore } from "@/stores/book-analysis-store"
 import { Button } from "@/components/ui/button"
-import { BookOpen, Trash2, Eye, RefreshCw } from "lucide-react"
+import { BookOpen, Trash2, RefreshCw } from "lucide-react"
 import { listDirectory, readFile, deleteFile } from "@/commands/fs"
 import { joinPath, normalizePath } from "@/lib/path-utils"
 import { toast } from "@/lib/toast"
 import { deleteOrphanAurasForBook } from "@/lib/novel/book-analysis/aura-cleanup"
 import { listCharacterAuras } from "@/lib/novel/character-aura"
 import { CheckCircle2 } from "lucide-react"
-import type { BookAnalysisMetadata, BookAnalysisResult, CharacterSkill, ExtractedCharacter } from "@/lib/novel/book-analysis/types"
+import type { BookAnalysisMetadata } from "@/lib/novel/book-analysis/types"
 
 interface BookItem {
   id: string
@@ -32,7 +32,7 @@ interface BookItem {
 export function BookAnalysisSidebarPanel() {
   const project = useWikiStore((s) => s.project)
   const setActiveView = useWikiStore((s) => s.setActiveView)
-  const { setCurrentResult, setShowResultViewer } = useBookAnalysisStore()
+  const { setSelectedLibraryBookId } = useBookAnalysisStore()
   const [books, setBooks] = useState<BookItem[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null)
@@ -146,68 +146,10 @@ export function BookAnalysisSidebarPanel() {
   }
 
   const handleViewBook = async (book: BookItem) => {
-    try {
-      // 读取元数据
-      const metadataPath = joinPath(book.path, "metadata.json")
-      const metadataContent = await readFile(metadataPath)
-      const metadata: BookAnalysisMetadata = JSON.parse(metadataContent)
-
-      // 读取角色数据
-      const characters: ExtractedCharacter[] = []
-      try {
-        const charactersDir = joinPath(book.path, "characters")
-        const characterFiles = await listDirectory(charactersDir)
-        for (const file of characterFiles) {
-          if (!file.is_dir && file.name.endsWith(".json")) {
-            const content = await readFile(file.path)
-            characters.push(JSON.parse(content))
-          }
-        }
-      } catch {
-        // 没有角色数据
-      }
-
-      // 读取 Skills 数据
-      const skills: CharacterSkill[] = []
-      try {
-        const skillsDir = joinPath(book.path, "skills")
-        const skillFiles = await listDirectory(skillsDir)
-        for (const file of skillFiles) {
-          if (!file.is_dir && file.name.endsWith(".md")) {
-            const content = await readFile(file.path)
-            const baseName = file.name.replace(/-skill\.md$/i, "").replace(/\.md$/i, "")
-            const character = characters.find((item) => item.name === baseName || file.name.includes(item.name))
-            skills.push({
-              id: character ? `skill-${character.id}` : `skill-${baseName}`,
-              characterId: character?.id ?? baseName,
-              characterName: character?.name ?? baseName,
-              skillContent: content,
-              sourceBook: metadata.title,
-              chapterRange: character ? [`${character.firstAppearance}`, `${character.lastAppearance}`] : [],
-              createdAt: metadata.createdAt,
-              filePath: file.path,
-            })
-          }
-        }
-      } catch {
-        // 没有 Skills 数据
-      }
-
-      // 构建结果对象
-      const result: BookAnalysisResult = {
-        metadata,
-        characters,
-        skills,
-      }
-
-      // 切换到拆书视图并显示结果
-      setActiveView("bookAnalysis")
-      setCurrentResult(result)
-      setShowResultViewer(true)
-    } catch (err) {
-      console.error("Failed to load book:", err)
-      alert("加载作品失败，请重试")
-    }
+    // 选中作品，三栏布局会自动显示详情
+    setSelectedBookId(book.id)
+    setSelectedLibraryBookId(book.id)
+    setActiveView("bookAnalysis")
   }
 
   const handleDeleteBook = async (book: BookItem) => {
@@ -247,10 +189,7 @@ export function BookAnalysisSidebarPanel() {
       <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="text-sm font-semibold text-foreground">拆书作品（测试功能）</span>
-            <span className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-              实验
-            </span>
+            <span className="text-sm font-semibold text-foreground">作品库</span>
           </div>
           <div className="mt-0.5 text-xs text-muted-foreground">
             已分析 {books.length} 部作品
@@ -275,7 +214,7 @@ export function BookAnalysisSidebarPanel() {
           <div className="px-2 py-4 text-xs text-muted-foreground">正在加载...</div>
         ) : books.length === 0 ? (
           <div className="rounded-lg border border-dashed p-4 text-xs leading-5 text-muted-foreground">
-            还没有拆书作品。点击主面板的“拆书作品”按钮开始分析。
+            还没有作品。点击主面板的"导入小说"按钮开始分析。
           </div>
         ) : (
           books.map((book) => (
@@ -289,7 +228,7 @@ export function BookAnalysisSidebarPanel() {
             >
               <button
                 type="button"
-                onClick={() => setSelectedBookId(book.id)}
+                onClick={() => handleViewBook(book)}
                 className="flex min-w-0 flex-1 items-start gap-2 text-left"
               >
                 <BookOpen className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -311,26 +250,15 @@ export function BookAnalysisSidebarPanel() {
                   )}
                 </span>
               </button>
-              <div className="flex shrink-0 gap-1">
-                <button
-                  type="button"
-                  onClick={() => handleViewBook(book)}
-                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
-                  title="查看分析结果"
-                  aria-label="查看分析结果"
-                >
-                  <Eye className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteBook(book)}
-                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                  title="删除作品"
-                  aria-label="删除作品"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => handleDeleteBook(book)}
+                className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                title="删除作品"
+                aria-label="删除作品"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
             </div>
           ))
         )}

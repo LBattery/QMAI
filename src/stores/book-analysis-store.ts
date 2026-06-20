@@ -47,6 +47,10 @@ export interface BookAnalysisState {
   setCurrentResult: (result: BookAnalysisResult | null) => void
   setShowResultViewer: (show: boolean) => void
 
+  // 拆书库作品选中（侧栏与主面板共享）
+  selectedLibraryBookId: string | null
+  setSelectedLibraryBookId: (id: string | null) => void
+
   // 角色识别 actions（feature/character-recognition-and-simple-mode）
   setRecognitionStatus: (status: "idle" | "heuristic" | "llm_scoring" | "llm_recognizing" | "done" | "error") => void
   setRecognizedCharacters: (characters: RecognizedCharacter[]) => void
@@ -68,6 +72,9 @@ export const useBookAnalysisStore = create<BookAnalysisState>((set, get) => ({
   selectedResultPath: null,
   currentResult: null,
   showResultViewer: false,
+
+  // 拆书库作品选中
+  selectedLibraryBookId: null,
 
   // 角色识别初始 state（feature/character-recognition-and-simple-mode）
   recognitionStatus: "idle",
@@ -271,6 +278,10 @@ export const useBookAnalysisStore = create<BookAnalysisState>((set, get) => ({
 
   setShowResultViewer: (show: boolean) => {
     set({ showResultViewer: show })
+  },
+
+  setSelectedLibraryBookId: (id: string | null) => {
+    set({ selectedLibraryBookId: id })
   },
 
   // 角色识别 actions 实现（feature/character-recognition-and-simple-mode）

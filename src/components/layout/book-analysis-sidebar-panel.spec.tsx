@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 /**
- * BookAnalysisSidebarPanel 测试（optimize/sidebar-panel-tests）
- * 验证整行点击 / 删除按钮 stopPropagation / 删时清理等关键交互。
+ * BookAnalysisSidebarPanel 测试
+ * 验证整行点击选中作品 / 删除按钮 stopPropagation / 删时清理等关键交互。
  */
 
 import { act } from "react"
 import { createRoot } from "react-dom/client"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
-// === mocks 必须在 import 之前，工厂内部不能引用外部变量 ===
+const mockSetSelectedLibraryBookId = vi.fn()
+
+// === mocks 必须在 import 之前 ===
 vi.mock("@/commands/fs", () => ({
   listDirectory: vi.fn(),
   readFile: vi.fn(),
@@ -31,20 +33,15 @@ vi.mock("@/stores/wiki-store", () => ({
     }),
 }))
 
-vi.mock("@/stores/book-analysis-store", () => {
-  const setCurrentResult = vi.fn()
-  const setShowResultViewer = vi.fn()
-  return {
-    useBookAnalysisStore: Object.assign(
-      () => ({ setCurrentResult, setShowResultViewer }),
-      { getState: () => ({}) },
-    ),
-  }
-})
+vi.mock("@/stores/book-analysis-store", () => ({
+  useBookAnalysisStore: (selector?: (state: any) => unknown) =>
+    selector
+      ? selector({ setSelectedLibraryBookId: mockSetSelectedLibraryBookId })
+      : { setSelectedLibraryBookId: mockSetSelectedLibraryBookId },
+}))
 
 import { BookAnalysisSidebarPanel } from "./book-analysis-sidebar-panel"
 import { listDirectory, readFile, deleteFile } from "@/commands/fs"
-import { useBookAnalysisStore } from "@/stores/book-analysis-store"
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -69,26 +66,13 @@ function renderPanel(): { cleanup: () => void } {
   }
 }
 
-// 直接从 mock 模块里抓取 vi.fn() 引用（因为工厂内部不能引用外部变量）
-function getMockRefs() {
-  const store = useBookAnalysisStore() as unknown as {
-    setCurrentResult: ReturnType<typeof vi.fn>
-    setShowResultViewer: ReturnType<typeof vi.fn>
-  }
-  return {
-    setCurrentResult: store.setCurrentResult,
-    setShowResultViewer: store.setShowResultViewer,
-  }
-}
-
 beforeEach(async () => {
-  // 清空所有 mock 调用记录 + 等待上次未完成的异步
   vi.clearAllMocks()
   await flushAsync(20)
 })
 
 describe("BookAnalysisSidebarPanel", () => {
-  it("整行点击触发 viewer 打开（不依赖眼睛按钮）", async () => {
+  it("点击作品行触发 setSelectedLibraryBookId", async () => {
     vi.mocked(listDirectory).mockImplementation(async (dir) => {
       if (dir.endsWith("book-analysis")) {
         return [{
@@ -109,23 +93,24 @@ describe("BookAnalysisSidebarPanel", () => {
       return ""
     })
 
-    const mocks = getMockRefs()
     const { cleanup } = renderPanel()
-    await flushAsync(50) // 等 loadBooks 完成
-    const viewBtn = document.querySelector('[aria-label="查看分析结果"]') as HTMLButtonElement
-    expect(viewBtn).toBeTruthy()
+    await flushAsync(50)
+    // 点击作品行（作品内容区域的 button，不是刷新按钮）
+    const allButtons = document.querySelectorAll("button")
+    // 第一个 button 是刷新按钮，第二个是作品内容区域
+    const bookBtn = allButtons[1] as HTMLButtonElement
+    expect(bookBtn).toBeTruthy()
     await act(async () => {
-      viewBtn.click()
+      bookBtn.click()
       await new Promise((r) => setTimeout(r, 0))
     })
-    await flushAsync(50) // 等 handleViewBook 异步读盘 + setState
-    expect(mocks.setCurrentResult).toHaveBeenCalledTimes(1)
-    expect(mocks.setShowResultViewer).toHaveBeenCalledWith(true)
+    await flushAsync(50)
+    expect(mockSetSelectedLibraryBookId).toHaveBeenCalledWith("book-1")
     cleanup()
     await flushAsync(20)
   })
 
-  it("点击删除按钮不触发整行 click，并调用 store cleanup", async () => {
+  it("点击删除按钮不触发整行 click，并调用 deleteFile", async () => {
     vi.mocked(listDirectory).mockImplementation(async (dir) => {
       if (dir.endsWith("book-analysis")) {
         return [{ name: "book-2", is_dir: true, path: "/proj/book-analysis/book-2" }]
@@ -140,7 +125,6 @@ describe("BookAnalysisSidebarPanel", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true)
     vi.mocked(deleteFile).mockResolvedValue(undefined)
 
-    const mocks = getMockRefs()
     const { cleanup } = renderPanel()
     await flushAsync(50)
     const deleteBtn = document.querySelector('[aria-label="删除作品"]') as HTMLButtonElement
@@ -149,10 +133,10 @@ describe("BookAnalysisSidebarPanel", () => {
       deleteBtn.click()
       await new Promise((r) => setTimeout(r, 0))
     })
-    await flushAsync(50) // 等 deleteFile 完成
+    await flushAsync(50)
     expect(deleteFile).toHaveBeenCalledTimes(1)
-    // 整行 click 不应触发：setCurrentResult 不应被调
-    expect(mocks.setCurrentResult).not.toHaveBeenCalled()
+    // 整行 click 不应触发：setSelectedLibraryBookId 不应被调
+    expect(mockSetSelectedLibraryBookId).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
     cleanup()
     await flushAsync(20)

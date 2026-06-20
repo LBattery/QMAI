@@ -1,4 +1,3 @@
-import { convertFileSrc } from "@tauri-apps/api/core"
 import { normalizePath } from "@/lib/path-utils"
 import { isTauri } from "@/lib/platform"
 
@@ -25,16 +24,25 @@ export function resolveMarkdownImageSrc(
 
   if (!isTauri()) return rawSrc
 
+  // convertFileSrc must be loaded via dynamic import; if not yet cached,
+  // trigger the async load and return rawSrc as fallback. The async
+  // version (resolveMarkdownImageSrcAsync) should be preferred when
+  // possible.
+  if (!_convertFileSrc) {
+    void getConvertFileSrc()
+    return rawSrc
+  }
+
   const pp = normalizePath(projectPath)
   const isAbsolute =
     rawSrc.startsWith("/") || /^[a-zA-Z]:/.test(rawSrc) || rawSrc.startsWith("\\\\")
 
-  if (isAbsolute) return convertFileSrc(rawSrc)
+  if (isAbsolute) return _convertFileSrc(rawSrc)
 
   const cleaned = rawSrc.replace(/^\.\//, "")
   const absolute = `${pp}/wiki/${cleaned}`
 
-  return convertFileSrc(absolute)
+  return _convertFileSrc(absolute)
 }
 
 export async function resolveMarkdownImageSrcAsync(

@@ -1,0 +1,111 @@
+import { Plus, User } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import type { BookAnalysisLibraryBook } from "@/lib/novel/book-analysis/library-state"
+
+interface BookAnalysisCharacterPanelProps {
+  book: BookAnalysisLibraryBook
+  selectedCharacterId: string | null
+  addingToSoul: boolean
+  onSelectCharacter: (characterId: string) => void
+  onAddSelectedSkillsToSoul: () => void
+  onBindCharacter: (characterId: string) => void
+}
+
+const categoryLabels: Record<string, string> = {
+  protagonist: "主角",
+  antagonist: "反派",
+  supporting: "配角",
+  minor: "次要",
+}
+
+export function BookAnalysisCharacterPanel({
+  book,
+  selectedCharacterId,
+  addingToSoul,
+  onSelectCharacter,
+  onAddSelectedSkillsToSoul,
+  onBindCharacter,
+}: BookAnalysisCharacterPanelProps) {
+  const selectedCharacter = book.characters.find((character) => character.id === selectedCharacterId) ?? book.characters[0] ?? null
+  const selectedHasSkill = selectedCharacter ? book.skills.some((skill) => skill.characterId === selectedCharacter.id) : false
+
+  return (
+    <section className="min-h-0 flex-1 rounded-lg border bg-background">
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <div>
+          <h3 className="text-sm font-semibold">角色 Skill</h3>
+          <p className="mt-1 text-xs text-muted-foreground">可多选加入灵魂库，也可绑定到当前小说人物。</p>
+        </div>
+        <Button size="sm" variant="outline" onClick={onAddSelectedSkillsToSoul} disabled={addingToSoul || book.skills.length === 0}>
+          <Plus className="mr-2 h-4 w-4" />
+          {addingToSoul ? "加入中..." : "加入自定义灵魂库"}
+        </Button>
+      </div>
+      <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: "minmax(220px, 320px) 1fr" }}>
+        <div className="min-h-0 space-y-2 overflow-y-auto border-r p-3">
+          {book.characters.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">暂无角色数据。</div>
+          ) : (
+            book.characters.map((character) => {
+              const active = selectedCharacter?.id === character.id
+              const hasSkill = book.skills.some((skill) => skill.characterId === character.id)
+              return (
+                <button
+                  key={character.id}
+                  type="button"
+                  onClick={() => onSelectCharacter(character.id)}
+                  className={`w-full rounded-lg border p-3 text-left transition ${
+                    active ? "border-primary bg-primary/5" : "hover:bg-muted"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{character.name}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {categoryLabels[character.category] ?? character.category} · 重要度 {character.importance}/10
+                      </div>
+                    </div>
+                    <span className="shrink-0 rounded-full border px-2 py-0.5 text-xs">
+                      {hasSkill ? "已生成" : "未生成"}
+                    </span>
+                  </div>
+                </button>
+              )
+            })
+          )}
+        </div>
+        <div className="min-h-0 overflow-y-auto p-5">
+          {selectedCharacter ? (
+            <div className="space-y-5">
+              <div>
+                <div className="flex items-center gap-2">
+                  <User className="h-4 w-4 text-primary" />
+                  <h4 className="text-lg font-semibold">{selectedCharacter.name}</h4>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">{selectedCharacter.description || "暂无角色描述。"}</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-md bg-muted/40 p-3 text-sm">
+                  <div className="font-medium">性格</div>
+                  <div className="mt-1 text-muted-foreground">{selectedCharacter.personality || "暂无"}</div>
+                </div>
+                <div className="rounded-md bg-muted/40 p-3 text-sm">
+                  <div className="font-medium">说话风格</div>
+                  <div className="mt-1 text-muted-foreground">{selectedCharacter.speechStyle || "暂无"}</div>
+                </div>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => onBindCharacter(selectedCharacter.id)} disabled={!selectedHasSkill}>
+                绑定到小说人物
+              </Button>
+              {!selectedHasSkill && (
+                <p className="text-xs text-muted-foreground">请先将该角色 Skill 加入自定义灵魂库，再绑定到小说人物。</p>
+              )}
+            </div>
+          ) : (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">请从左侧选择角色。</div>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}

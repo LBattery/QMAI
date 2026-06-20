@@ -4,6 +4,7 @@ import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
 import { isTauri, pickDirectory } from "@/lib/platform"
 import { useChatStore } from "@/stores/chat-store"
+import { serverEvents } from "@/lib/server-events"
 import { listDirectory, openProject, fileExists } from "@/commands/fs"
 import { getLastProject, getRecentProjects, saveLastProject, loadLlmConfig, loadAiChatModel, loadLanguage, loadEmbeddingConfig, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadClipServerConfig, loadScheduledImportConfig, saveScheduledImportConfig, loadSourceWatchConfig, loadNovelMode, loadNovelConfig, loadRevisionFeedbackWindowConfig, loadTheme, saveLlmConfig, saveProviderConfigs, saveActivePresetId } from "@/lib/project-store"
 import { loadNovelProjectMeta } from "@/lib/novel/project-meta"
@@ -137,6 +138,10 @@ function App() {
         setLoading(false)
         void checkForAppUpdate()
         void initAnalytics()
+        // 浏览器模式下连接 SSE 事件流
+        if (!isTauri()) {
+          serverEvents.connect()
+        }
       }
     }
     init()

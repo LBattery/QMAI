@@ -1,274 +1,95 @@
+import { httpFs } from "@/lib/http-adapter"
+import { httpProject } from "@/lib/http-adapter"
 import type { FileNode } from "@/types/wiki"
 
-const FS_PREFIX = "llm-wiki-fs:"
-
-function normalizeFsPath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/\/$/, "")
-}
-
 class WebFileSystem {
-  private files: Map<string, string>
-  private dirs: Set<string>
-
-  constructor() {
-    this.files = new Map()
-    this.dirs = new Set()
-    this.loadFromLocalStorage()
-  }
-
-  private loadFromLocalStorage() {
-    try {
-      const raw = localStorage.getItem(FS_PREFIX + "root")
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        if (parsed.files) {
-          for (const [key, value] of Object.entries(parsed.files)) {
-            this.files.set(key, value as string)
-          }
-        }
-        if (parsed.dirs) {
-          for (const dir of parsed.dirs as string[]) {
-            this.dirs.add(dir)
-          }
-        }
-      }
-    } catch {}
-  }
-
-  private saveToLocalStorage() {
-    try {
-      const obj = {
-        files: Object.fromEntries(this.files.entries()),
-        dirs: Array.from(this.dirs.values()),
-      }
-      localStorage.setItem(FS_PREFIX + "root", JSON.stringify(obj))
-    } catch {}
-  }
-
-  private ensureParentDirs(filePath: string) {
-    const parts = filePath.split("/")
-    for (let i = 1; i < parts.length; i++) {
-      const dir = parts.slice(0, i).join("/")
-      this.dirs.add(dir)
-    }
-  }
-
-  private hasAnyContentUnderPath(path: string): boolean {
-    for (const [filePath] of this.files.entries()) {
-      if (filePath.startsWith(path + "/")) return true
-    }
-    for (const dir of this.dirs) {
-      if (dir.startsWith(path + "/")) return true
-    }
-    return false
-  }
-
   async readFile(path: string): Promise<string> {
-    const np = normalizeFsPath(path)
-    const content = this.files.get(np)
-    if (content === undefined) {
-      throw new Error(`File not found: ${path}`)
-    }
-    return content
+    return httpFs.readFile(path)
   }
 
   async writeFile(path: string, contents: string): Promise<void> {
-    const np = normalizeFsPath(path)
-    this.ensureParentDirs(np)
-    this.files.set(np, contents)
-    this.saveToLocalStorage()
+    return httpFs.writeFile(path, contents)
+  }
+
+  async writeFileAtomic(path: string, contents: string): Promise<void> {
+    return httpFs.writeFileAtomic(path, contents)
   }
 
   async listDirectory(path: string): Promise<FileNode[]> {
-    return this.listDirectoryTree(normalizeFsPath(path))
-  }
-
-  private listDirectoryTree(normalizedPath: string): FileNode[] {
-    const children: FileNode[] = []
-    const seenDirs = new Set<string>()
-    const seenFiles = new Set<string>()
-
-    for (const [filePath] of this.files.entries()) {
-      if (!filePath.startsWith(normalizedPath + "/")) continue
-      const relative = filePath.slice(normalizedPath.length + 1)
-      const firstSegment = relative.split("/")[0]
-      if (!firstSegment) continue
-
-      if (relative.includes("/")) {
-        if (!seenDirs.has(firstSegment)) {
-          seenDirs.add(firstSegment)
-          const dirPath = `${normalizedPath}/${firstSegment}`
-          children.push({
-            name: firstSegment,
-            path: dirPath,
-            is_dir: true,
-            children: this.listDirectoryTree(dirPath),
-          })
-        }
-      } else {
-        if (!seenFiles.has(firstSegment)) {
-          seenFiles.add(firstSegment)
-          children.push({
-            name: firstSegment,
-            path: `${normalizedPath}/${firstSegment}`,
-            is_dir: false,
-          })
-        }
-      }
-    }
-
-    for (const dir of this.dirs) {
-      if (!dir.startsWith(normalizedPath + "/")) continue
-      const relative = dir.slice(normalizedPath.length + 1)
-      const firstSegment = relative.split("/")[0]
-      if (!firstSegment || relative.includes("/")) continue
-
-      if (!seenDirs.has(firstSegment)) {
-        seenDirs.add(firstSegment)
-        const dirPath = `${normalizedPath}/${firstSegment}`
-        children.push({
-          name: firstSegment,
-          path: dirPath,
-          is_dir: true,
-          children: this.listDirectoryTree(dirPath),
-        })
-      }
-    }
-
-    return children
+    return httpFs.listDirectory(path)
   }
 
   async createDirectory(path: string): Promise<void> {
-    const np = normalizeFsPath(path)
-    this.dirs.add(np)
-    this.ensureParentDirs(np)
-    this.saveToLocalStorage()
+    return httpFs.createDirectory(path)
   }
 
   async deleteFile(path: string): Promise<void> {
-    const np = normalizeFsPath(path)
-    this.files.delete(np)
-    this.saveToLocalStorage()
+    return httpFs.deleteFile(path)
   }
 
   async fileExists(path: string): Promise<boolean> {
-    const np = normalizeFsPath(path)
-    return this.files.has(np) || this.dirs.has(np)
+    return httpFs.fileExists(path)
   }
 
-  async getFileModifiedTime(_path: string): Promise<number> {
-    return Date.now()
+  async getFileModifiedTime(path: string): Promise<number> {
+    return httpFs.getFileModifiedTime(path)
   }
 
   async getFileSize(path: string): Promise<number> {
-    const content = this.files.get(normalizeFsPath(path))
-    return content ? new Blob([content]).size : 0
+    return httpFs.getFileSize(path)
   }
 
-  async getFileMd5(_path: string): Promise<string> {
-    return "web-dummy-md5"
+  async getFileMd5(path: string): Promise<string> {
+    return httpFs.getFileMd5(path)
   }
 
   async copyFile(source: string, destination: string): Promise<void> {
-    const content = this.files.get(normalizeFsPath(source))
-    if (content === undefined) {
-      throw new Error(`Source file not found: ${source}`)
-    }
-    await this.writeFile(destination, content)
+    return httpFs.copyFile(source, destination)
   }
 
   async copyDirectory(source: string, destination: string): Promise<string[]> {
-    const copied: string[] = []
-    const normalizedSource = normalizeFsPath(source)
-    for (const [filePath, content] of this.files.entries()) {
-      if (!filePath.startsWith(normalizedSource + "/")) continue
-      const relative = filePath.slice(normalizedSource.length)
-      const newPath = normalizeFsPath(destination) + relative
-      await this.writeFile(newPath, content)
-      copied.push(newPath)
-    }
-    return copied
+    return httpFs.copyDirectory(source, destination)
   }
 
   async preprocessFile(path: string): Promise<string> {
-    return this.readFile(path)
+    return httpFs.preprocessFile(path)
   }
 
-  async findRelatedWikiPages(_projectPath: string, _sourceName: string): Promise<string[]> {
-    return []
+  async findRelatedWikiPages(projectPath: string, sourceName: string): Promise<string[]> {
+    return httpFs.findRelatedWikiPages(projectPath, sourceName)
   }
 
-  async readFileAsBase64(_path: string): Promise<{ base64: string; mimeType: string }> {
-    return { base64: "", mimeType: "application/octet-stream" }
+  async readFileAsBase64(path: string): Promise<{ base64: string; mimeType: string }> {
+    return httpFs.readFileAsBase64(path)
   }
 
-  async openProjectFolder(_path: string): Promise<void> {}
+  async openProjectFolder(path: string): Promise<void> {
+    return httpProject.openFolder(path)
+  }
 
   async clipServerStatus(): Promise<string> {
-    return "unavailable"
+    const { httpClip } = await import("@/lib/http-adapter")
+    return httpClip.status()
   }
 
   async getExecutableDir(): Promise<string> {
-    return typeof process !== "undefined" && process.cwd ? process.cwd() : ""
+    return httpFs.getExecutableDir()
   }
 
   async getResourceDir(): Promise<string> {
-    return typeof process !== "undefined" && process.cwd ? process.cwd() : ""
+    return httpFs.getResourceDir()
   }
 
   async createProject(name: string, path: string): Promise<{ name: string; path: string }> {
-    const np = normalizeFsPath(path)
-    const root = `${np}/${name}`
-    this.dirs.add(np)
-    this.dirs.add(root)
-    this.dirs.add(`${root}/wiki`)
-    this.saveToLocalStorage()
-    return { name, path: root }
+    return httpProject.create(name, path)
   }
 
   async openProject(path: string): Promise<{ name: string; path: string }> {
-    const np = normalizeFsPath(path)
-    const name = np.split("/").pop() || "Unknown"
-
-    if (!this.hasAnyContentUnderPath(np)) {
-      this.initProjectWithDemoData(np, name)
-    }
-
-    return { name, path: np }
+    return httpProject.open(path)
   }
 
-  initProjectWithTemplate(projectPath: string, template: { schema: string; purpose: string; extraDirs: string[] }) {
-    const pp = normalizeFsPath(projectPath)
-    this.dirs.add(pp)
-    this.dirs.add(`${pp}/wiki`)
-    this.files.set(`${pp}/schema.md`, template.schema)
-    this.files.set(`${pp}/purpose.md`, template.purpose)
-    for (const dir of template.extraDirs) {
-      this.dirs.add(`${pp}/${dir}`)
-    }
-    this.saveToLocalStorage()
-  }
-
-  private initProjectWithDemoData(pp: string, name: string) {
-    this.dirs.add(pp)
-    this.dirs.add(`${pp}/wiki`)
-    this.dirs.add(`${pp}/wiki/entities`)
-    this.dirs.add(`${pp}/wiki/concepts`)
-    this.dirs.add(`${pp}/wiki/sources`)
-    this.dirs.add(`${pp}/raw`)
-    this.dirs.add(`${pp}/raw/sources`)
-
-    this.files.set(`${pp}/schema.md`, `# Wiki Schema\n\n## Page Types\n\n| Type | Directory | Purpose |\n|------|-----------|---------|\n| entity | wiki/entities/ | Named things |\n| concept | wiki/concepts/ | Ideas and techniques |\n| source | wiki/sources/ | References |\n| overview | wiki/ | Project summary |\n`)
-
-    this.files.set(`${pp}/purpose.md`, `# Project Purpose — ${name}\n\n## Goal\n\n<!-- What are you trying to understand or build? -->\n\n## Key Questions\n\n1.\n2.\n3.\n\n## Scope\n\n**In scope:**\n-\n\n**Out of scope:**\n-\n`)
-
-    this.files.set(`${pp}/wiki/index.md`, `# ${name}\n\n欢迎使用项目资料库。\n\n## 页面\n\n### 实体\n\n- 暂无实体\n\n### 概念\n\n- 暂无概念\n\n### 资料\n\n- 暂无资料\n`)
-
-    this.files.set(`${pp}/wiki/entities/示例实体.md`, `---\ntype: entity\ntitle: 示例实体\ntags: []\nrelated: []\ncreated: ${new Date().toISOString().split("T")[0]}\nupdated: ${new Date().toISOString().split("T")[0]}\n---\n\n# 示例实体\n\n这是一个示例实体页面，请替换为你的正式内容。\n`)
-
-    this.files.set(`${pp}/wiki/concepts/示例概念.md`, `---\ntype: concept\ntitle: 示例概念\ntags: []\nrelated: []\ncreated: ${new Date().toISOString().split("T")[0]}\nupdated: ${new Date().toISOString().split("T")[0]}\n---\n\n# 示例概念\n\n这是一个示例概念页面，请替换为你的正式内容。\n`)
-
-    this.saveToLocalStorage()
+  initProjectWithTemplate(_projectPath: string, _template: { schema: string; purpose: string; extraDirs: string[] }) {
+    // In HTTP mode, project initialization is handled server-side
   }
 }
 
