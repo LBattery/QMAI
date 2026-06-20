@@ -22,6 +22,7 @@ import { TrashPanel } from "./trash-panel"
 import { GraphSidebarPanel } from "./graph-sidebar-panel"
 import { SoulSidebarPanel } from "./soul-sidebar-panel"
 import { ReviewCenterSidebarPanel } from "./review-center-sidebar-panel"
+import { BookAnalysisSidebarPanel } from "./book-analysis-sidebar-panel"
 import { useWikiStore } from "@/stores/wiki-store"
 import { createDirectory, fileExists, listDirectory, preprocessFile, readFile, writeFile } from "@/commands/fs"
 import { countChapterBodyWords } from "@/lib/chapter-word-count"
@@ -55,7 +56,6 @@ import {
   type ChapterImportCandidate,
   type ImportedChapter,
 } from "@/lib/novel/chapter-import"
-import { resolveReviewModel } from "@/lib/novel/review-model"
 import { isTauri } from "@/lib/platform"
 import { makeChapterFileName, makeDefaultChapterTitle, makeSafeFileSlug } from "@/lib/wiki-filename"
 import { useImportProgressStore } from "@/stores/import-progress-store"
@@ -669,13 +669,11 @@ export function SidebarPanel() {
     activeImportTaskIdRef.current = taskId
 
     const { ingestChapter } = await import("@/lib/novel/chapter-ingest")
-    const configuredExtractModel = useWikiStore.getState().novelConfig.extractModel?.trim()
-    const reviewModel = configuredExtractModel || resolveReviewModel()
     const result = await runImportedChapterMemoryExtraction({
       projectPath,
       chapterPaths: importedChapters.map((chapter) => chapter.path),
       signal: abortController.signal,
-      reviewModel,
+      reviewModel: undefined,
       ingestChapter,
       onProgress: (progress) => {
         useImportProgressStore.getState().updateTask(taskId, {
@@ -1089,6 +1087,10 @@ export function SidebarPanel() {
 
   if (activeView === "reviewCenter") {
     return <ReviewCenterSidebarPanel />
+  }
+
+  if (activeView === "bookAnalysis") {
+    return <BookAnalysisSidebarPanel />
   }
 
   if (activeView === "search") {

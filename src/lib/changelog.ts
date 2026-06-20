@@ -78,6 +78,65 @@ const TWO_POINT_TWO_ELEVEN_CHANGELOG: ChangelogEntry = {
   },
 }
 
+const TWO_POINT_TWO_EIGHTEEN_CHANGELOG: ChangelogEntry = {
+  version: "2.2.18",
+  date: "2026-06-19",
+  highlights: {
+    en: [
+      "Added global font-size control (Settings > Interface, 85%-130% slider).",
+      "Added seamless auto-refresh after AI generation or file save.",
+      "Added data management: export/import to fully restore all content including AI conversations, outlines, models, and memory before OS reinstall.",
+      "Optimized and fixed various minor issues.",
+    ],
+    zh: [
+      "新增全局界面字号调节（设置 → 界面，支持 85%-130%）",
+      "新增 AI 生成/保存文件后的无感自动刷新",
+      "新增数据管理功能，如果要装系统可以使用导出数据功能，之后再使用导入数据功能，可完美恢复所有内容，包括AI会话，AI大纲，模型,记忆等",
+      "优化修复一些其他小问题",
+    ],
+  },
+}
+
+const TWO_POINT_TWO_SEVENTEEN_CHANGELOG: ChangelogEntry = {
+  version: "2.2.17",
+  date: "2026-06-18",
+  highlights: {
+    en: [
+      "Added full data export and import: back up model configs, AI conversations, novel content, outlines, memory libraries, and knowledge graphs before reinstalling the OS.",
+      "Added global font-size control in Settings > Interface, with a slider from 85% to 130% and quick preset buttons.",
+      "Added automatic UI refresh after generation so new chapters and outlines appear immediately without manual reopening.",
+      "Improved multi-model selection so AI Chat and novel task models can use any saved custom model independently.",
+      "Fixed various issues reported in the Dismantling Library beta and model configuration flows.",
+    ],
+    zh: [
+      "新增数据导出导入功能：可在重装系统前备份模型配置、AI 会话、小说内容、大纲、记忆库和知识图谱，并在导入后恢复完整状态。",
+      "新增全局字号调节：在设置-界面中可通过滑块将界面缩放至 85%-130%，并提供快捷档位按钮。",
+      "新增生成结束自动刷新：章节或大纲生成完成后自动刷新项目状态，无需手动重新打开。",
+      "优化多模型选择：AI 会话与小说写作任务可独立选择任意已保存的自定义模型。",
+      "修复拆书测试版与模型配置流程中反馈的若干问题。",
+    ],
+  },
+}
+
+const TWO_POINT_TWO_SIXTEEN_CHANGELOG: ChangelogEntry = {
+  version: "2.2.16",
+  date: "2026-06-18",
+  highlights: {
+    en: [
+      "Added support for multiple custom LLM models and fixed related model configuration issues.",
+      "Added the Dismantling Library beta feature: import TXT novels to extract characters and add them to custom souls.",
+      "Fixed AI Chat sometimes deviating from the outline; it now always reads the full outline content before generating.",
+      "Fixed various other issues.",
+    ],
+    zh: [
+      "LLM 模型增加多个自定义模型添加，修复模型等其他内容。",
+      "增加拆书测试版功能，导入 txt 小说文档可以提取小说角色加入到自定义灵魂当中。",
+      "AI 会话有时会脱离大纲，已修复当前问题，每次都会强制读取大纲内容。",
+      "修复一些其他问题。",
+    ],
+  },
+}
+
 const TWO_POINT_TWO_FOURTEEN_CHANGELOG: ChangelogEntry = {
   version: "2.2.14",
   date: "2026-06-13",
@@ -363,6 +422,9 @@ export const CHANGELOG: ChangelogEntry[] = [
 ]
 
 export function currentVersionChangelog(version: string): ChangelogEntry[] {
+  if (version === TWO_POINT_TWO_EIGHTEEN_CHANGELOG.version) return [TWO_POINT_TWO_EIGHTEEN_CHANGELOG]
+  if (version === TWO_POINT_TWO_SEVENTEEN_CHANGELOG.version) return [TWO_POINT_TWO_SEVENTEEN_CHANGELOG]
+  if (version === TWO_POINT_TWO_SIXTEEN_CHANGELOG.version) return [TWO_POINT_TWO_SIXTEEN_CHANGELOG]
   if (version === TWO_POINT_TWO_FOURTEEN_CHANGELOG.version) return [TWO_POINT_TWO_FOURTEEN_CHANGELOG]
   if (version === TWO_POINT_TWO_THIRTEEN_CHANGELOG.version) return [TWO_POINT_TWO_THIRTEEN_CHANGELOG]
   if (version === TWO_POINT_TWO_TWELVE_CHANGELOG.version) return [TWO_POINT_TWO_TWELVE_CHANGELOG]
@@ -383,6 +445,9 @@ export function currentVersionChangelog(version: string): ChangelogEntry[] {
 
 export function allChangelog(): ChangelogEntry[] {
   return [
+    TWO_POINT_TWO_EIGHTEEN_CHANGELOG,
+    TWO_POINT_TWO_SEVENTEEN_CHANGELOG,
+    TWO_POINT_TWO_SIXTEEN_CHANGELOG,
     TWO_POINT_TWO_FOURTEEN_CHANGELOG,
     TWO_POINT_TWO_THIRTEEN_CHANGELOG,
     TWO_POINT_TWO_TWELVE_CHANGELOG,

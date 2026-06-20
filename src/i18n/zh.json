@@ -1,4 +1,20 @@
 {
+  "common": {
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑",
+    "close": "关闭",
+    "confirm": "确认",
+    "back": "返回",
+    "next": "下一步",
+    "previous": "上一步",
+    "loading": "加载中...",
+    "error": "错误",
+    "success": "成功",
+    "warning": "警告",
+    "info": "提示"
+  },
   "app": {
     "title": "青幕AI写作",
     "subtitle": "面向长篇小说的 AI 写作桌面端系统"
@@ -207,7 +223,10 @@
     "msgCount": "条消息",
     "startNewConversation": "开始新对话",
     "clickNewChatToBegin": "点击「新建对话」开始",
-    "typeAMessage": "输入消息..."
+    "typeAMessage": "输入消息...",
+    "selectModel": "选择模型",
+    "searchModel": "搜索模型...",
+    "noModelFound": "未找到匹配的模型"
   },
   "search": {
     "title": "搜索",
@@ -364,6 +383,7 @@
       "feedback": "反馈",
       "contactSupport": "联系与支持",
       "changelog": "更新日志",
+      "dataManagement": "数据管理",
       "about": "关于"
     },
     "sections": {
@@ -409,8 +429,8 @@
         "description": "配置不同大语言模型服务商的 API Key、模型和连接方式。自定义模型保留在最上方，LLM Wiki 预设模型在下方可单独启用。",
         "expand": "展开配置",
         "collapse": "收起配置",
-        "toggleOff": "关闭当前模型",
-        "toggleOn": "启用为当前模型",
+        "toggleOff": "停用此模型",
+        "toggleOn": "启用此模型",
         "deactivate": "停用",
         "activate": "启用",
         "apiMode": "API 模式",
@@ -428,6 +448,12 @@
         "savedBadge": "已保存",
         "configuredBadge": "已配置",
         "activeBadge": "当前使用",
+        "enabledBadge": "已启用 {{count}} 个模型",
+        "fetchedModelsCount": "已拉取 {{count}} 个模型",
+        "selectedModelsCount": "已选择 {{count}} 个",
+        "toggleModelHint": "点击模型标签选择/取消选择",
+        "selectedModels": "已选模型",
+        "pleaseFetchModels": "请先拉取并选择模型",
         "useModel": "使用 {{model}}",
         "typeCustomModel": "输入自定义模型 ID",
         "customModel": "自定义...",
@@ -483,7 +509,30 @@
         "providerTests": "模型测试",
         "providerTestsHint": "连接测试用于检查是否可访问；功能测试会要求模型返回指定标记，确认模型能正常生成可用内容。",
         "testConnection": "测试连接",
-        "testFunction": "测试功能"
+        "testFunction": "测试功能",
+        "savedModels": {
+          "title": "已保存的模型",
+          "addModel": "添加模型",
+          "editModel": "编辑模型",
+          "delete": "删除",
+          "edit": "编辑",
+          "empty": "暂未添加任何模型",
+          "endpoint": "接口",
+          "confirmDelete": "确定要删除这个模型配置吗？",
+          "dialogDescription": "配置一个新的模型。可以使用不同的API密钥或接口地址，方便在AI会话中快速切换。",
+          "modelName": "模型名称",
+          "modelNamePlaceholder": "例如：GPT-4o",
+          "modelId": "模型ID",
+          "modelIdPlaceholder": "例如：gpt-4o",
+          "apiKey": "API密钥（可选）",
+          "apiKeyPlaceholder": "留空则使用供应商的密钥",
+          "apiKeyHint": "留空则复用当前供应商的API密钥",
+          "customEndpoint": "自定义接口地址（可选）",
+          "customEndpointPlaceholder": "留空则使用供应商的接口地址",
+          "customEndpointHint": "留空则复用当前供应商的接口地址",
+          "description": "备注说明",
+          "descriptionPlaceholder": "例如：适合代码生成"
+        }
       },
       "embedding": {
         "title": "向量检索/Embedding模型",
@@ -704,6 +753,24 @@
           "skipped": "已标记为不重复"
         }
       },
+      "dataManagement": {
+        "title": "数据管理",
+        "description": "备份和恢复你的所有数据，包括模型配置、AI对话、小说内容、大纲、记忆库、拆书结果等。",
+        "exportTitle": "导出备份",
+        "exportDescription": "将所有数据打包为一个 zip 文件，用于重装系统前备份。包含：全局配置、所有项目数据、UI偏好。",
+        "exportButton": "导出备份",
+        "exporting": "导出中...",
+        "exportSuccess": "导出成功",
+        "fileCount": "共 {{count}} 个文件，{{size}}",
+        "importTitle": "导入备份",
+        "importDescription": "从 zip 备份文件恢复数据。导入后需要重启软件以使配置生效。",
+        "importStrategy": "导入方式",
+        "importButton": "导入备份",
+        "importing": "导入中...",
+        "importSuccess": "导入成功，请重启软件以使配置生效",
+        "restoredProjects": "已恢复 {{count}} 个项目",
+        "securityWarning": "备份文件包含 API 密钥等敏感信息，请妥善保管，不要分享给他人。"
+      },
       "changelog": {
         "title": "版本更新",
         "description": "这里展示当前版本值得关注的变化。"
@@ -751,13 +818,16 @@
     "emptyAll": "暂无章节和大纲",
     "rename": "重命名",
     "deleteFolder": "删除文件夹",
-    "deleteFolderConfirm": "确认将文件夹「{{name}}」及其下 {{count}} 个大纲移入回收站吗？",
+    "deleteVolume": "删除卷",
+    "deleteFolderConfirm": "确认将「{{name}}」及其下 {{count}} 个文件移入回收站吗？",
     "deleteEmptyFolderConfirm": "确认删除空文件夹「{{name}}」吗？",
     "deleteFolderBlocked": "文件夹「{{name}}」中仍有未移入回收站的其他文件，已保留文件夹本身。",
     "move": "移动",
     "cancelMove": "取消移动",
     "moveModeHint": "先点要移动的章节，再点目标章节",
     "moveSourceSelected": "已选择待移动章节",
+    "moveToVolume": "移动到卷",
+    "moveTargetExists": "目标卷中已存在同名文件，无法移动",
     "rawSources": "原始来源",
     "deletingTitle": "正在移入回收站：{{name}}…",
     "confirmDeleteTitle": "再次点击确认移入回收站：{{name}}",

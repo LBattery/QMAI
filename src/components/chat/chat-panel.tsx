@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { BookOpen, Brain, PencilLine, Plus, Trash2, MessageSquare, FileEdit } from "lucide-react"
+import { BookOpen, Brain, Plus, Trash2, MessageSquare, FileEdit } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -8,18 +8,20 @@ import { ChatMessage, StreamingMessage } from "./chat-message"
 import { ChatDockControls } from "./chat-dock-controls"
 import { setLastQueryPages, useSourceFiles } from "./chat-shared"
 import { ChatInput } from "./chat-input"
+import { ChatModelSelector } from "./chat-model-selector"
 import { useChatStore, chatMessagesToLLM, type DisplayMessage } from "@/stores/chat-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { resolveChapterLengthSpec } from "@/lib/novel/deep-chapter-prompts"
 import { streamChat, type ChatMessage as LLMMessage } from "@/lib/llm-client"
 import { executeIngestWrites } from "@/lib/ingest"
 import { routeTask, buildTaskDirective } from "@/lib/novel/task-router"
-import { listDirectory, readFile, writeFile, createDirectory, deleteFile } from "@/commands/fs"
+import { readFile, writeFile, createDirectory, deleteFile } from "@/commands/fs"
 import { searchWiki, tokenizeQuery } from "@/lib/search"
 import { detectLastGeneratedChapterNumber, findChapterFileByNumber, getNextChapterNumber, readSelectedChapterNumberForFile, resolveTargetChapterNumberForChat } from "@/lib/novel/chapter-utils"
 import { buildQmQuaiSystemPrompt, injectDeAiDirective } from "@/lib/novel/de-ai-adapter"
 import { cleanGeneratedChapterContentForSave } from "@/lib/novel/chapter-content-cleanup"
 import { normalizePath, getFileName, getRelativePath } from "@/lib/path-utils"
+import { refreshProjectState } from "@/lib/project-refresh"
 import { getOutputLanguage, buildLanguageReminder } from "@/lib/output-language"
 import { isGreeting } from "@/lib/greeting-detector"
 import { computeContextBudget } from "@/lib/context-budget"
@@ -27,7 +29,8 @@ import { getConversationTabTitle, sortConversationsByUpdatedAt } from "@/lib/wor
 import { resolveUserVisibleReasoning } from "@/lib/user-visible-reasoning"
 import { createDeepThinkingStreamRenderer } from "@/lib/deep-thinking-stream"
 import { resolveNovelModel } from "@/lib/novel/model-resolver"
-import { fetchLlmModelList } from "@/lib/settings-model-list"
+import { resolveConfig } from "@/components/settings/preset-resolver"
+import { LLM_PRESETS } from "@/components/settings/llm-presets"
 import { saveAiChatModel } from "@/lib/project-store"
 import {
   buildGoldenThreeChapterDirective,
@@ -41,7 +44,6 @@ import {
   stripContinueUnfinishedDeepChapterContext,
 } from "./chat-resume"
 import { getCopyableAssistantContent } from "@/lib/chat-copy-content"
-import { buildModelSelectOptions } from "@/components/settings/model-select-input"
 import { isChatEditRequest, resolveChatEditTarget, validateStructuredChapterEditResult } from "@/lib/novel/chat-edit-mode"
 import { backupChapterFile } from "@/lib/novel/chapter-backup"
 import { decideChapterSaveStrategy, detectGeneratedTargetChapterNumber } from "@/lib/novel/chapter-save-strategy"
@@ -81,6 +83,7 @@ function ConversationTabs() {
   const conversations = useChatStore((s) => s.conversations)
   const activeConversationId = useChatStore((s) => s.activeConversationId)
   const messages = useChatStore((s) => s.messages)
+  const streamingContents = useChatStore((s) => s.streamingContents)
   const createConversation = useChatStore((s) => s.createConversation)
   const deleteConversation = useChatStore((s) => s.deleteConversation)
   const setActiveConversation = useChatStore((s) => s.setActiveConversation)
@@ -113,6 +116,7 @@ function ConversationTabs() {
         ) : (
           sorted.map((conv) => {
             const isActive = conv.id === activeConversationId
+            const isThisStreaming = conv.id in streamingContents
             const msgCount = getMessageCount(conv.id)
             return (
               <button
@@ -128,6 +132,7 @@ function ConversationTabs() {
                 onMouseLeave={() => setHoveredId(null)}
                 title={conv.title}
               >
+                {isThisStreaming && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />}
                 <span className="max-w-[140px] truncate font-medium">
                   {getConversationTabTitle(conv.title, 10)}
                 </span>
@@ -161,37 +166,41 @@ export function ChatPanel() {
   const { t } = useTranslation()
   useSourceFiles() // Keep source file cache warm
   const activeConversationId = useChatStore((s) => s.activeConversationId)
-  const isStreaming = useChatStore((s) => s.isStreaming)
-  const streamingContent = useChatStore((s) => s.streamingContent)
+  const streamingContents = useChatStore((s) => s.streamingContents)
   const mode = useChatStore((s) => s.mode)
   const addMessage = useChatStore((s) => s.addMessage)
-  const setStreaming = useChatStore((s) => s.setStreaming)
+  const startStreaming = useChatStore((s) => s.startStreaming)
   const setStreamingContent = useChatStore((s) => s.setStreamingContent)
   const appendStreamToken = useChatStore((s) => s.appendStreamToken)
   const finalizeStream = useChatStore((s) => s.finalizeStream)
   const createConversation = useChatStore((s) => s.createConversation)
   const removeLastAssistantMessage = useChatStore((s) => s.removeLastAssistantMessage)
   const maxHistoryMessages = useChatStore((s) => s.maxHistoryMessages)
-
+  const isConversationStreaming = useChatStore((s) => s.isConversationStreaming)
   // Derive active messages via selector to re-render on message changes
   const allMessages = useChatStore((s) => s.messages)
   const activeMessages = activeConversationId
     ? allMessages.filter((m) => m.conversationId === activeConversationId)
     : []
 
+  // 当前活跃会话的流式内容
+  const streamingContent = activeConversationId ? streamingContents[activeConversationId] ?? "" : ""
+  // 当前活跃会话是否正在流式生成
+  const isStreaming = activeConversationId ? isConversationStreaming(activeConversationId) : false
+
   const project = useWikiStore((s) => s.project)
   const novelMode = useWikiStore((s) => s.novelMode)
   const llmConfig = useWikiStore((s) => s.llmConfig)
+  const providerConfigs = useWikiStore((s) => s.providerConfigs)
   const aiChatModel = useWikiStore((s) => s.aiChatModel)
   const setAiChatModel = useWikiStore((s) => s.setAiChatModel)
   const chatEditModeEnabled = useWikiStore((s) => s.chatEditModeEnabled)
   const setChatEditModeEnabled = useWikiStore((s) => s.setChatEditModeEnabled)
-  const setFileTree = useWikiStore((s) => s.setFileTree)
   const selectedFile = useWikiStore((s) => s.selectedFile)
 
-  const abortRef = useRef<AbortController | null>(null)
+  const abortControllersRef = useRef<Record<string, AbortController>>({})
   const streamSessionGuardRef = useRef(createStreamSessionGuard())
-  const activeStreamSessionRef = useRef<number | null>(null)
+  const activeStreamSessionsRef = useRef<Record<string, number>>({})
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const soulDialogResolverRef = useRef<((confirmed: boolean) => void) | null>(null)
@@ -201,8 +210,7 @@ export function ChatPanel() {
   const [chapterSaveStatus, setChapterSaveStatus] = useState<string>("")
   const [isSavingChapter, setIsSavingChapter] = useState(false)
   const [pendingSoulDialog, setPendingSoulDialog] = useState({ open: false, summary: "" })
-  const [deepChapterEnabled, setDeepChapterEnabled] = useState(true)
-  const [aiChatModelOptions, setAiChatModelOptions] = useState<string[]>([])
+  const [deepChapterEnabled, setDeepChapterEnabled] = useState(false)
   const closeSoulDialog = useCallback((confirmed: boolean) => {
     const resolver = soulDialogResolverRef.current
     soulDialogResolverRef.current = null
@@ -216,20 +224,6 @@ export function ChatPanel() {
       soulDialogResolverRef.current = resolve
     })
   }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    void fetchLlmModelList(llmConfig)
-      .then((result) => {
-        if (!cancelled) setAiChatModelOptions(result.models)
-      })
-      .catch(() => {
-        if (!cancelled) setAiChatModelOptions([])
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [llmConfig])
 
   const handleSaveAsChapter = useCallback(async (content: string) => {
     if (!project) return
@@ -281,9 +275,7 @@ export function ChatPanel() {
         useWikiStore.getState().setSelectedFile(chapterPath)
       }
 
-      const tree = await listDirectory(pp)
-      useWikiStore.getState().setFileTree(tree)
-      useWikiStore.getState().bumpDataVersion()
+      await refreshProjectState(pp)
       useWikiStore.getState().setActiveView("wiki")
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -335,6 +327,8 @@ export function ChatPanel() {
     userScrolledUpRef.current = false
   }, [activeConversationId])
 
+  // 切换会话时不再中断后台生成——每个会话独立运行
+
   const handleSend = useCallback(
     async (text: string) => {
       // Auto-create a conversation if none is active
@@ -342,11 +336,13 @@ export function ChatPanel() {
       if (!convId) {
         convId = createConversation()
       }
+      // 捕获当前会话 ID，确保 finalizeStream 保存到正确的会话
+      const capturedConvId = convId
 
       addMessage("user", text)
-      setStreaming(true)
-      const sessionId = streamSessionGuardRef.current.start()
-      activeStreamSessionRef.current = sessionId
+      startStreaming(capturedConvId)
+      const sessionId = streamSessionGuardRef.current.start(capturedConvId)
+      activeStreamSessionsRef.current[capturedConvId] = sessionId
 
       // Build system prompt with wiki context using graph-enhanced retrieval
       const systemMessages: LLMMessage[] = []
@@ -382,9 +378,54 @@ export function ChatPanel() {
           },
         }
         : taskRoute
-      const effectiveChatLlmConfig = aiChatModel.trim()
-        ? { ...llmConfig, model: aiChatModel.trim() }
-        : llmConfig
+      // AI 会话选中的 model 名（如 "deepseek-v3"）需要找到它所属的 provider
+      // 重新计算 baseUrl/apiKey/apiMode，否则会沿用 activePresetId 的配置
+      // 导致跨 provider 调用失败
+      let effectiveChatLlmConfig = llmConfig
+      if (aiChatModel.trim()) {
+        const targetModel = aiChatModel.trim()
+        // 优先按 "providerId/modelId" 格式精确匹配
+        const slashIdx = targetModel.indexOf("/")
+        if (slashIdx > 0) {
+          const providerId = targetModel.slice(0, slashIdx)
+          const modelId = targetModel.slice(slashIdx + 1)
+          const override = providerConfigs[providerId]
+          if (override?.savedModels?.some((m) => m.model === modelId)) {
+            const template =
+              LLM_PRESETS.find((p) => p.id === providerId) ??
+              LLM_PRESETS.find((p) => p.id === "custom")
+            if (template) {
+              effectiveChatLlmConfig = {
+                ...resolveConfig(template, override, llmConfig),
+                model: modelId,
+              }
+            }
+          } else {
+            effectiveChatLlmConfig = { ...llmConfig, model: modelId }
+          }
+        } else {
+          // 回退：按纯模型名匹配（兼容旧数据）
+          let matched = false
+          for (const [providerId, override] of Object.entries(providerConfigs)) {
+            if (override.savedModels?.some((m) => m.model === targetModel)) {
+              const template =
+                LLM_PRESETS.find((p) => p.id === providerId) ??
+                LLM_PRESETS.find((p) => p.id === "custom")
+              if (template) {
+                effectiveChatLlmConfig = {
+                  ...resolveConfig(template, override, llmConfig),
+                  model: targetModel,
+                }
+              }
+              matched = true
+              break
+            }
+          }
+          if (!matched) {
+            effectiveChatLlmConfig = { ...llmConfig, model: targetModel }
+          }
+        }
+      }
       const shouldUseEditMode = novelMode && chatEditModeEnabled && isChatEditRequest(text)
       const goldenThreeChapter = novelMode
         ? detectGoldenThreeChapterRequest(text, effectiveTaskRoute?.chapterNumber)
@@ -398,9 +439,8 @@ export function ChatPanel() {
           selectedChapterNumber: await readSelectedChapterNumberForFile(selectedFile) ?? null,
         })
         if (!resolvedTarget.ok) {
-          finalizeStream(resolvedTarget.message, [])
-          setStreaming(false)
-          activeStreamSessionRef.current = null
+          finalizeStream(resolvedTarget.message, [], capturedConvId)
+          delete activeStreamSessionsRef.current[capturedConvId]
           return
         }
 
@@ -417,9 +457,8 @@ export function ChatPanel() {
 
         if (chapterPayloads.some((item) => !item.chapterPath)) {
           const missing = chapterPayloads.filter((item) => !item.chapterPath).map((item) => item.chapterNumber).join("、")
-          finalizeStream(`未找到以下章节，暂时无法执行修改：第${missing}章`, [])
-          setStreaming(false)
-          activeStreamSessionRef.current = null
+          finalizeStream(`未找到以下章节，暂时无法执行修改：第${missing}章`, [], capturedConvId)
+          delete activeStreamSessionsRef.current[capturedConvId]
           return
         }
 
@@ -443,7 +482,7 @@ export function ChatPanel() {
         ].join("\n")
 
         const controller = new AbortController()
-        abortRef.current = controller
+        abortControllersRef.current[capturedConvId] = controller
         let editResult = ""
         let editError: Error | null = null
 
@@ -452,9 +491,9 @@ export function ChatPanel() {
           [{ role: "user", content: editPrompt }],
           {
             onToken: (token) => {
-              if (!streamSessionGuardRef.current.isActive(sessionId)) return
+              if (!streamSessionGuardRef.current.isActive(capturedConvId, sessionId)) return
               editResult += token
-              appendStreamToken(token)
+              appendStreamToken(token, capturedConvId)
             },
             onDone: () => {},
             onError: (error) => {
@@ -467,9 +506,9 @@ export function ChatPanel() {
 
         if (editError) {
           const editErrorMessage = String(editError)
-          finalizeStream(`修改失败：${editErrorMessage}`, [])
-          setStreaming(false)
-          activeStreamSessionRef.current = null
+          finalizeStream(`修改失败：${editErrorMessage}`, [], capturedConvId)
+          delete activeStreamSessionsRef.current[capturedConvId]
+          delete abortControllersRef.current[capturedConvId]
           return
         }
 
@@ -487,9 +526,9 @@ export function ChatPanel() {
           })
 
         if (!validatedEdits.ok) {
-          finalizeStream(validatedEdits.message, [])
-          setStreaming(false)
-          activeStreamSessionRef.current = null
+          finalizeStream(validatedEdits.message, [], capturedConvId)
+          delete activeStreamSessionsRef.current[capturedConvId]
+          delete abortControllersRef.current[capturedConvId]
           return
         }
 
@@ -497,9 +536,9 @@ export function ChatPanel() {
           if (!chapter.chapterPath) continue
           const rawResult = validatedEdits.files.find((item) => item.chapterNumber === chapter.chapterNumber)?.content
           if (!rawResult) {
-            finalizeStream(`第${chapter.chapterNumber}章缺少修改结果，已停止写回。`, [])
-            setStreaming(false)
-            activeStreamSessionRef.current = null
+            finalizeStream(`第${chapter.chapterNumber}章缺少修改结果，已停止写回。`, [], capturedConvId)
+            delete activeStreamSessionsRef.current[capturedConvId]
+            delete abortControllersRef.current[capturedConvId]
             return
           }
           const normalizedResult = normalizeChapterEditFile({
@@ -508,9 +547,9 @@ export function ChatPanel() {
             originalContent: chapter.content,
           })
           if (!normalizedResult.ok) {
-            finalizeStream(normalizedResult.message, [])
-            setStreaming(false)
-            activeStreamSessionRef.current = null
+            finalizeStream(normalizedResult.message, [], capturedConvId)
+            delete activeStreamSessionsRef.current[capturedConvId]
+            delete abortControllersRef.current[capturedConvId]
             return
           }
           await backupChapterFile({
@@ -522,9 +561,7 @@ export function ChatPanel() {
           await writeFile(chapter.chapterPath, normalizedResult.content)
         }
 
-        const tree = await listDirectory(pp)
-        useWikiStore.getState().setFileTree(tree)
-        useWikiStore.getState().bumpDataVersion()
+        await refreshProjectState(pp)
         if (chapterPayloads[0]?.chapterPath) {
           useWikiStore.getState().setSelectedFile(chapterPayloads[0].chapterPath)
         }
@@ -533,22 +570,23 @@ export function ChatPanel() {
             ? `已完成第${resolvedTarget.target.chapterNumbers[0]}章修改，并已自动备份原内容。`
             : `已完成 ${resolvedTarget.target.chapterNumbers.length} 个章节的批量修改，并已分别备份原内容。`,
           [],
+          capturedConvId,
         )
-        setStreaming(false)
-        activeStreamSessionRef.current = null
+        delete activeStreamSessionsRef.current[capturedConvId]
+        delete abortControllersRef.current[capturedConvId]
         return
       }
       if (novelMode && project && deepChapterEnabled) {
         const { runDeepChapterGeneration } = await import("@/lib/novel/deep-chapter-generation")
         const controller = new AbortController()
-        abortRef.current = controller
+        abortControllersRef.current[capturedConvId] = controller
         const deepStream = createDeepThinkingStreamRenderer()
         let accumulated = ""
         let latestCheckpoint: import("@/lib/novel/deep-chapter-generation").DeepChapterGenerationResumeCheckpoint | undefined
         const appendThinkingBlock = (content: string) => {
-          if (!streamSessionGuardRef.current.isActive(sessionId)) return
+          if (!streamSessionGuardRef.current.isActive(capturedConvId, sessionId)) return
           accumulated = deepStream.updateThinking(content)
-          setStreamingContent(accumulated)
+          setStreamingContent(accumulated, capturedConvId)
         }
 
         try {
@@ -564,9 +602,9 @@ export function ChatPanel() {
             {
               onThinking: appendThinkingBlock,
               onFinalContent: (content) => {
-                if (!streamSessionGuardRef.current.isActive(sessionId)) return
+                if (!streamSessionGuardRef.current.isActive(capturedConvId, sessionId)) return
                 accumulated = deepStream.appendFinal(content)
-                setStreamingContent(accumulated)
+                setStreamingContent(accumulated, capturedConvId)
               },
               onCheckpoint: (checkpoint) => {
                 latestCheckpoint = checkpoint
@@ -575,20 +613,20 @@ export function ChatPanel() {
             undefined,
             controller.signal,
           )
-          streamSessionGuardRef.current.finish(sessionId, () => {
-            finalizeStream(accumulated, [])
-            activeStreamSessionRef.current = null
+          streamSessionGuardRef.current.finish(capturedConvId, sessionId, () => {
+            finalizeStream(accumulated, [], capturedConvId)
+            delete activeStreamSessionsRef.current[capturedConvId]
           })
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
           const existing = deepStream.getContent()
           if (controller.signal.aborted || message === "已停止生成") {
-            streamSessionGuardRef.current.finish(sessionId, () => {
-              finalizeStream(`${existing ? `${existing}\n\n` : ""}已停止生成。`, [])
-              activeStreamSessionRef.current = null
+            streamSessionGuardRef.current.finish(capturedConvId, sessionId, () => {
+              finalizeStream(`${existing ? `${existing}\n\n` : ""}已停止生成。`, [], capturedConvId)
+              delete activeStreamSessionsRef.current[capturedConvId]
             })
           } else {
-            streamSessionGuardRef.current.finish(sessionId, () => {
+            streamSessionGuardRef.current.finish(capturedConvId, sessionId, () => {
               const visibleFailure = `${existing ? `${existing}\n\n` : ""}出错：深度生成章节失败：${message}`
               finalizeStream(
                 appendContinueUnfinishedDeepChapterContext(visibleFailure, {
@@ -598,16 +636,17 @@ export function ChatPanel() {
                   checkpoint: latestCheckpoint,
                 }),
                 undefined,
+                capturedConvId,
               )
-              activeStreamSessionRef.current = null
+              delete activeStreamSessionsRef.current[capturedConvId]
             })
           }
         } finally {
-          if (activeStreamSessionRef.current === sessionId) {
-            activeStreamSessionRef.current = null
+          if (activeStreamSessionsRef.current[capturedConvId] === sessionId) {
+            delete activeStreamSessionsRef.current[capturedConvId]
           }
-          if (abortRef.current === controller) {
-            abortRef.current = null
+          if (abortControllersRef.current[capturedConvId] === controller) {
+            delete abortControllersRef.current[capturedConvId]
           }
         }
         return
@@ -792,11 +831,11 @@ export function ChatPanel() {
             if (contextPack.characterAuras.trim()) {
             const confirmed = await requestSoulDialog(contextPack.characterAuras)
             if (!confirmed) {
-              streamSessionGuardRef.current.finish(sessionId, () => {
-                finalizeStream("已取消本次生成，角色灵魂上下文未发送给模型。", undefined)
-                activeStreamSessionRef.current = null
+              streamSessionGuardRef.current.finish(capturedConvId, sessionId, () => {
+                finalizeStream("已取消本次生成，角色灵魂上下文未发送给模型。", undefined, capturedConvId)
+                delete activeStreamSessionsRef.current[capturedConvId]
               })
-              abortRef.current = null
+              delete abortControllersRef.current[capturedConvId]
               return
             }
             }
@@ -935,29 +974,29 @@ export function ChatPanel() {
       }
 
       const controller = new AbortController()
-      abortRef.current = controller
+      abortControllersRef.current[capturedConvId] = controller
 
       let accumulated = ""
       let thinkingOpen = false
 
       const appendReasoning = (token: string) => {
-        if (!streamSessionGuardRef.current.isActive(sessionId)) return
+        if (!streamSessionGuardRef.current.isActive(capturedConvId, sessionId)) return
         if (!token) return
         if (!thinkingOpen) {
           thinkingOpen = true
           accumulated += "<think>"
-          appendStreamToken("<think>")
+          appendStreamToken("<think>", capturedConvId)
         }
         accumulated += token
-        appendStreamToken(token)
+        appendStreamToken(token, capturedConvId)
       }
 
       const closeReasoning = () => {
-        if (!streamSessionGuardRef.current.isActive(sessionId)) return
+        if (!streamSessionGuardRef.current.isActive(capturedConvId, sessionId)) return
         if (!thinkingOpen) return
         thinkingOpen = false
         accumulated += "</think>"
-        appendStreamToken("</think>")
+        appendStreamToken("</think>", capturedConvId)
       }
 
       await streamChat(
@@ -965,26 +1004,25 @@ export function ChatPanel() {
         llmMessages,
         {
           onToken: (token) => {
-            if (!streamSessionGuardRef.current.isActive(sessionId)) return
+            if (!streamSessionGuardRef.current.isActive(capturedConvId, sessionId)) return
             closeReasoning()
             accumulated += token
-            appendStreamToken(token)
+            appendStreamToken(token, capturedConvId)
           },
           onReasoningToken: appendReasoning,
           onDone: () => {
-            streamSessionGuardRef.current.finish(sessionId, () => {
+            streamSessionGuardRef.current.finish(capturedConvId, sessionId, () => {
               closeReasoning()
-              finalizeStream(accumulated, queryRefs)
-              activeStreamSessionRef.current = null
-              abortRef.current = null
+              finalizeStream(accumulated, queryRefs, capturedConvId)
+              delete activeStreamSessionsRef.current[capturedConvId]
+              delete abortControllersRef.current[capturedConvId]
             })
-            // save-worthy detection removed — user has direct "Save to Wiki" button on each message
           },
           onError: (err) => {
-            streamSessionGuardRef.current.finish(sessionId, () => {
-              finalizeStream(`出错：${err.message}`, undefined)
-              activeStreamSessionRef.current = null
-              abortRef.current = null
+            streamSessionGuardRef.current.finish(capturedConvId, sessionId, () => {
+              finalizeStream(`出错：${err.message}`, undefined, capturedConvId)
+              delete activeStreamSessionsRef.current[capturedConvId]
+              delete abortControllersRef.current[capturedConvId]
             })
           },
         },
@@ -992,18 +1030,20 @@ export function ChatPanel() {
         { reasoning: resolveUserVisibleReasoning(effectiveChatLlmConfig.reasoning) },
       )
     },
-    [aiChatModel, llmConfig, chatEditModeEnabled, addMessage, setStreaming, setStreamingContent, appendStreamToken, finalizeStream, createConversation, maxHistoryMessages, requestSoulDialog, deepChapterEnabled, project, novelMode, selectedFile],
+    [aiChatModel, llmConfig, providerConfigs, chatEditModeEnabled, addMessage, startStreaming, setStreamingContent, appendStreamToken, finalizeStream, createConversation, maxHistoryMessages, requestSoulDialog, deepChapterEnabled, project, novelMode, selectedFile],
   )
 
   const handleStop = useCallback(() => {
-    const sessionId = activeStreamSessionRef.current
-    const currentStreamingContent = useChatStore.getState().streamingContent
-    abortRef.current?.abort()
-    abortRef.current = null
-    if (sessionId !== null) {
-      streamSessionGuardRef.current.stop(sessionId, () => {
-        finalizeStream(`${currentStreamingContent ? `${currentStreamingContent}\n\n` : ""}已停止生成。`, [])
-        activeStreamSessionRef.current = null
+    const convId = useChatStore.getState().activeConversationId
+    if (!convId) return
+    const sessionId = activeStreamSessionsRef.current[convId]
+    const currentStreamingContent = useChatStore.getState().getStreamingContent(convId)
+    abortControllersRef.current[convId]?.abort()
+    delete abortControllersRef.current[convId]
+    if (sessionId !== undefined) {
+      streamSessionGuardRef.current.stop(convId, sessionId, () => {
+        finalizeStream(`${currentStreamingContent ? `${currentStreamingContent}\n\n` : ""}已停止生成。`, [], convId)
+        delete activeStreamSessionsRef.current[convId]
       })
     }
   }, [finalizeStream])
@@ -1066,18 +1106,18 @@ export function ChatPanel() {
     })
 
     addMessage("user", "继续未完成")
-    setStreaming(true)
+    startStreaming(convId)
 
-    const sessionId = streamSessionGuardRef.current.start()
-    activeStreamSessionRef.current = sessionId
+    const sessionId = streamSessionGuardRef.current.start(convId)
+    activeStreamSessionsRef.current[convId] = sessionId
     const controller = new AbortController()
-    abortRef.current = controller
+    abortControllersRef.current[convId] = controller
 
     const deepStream = createDeepThinkingStreamRenderer()
     let accumulated = deepStream.updateThinking("## 继续未完成\n正在基于上一轮已完成阶段继续生成，避免从头重新思考。")
     let resumeThinking = ""
     let latestCheckpoint = persistedResume?.checkpoint
-    setStreamingContent(accumulated)
+    setStreamingContent(accumulated, convId)
 
     try {
       const novelConfig = useWikiStore.getState().novelConfig
@@ -1102,14 +1142,14 @@ export function ChatPanel() {
           },
           {
             onThinking: (content) => {
-              if (!streamSessionGuardRef.current.isActive(sessionId)) return
+              if (!streamSessionGuardRef.current.isActive(convId, sessionId)) return
               accumulated = deepStream.updateThinking(content)
-              setStreamingContent(accumulated)
+              setStreamingContent(accumulated, convId)
             },
             onFinalContent: (content) => {
-              if (!streamSessionGuardRef.current.isActive(sessionId)) return
+              if (!streamSessionGuardRef.current.isActive(convId, sessionId)) return
               accumulated = deepStream.appendFinal(content)
-              setStreamingContent(accumulated)
+              setStreamingContent(accumulated, convId)
             },
             onCheckpoint: (checkpoint) => {
               latestCheckpoint = checkpoint
@@ -1119,11 +1159,11 @@ export function ChatPanel() {
           controller.signal,
         )
 
-        if (!streamSessionGuardRef.current.isActive(sessionId)) return
-        streamSessionGuardRef.current.finish(sessionId, () => {
-          finalizeStream(accumulated || "继续未完成失败：模型没有返回内容。", [])
-          activeStreamSessionRef.current = null
-          abortRef.current = null
+        if (!streamSessionGuardRef.current.isActive(convId, sessionId)) return
+        streamSessionGuardRef.current.finish(convId, sessionId, () => {
+          finalizeStream(accumulated || "继续未完成失败：模型没有返回内容。", [], convId)
+          delete activeStreamSessionsRef.current[convId]
+          delete abortControllersRef.current[convId]
         })
         return
       }
@@ -1197,17 +1237,17 @@ export function ChatPanel() {
         ],
         {
           onToken: (token) => {
-            if (!streamSessionGuardRef.current.isActive(sessionId)) return
+            if (!streamSessionGuardRef.current.isActive(convId, sessionId)) return
             accumulated = deepStream.appendFinal(token)
-            setStreamingContent(accumulated)
+            setStreamingContent(accumulated, convId)
           },
           onReasoningToken: (token) => {
-            if (!streamSessionGuardRef.current.isActive(sessionId)) return
+            if (!streamSessionGuardRef.current.isActive(convId, sessionId)) return
             resumeThinking += token
             accumulated = deepStream.updateThinking(
               `## 继续未完成\n正在基于上一轮已完成阶段继续生成，避免从头重新思考。\n\n${resumeThinking}`,
             )
-            setStreamingContent(accumulated)
+            setStreamingContent(accumulated, convId)
           },
           onDone: () => {},
           onError: (err) => {
@@ -1218,17 +1258,17 @@ export function ChatPanel() {
         { reasoning: resolveUserVisibleReasoning(writingConfig.reasoning) },
       )
 
-      if (!streamSessionGuardRef.current.isActive(sessionId)) return
+      if (!streamSessionGuardRef.current.isActive(convId, sessionId)) return
       if (streamError) throw streamError
 
-      streamSessionGuardRef.current.finish(sessionId, () => {
-        finalizeStream(accumulated || "继续未完成失败：模型没有返回内容。", [])
-        activeStreamSessionRef.current = null
-        abortRef.current = null
+      streamSessionGuardRef.current.finish(convId, sessionId, () => {
+        finalizeStream(accumulated || "继续未完成失败：模型没有返回内容。", [], convId)
+        delete activeStreamSessionsRef.current[convId]
+        delete abortControllersRef.current[convId]
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      streamSessionGuardRef.current.finish(sessionId, () => {
+      streamSessionGuardRef.current.finish(convId, sessionId, () => {
         const visibleFailure = `${accumulated ? `${accumulated}\n\n` : ""}出错：继续未完成失败：${message}`
         const inheritedResumeContext = [
           rootResumeContext,
@@ -1244,19 +1284,20 @@ export function ChatPanel() {
             checkpoint: latestCheckpoint,
           }),
           undefined,
+          convId,
         )
-        activeStreamSessionRef.current = null
-        abortRef.current = null
+        delete activeStreamSessionsRef.current[convId]
+        delete abortControllersRef.current[convId]
       })
     } finally {
-      if (activeStreamSessionRef.current === sessionId) {
-        activeStreamSessionRef.current = null
+      if (activeStreamSessionsRef.current[convId] === sessionId) {
+        delete activeStreamSessionsRef.current[convId]
       }
-      if (abortRef.current === controller) {
-        abortRef.current = null
+      if (abortControllersRef.current[convId] === controller) {
+        delete abortControllersRef.current[convId]
       }
     }
-  }, [isStreaming, createConversation, addMessage, setStreaming, setStreamingContent, llmConfig, finalizeStream])
+  }, [isStreaming, createConversation, addMessage, startStreaming, setStreamingContent, llmConfig, finalizeStream])
 
   const handleWriteToWiki = useCallback(async () => {
     if (!project) return
@@ -1264,15 +1305,14 @@ export function ChatPanel() {
     try {
       await executeIngestWrites(pp, llmConfig, undefined, undefined)
       try {
-        const tree = await listDirectory(pp)
-        setFileTree(tree)
+        await refreshProjectState(pp)
       } catch {
         // ignore
       }
     } catch (err) {
       console.error("写入 wiki 失败:", err)
     }
-  }, [project, llmConfig, setFileTree])
+  }, [project, llmConfig])
 
   const hasAssistantMessages = activeMessages.some((m) => m.role === "assistant")
   const showWriteButton = mode === "ingest" && !isStreaming && hasAssistantMessages
@@ -1296,7 +1336,8 @@ export function ChatPanel() {
               ref={scrollContainerRef}
               className="flex-1 overflow-y-auto px-3 py-2"
             >
-              <div className="flex flex-col gap-3">
+              {/* key 强制在切换会话时重新挂载消息列表，避免旧会话内容残留 */}
+              <div key={activeConversationId} className="flex flex-col gap-3">
                 {activeMessages.map((msg, idx) => {
                   // Check if this is the last assistant message
                   const isLastAssistant = msg.role === "assistant" &&
@@ -1343,38 +1384,24 @@ export function ChatPanel() {
             onSend={handleSend}
             onStop={handleStop}
             isStreaming={isStreaming}
-            leadingControls={
+            footerControls={
               <TooltipProvider delay={200}>
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center justify-between gap-2 flex-nowrap overflow-x-auto">
+                  <div className="flex items-center gap-2 flex-nowrap">
                     <ChatDockControls />
                     {novelMode ? (
                       <>
                         <Button
                           type="button"
                           variant="ghost"
-                          size="sm"
+                          size="icon"
                           aria-pressed={deepChapterEnabled}
                           className={getDeepChapterToggleButtonClass(deepChapterEnabled)}
-                          onClick={() => setDeepChapterEnabled(true)}
-                          title="深度思考"
-                          aria-label="深度思考"
+                          onClick={() => setDeepChapterEnabled(!deepChapterEnabled)}
+                          title={deepChapterEnabled ? "关闭深度模式" : "开启深度模式"}
+                          aria-label={deepChapterEnabled ? "关闭深度模式" : "开启深度模式"}
                         >
-                          <Brain className="mr-1 h-4 w-4" />
-                          深度思考
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          aria-pressed={!deepChapterEnabled}
-                          className={!deepChapterEnabled ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground" : ""}
-                          onClick={() => setDeepChapterEnabled(false)}
-                          title="普通模式"
-                          aria-label="普通模式"
-                        >
-                          <PencilLine className="mr-1 h-4 w-4" />
-                          普通模式
+                          <Brain className="h-4 w-4" />
                         </Button>
                         <Tooltip>
                           <TooltipTrigger
@@ -1382,15 +1409,16 @@ export function ChatPanel() {
                               <Button
                                 type="button"
                                 variant="ghost"
-                                size="sm"
+                                size="icon"
                                 aria-pressed={chatEditModeEnabled}
                                 className={chatEditModeEnabled ? "border-amber-500 bg-amber-50 text-amber-900 hover:bg-amber-100" : ""}
                                 onClick={() => setChatEditModeEnabled(!chatEditModeEnabled)}
+                                title="编辑章节"
+                                aria-label="编辑章节"
                               />
                             )}
                           >
-                            <FileEdit className="mr-1 h-4 w-4" />
-                            编辑章节
+                            <FileEdit className="h-4 w-4" />
                           </TooltipTrigger>
                           <TooltipContent side="top" className="max-w-xs leading-5">
                             开启后，AI会话会读取当前章节或识别到的章节范围进行修改，并在写回前自动备份原内容。
@@ -1399,25 +1427,14 @@ export function ChatPanel() {
                       </>
                     ) : null}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">AI会话模型</span>
-                    <select
-                      value={aiChatModel.trim() || "__default__"}
-                      onChange={(event) => {
-                        const nextValue = event.target.value === "__default__" ? "" : event.target.value
-                        setAiChatModel(nextValue)
-                        void saveAiChatModel(nextValue)
+                  <div className="flex items-center gap-2 flex-nowrap">
+                    <ChatModelSelector
+                      value={aiChatModel}
+                      onChange={(model) => {
+                        setAiChatModel(model)
+                        void saveAiChatModel(model)
                       }}
-                      className="h-8 min-w-48 rounded-md border border-input bg-background px-2 text-sm"
-                      aria-label="AI会话模型"
-                    >
-                      <option value="__default__">跟随当前主模型</option>
-                      {buildModelSelectOptions(aiChatModel, aiChatModelOptions).map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </div>
                 </div>
               </TooltipProvider>

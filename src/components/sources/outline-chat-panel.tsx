@@ -1,19 +1,21 @@
-import { useRef, useCallback, useEffect, useMemo } from "react"
+import React, { useRef, useCallback, useEffect, useMemo, useState } from "react"
 import { X, Save, Copy, RefreshCw, FileText, Plus, Trash2 } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useOutlineChatStore, type OutlineChatMessage } from "@/stores/outline-chat-store"
 import { normalizePath } from "@/lib/path-utils"
+import { refreshProjectState } from "@/lib/project-refresh"
 import { readFile, writeFile, listDirectory, createDirectory, fileExists } from "@/commands/fs"
 import { streamChat, type ChatMessage } from "@/lib/llm-client"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import ReactMarkdown from "react-markdown"
-import { useState } from "react"
 import { FileEditPreview } from "@/components/chat/file-edit-preview"
 import { ChatDockControls } from "@/components/chat/chat-dock-controls"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { OUTLINE_SECTION_GENERATION_CONFIGS } from "@/lib/novel/outline-generation"
 import { prepareOutlineSaveDraft } from "@/lib/outline-save"
 import { resolveUserVisibleReasoning } from "@/lib/user-visible-reasoning"
 import { runDeepOutlineGeneration } from "@/lib/novel/deep-outline-generation"
+import { resolveNovelModel } from "@/lib/novel/model-resolver"
 import { createDeepThinkingStreamRenderer } from "@/lib/deep-thinking-stream"
 import { ChatInput } from "@/components/chat/chat-input"
 import {
@@ -89,21 +91,19 @@ function separateThinking(text: string): { thinking: string | null; answer: stri
   }
 }
 
-function OutlineThinkingBlock({ content, open }: { content: string; open: boolean }) {
-  const lines = content.split("\n").filter((line) => line.trim())
+const OutlineThinkingBlock = React.memo(function OutlineThinkingBlock({ content, open }: { content: string; open: boolean }) {
   return (
-    <div className="mb-2 rounded-md border border-dashed border-amber-500/30 bg-amber-50/50 px-3 py-2 text-xs dark:bg-amber-950/20">
+    <div className="mb-2 rounded-md border border-dashed border-amber-500/30 bg-amber-50/50 px-3 py-2 text-xs dark:bg-amber-950/20 min-h-[3rem]">
       <div className="mb-1.5 flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
         <span className={open ? "animate-pulse" : undefined}>💭</span>
         <span className="font-medium">{open ? "思考中..." : "思考过程"}</span>
-        <span className="text-[10px] text-amber-600/60 dark:text-amber-500/60">{lines.length} 行</span>
       </div>
       <div className="max-h-72 overflow-y-auto border-t border-amber-500/20 pt-2 pr-1 whitespace-pre-wrap break-words font-mono leading-5 text-amber-800/80 dark:text-amber-300/70">
         {content}
       </div>
     </div>
   )
-}
+})
 
 function OutlineAssistantMessage({ msg, index, isStreaming, streamingContent, activeMessagesLength, copied, projectPath, onSaveAsOutline, onCopy, onRegenerate }: {
   msg: import("@/stores/outline-chat-store").OutlineChatMessage
@@ -138,11 +138,7 @@ function OutlineAssistantMessage({ msg, index, isStreaming, streamingContent, ac
     const results = await applyFileEdits(projectPath, edits)
     setEditResults(results)
     setEditApplied(true)
-    const { listDirectory } = await import("@/commands/fs")
-    const { normalizePath } = await import("@/lib/path-utils")
-    const tree = await listDirectory(normalizePath(projectPath))
-    useWikiStore.getState().setFileTree(tree)
-    useWikiStore.getState().bumpDataVersion()
+    await refreshProjectState(projectPath)
     return results
   }, [projectPath])
 
@@ -195,6 +191,7 @@ function OutlineAssistantMessage({ msg, index, isStreaming, streamingContent, ac
 export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const project = useWikiStore((s) => s.project)
   const llmConfig = useWikiStore((s) => s.llmConfig)
+  const novelConfig = useWikiStore((s) => s.novelConfig)
 
   const conversations = useOutlineChatStore((s) => s.conversations)
   const activeConversationId = useOutlineChatStore((s) => s.activeConversationId)
@@ -210,6 +207,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const setStreamingContent = useOutlineChatStore((s) => s.setStreamingContent)
   const setIsStreaming = useOutlineChatStore((s) => s.setIsStreaming)
   const loadFromDisk = useOutlineChatStore((s) => s.loadFromDisk)
+
+  const [inputValue, setInputValue] = useState("")
 
   // 加载持久化的历史记录
   useEffect(() => {
@@ -257,7 +256,12 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const handleSend = useCallback(async (inputText: string) => {
     const prompt = inputText.trim()
     if (!prompt || !project || isStreaming) return
-    if (!hasUsableLlm(llmConfig)) return
+    const effectiveLlmConfig = resolveNovelModel(llmConfig, novelConfig, "writing")
+    if (!hasUsableLlm(effectiveLlmConfig)) {
+      const convId = activeConversationId ?? createConversation()
+      addMessage(convId, { id: crypto.randomUUID(), role: "assistant", content: "请先在设置中配置可用的AI模型（API Key 和模型名称），或在AI会话中选择一个模型。" })
+      return
+    }
 
     let convId = activeConversationId
     if (!convId) {
@@ -342,7 +346,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           appendToResult("</think>")
         }
 
-        await streamChat(llmConfig, chatMessages, {
+        await streamChat(effectiveLlmConfig, chatMessages, {
           onToken: (token) => {
             closeReasoning()
             appendToResult(token)
@@ -354,11 +358,11 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           onError: () => {
             closeReasoning()
           },
-        }, controller.signal, { reasoning: resolveUserVisibleReasoning(llmConfig.reasoning) })
+        }, controller.signal, { reasoning: resolveUserVisibleReasoning(effectiveLlmConfig.reasoning) })
       } else {
         await runDeepOutlineGeneration(
           {
-            llmConfig,
+            llmConfig: effectiveLlmConfig,
             userRequest: prompt,
             context: outlineContext,
             historyMessages,
@@ -374,20 +378,25 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
 
       replaceLastAssistant(convId, result, outlineSources)
       setStreamingContent("")
-    } catch {
-      // If aborted, keep partial content
+    } catch (err) {
+      // If aborted, keep partial content; otherwise show error
       const partial = useOutlineChatStore.getState().streamingContent
       if (partial) {
         replaceLastAssistant(convId!, partial)
       } else {
-        removeLastMessage(convId!)
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        if (errorMsg && !errorMsg.includes("aborted")) {
+          replaceLastAssistant(convId!, `生成失败：${errorMsg}`)
+        } else {
+          removeLastMessage(convId!)
+        }
       }
       setStreamingContent("")
     } finally {
       setIsStreaming(false)
       abortRef.current = null
     }
-  }, [project, isStreaming, llmConfig, activeConversationId, createConversation, addMessage, replaceLastAssistant, removeLastMessage, setIsStreaming, setStreamingContent])
+  }, [project, isStreaming, llmConfig, novelConfig, activeConversationId, createConversation, addMessage, replaceLastAssistant, removeLastMessage, setIsStreaming, setStreamingContent])
 
   const handleGenerateSection = useCallback((title: string, requestHint: string) => {
     void handleSend(`请继续生成「${title}」。${requestHint} 请基于已有大纲、章节内容和项目记忆直接输出该分项内容，结构清晰，可保存为大纲。`)
@@ -407,7 +416,11 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
 
   const handleRegenerate = useCallback(async (msgIndex: number) => {
     if (!project || isStreaming || !activeConversationId) return
-    if (!hasUsableLlm(llmConfig)) return
+    const effectiveLlmConfig = resolveNovelModel(llmConfig, novelConfig, "writing")
+    if (!hasUsableLlm(effectiveLlmConfig)) {
+      addMessage(activeConversationId, { id: crypto.randomUUID(), role: "assistant", content: "请先在设置中配置可用的AI模型（API Key 和模型名称），或在AI会话中选择一个模型。" })
+      return
+    }
 
     // Remove messages from msgIndex onwards
     const conv = useOutlineChatStore.getState().conversations.find(c => c.id === activeConversationId)
@@ -446,7 +459,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
 
       await runDeepOutlineGeneration(
         {
-          llmConfig,
+          llmConfig: effectiveLlmConfig,
           userRequest: lastUserRequest,
           context,
           historyMessages: chatMessages,
@@ -461,15 +474,22 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
 
       replaceLastAssistant(activeConversationId, result, sources)
       setStreamingContent("")
-    } catch {
+    } catch (err) {
       const partial = useOutlineChatStore.getState().streamingContent
-      if (partial) replaceLastAssistant(activeConversationId, partial)
+      if (partial) {
+        replaceLastAssistant(activeConversationId, partial)
+      } else {
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        if (errorMsg && !errorMsg.includes("aborted")) {
+          replaceLastAssistant(activeConversationId, `生成失败：${errorMsg}`)
+        }
+      }
       setStreamingContent("")
     } finally {
       setIsStreaming(false)
       abortRef.current = null
     }
-  }, [project, isStreaming, llmConfig, activeConversationId, addMessage, replaceLastAssistant, setIsStreaming, setStreamingContent])
+  }, [project, isStreaming, llmConfig, novelConfig, activeConversationId, addMessage, replaceLastAssistant, setIsStreaming, setStreamingContent])
 
   const handleCopy = useCallback((content: string, id: string) => {
     navigator.clipboard.writeText(content).then(() => {
@@ -496,9 +516,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       const body = draft.content.replace(/^#\s+.+(?:\r?\n){1,2}/, "").trim()
       const mdContent = `---\ntype: outline\ntitle: "${fileName}"\n---\n\n# ${fileName}\n\n${body}\n`
       await writeFile(outlinePath, mdContent)
-      const tree = await listDirectory(pp)
-      useWikiStore.getState().setFileTree(tree)
-      useWikiStore.getState().bumpDataVersion()
+      await refreshProjectState(pp)
       setSaveStatus(`已保存：${fileName}`)
     } catch (err) {
       setSaveStatus(`保存失败：${err instanceof Error ? err.message : String(err)}`)
@@ -606,7 +624,15 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         onStop={handleStop}
         isStreaming={isStreaming}
         placeholder="输入关于大纲的问题..."
-        leadingControls={<ChatDockControls />}
+        value={inputValue}
+        onChange={setInputValue}
+        footerControls={
+          <TooltipProvider delay={200}>
+            <div className="flex items-center gap-2 flex-nowrap overflow-x-auto">
+              <ChatDockControls />
+            </div>
+          </TooltipProvider>
+        }
       />
     </div>
   )

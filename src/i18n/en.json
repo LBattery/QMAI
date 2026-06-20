@@ -19,6 +19,16 @@
       "fallback": "Fallback Mode (No Daemon)"
     }
   },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "close": "Close",
+    "confirm": "Confirm",
+    "back": "Back",
+    "next": "Next"
+  },
   "sidebar": {
     "knowledge": "Chapters",
     "files": "Outlines",
@@ -342,7 +352,10 @@
     "retry": "Retry",
     "references": "References",
     "saveToWiki": "Save to wiki",
-    "saveAsDraft": "Save as draft"
+    "saveAsDraft": "Save as draft",
+    "selectModel": "Select model",
+    "searchModel": "Search models...",
+    "noModelFound": "No matching model"
   },
   "search": {
     "title": "Search",
@@ -658,6 +671,7 @@
       "feedback": "Feedback",
       "contactSupport": "Contact & Support",
       "changelog": "Changelog",
+      "dataManagement": "Data Management",
       "about": "About"
     },
     "sections": {
@@ -703,8 +717,8 @@
         "description": "Each provider has an independent configuration. Turning one on makes it the active provider and turns the others off. Edits save immediately, and API keys remain separate per provider.",
         "expand": "Expand configuration",
         "collapse": "Collapse",
-        "toggleOff": "Click to disable",
-        "toggleOn": "Click to enable (disables other providers)",
+        "toggleOff": "Disable this provider",
+        "toggleOn": "Enable this provider",
         "deactivate": "Deactivate",
         "activate": "Activate",
         "apiMode": "API Mode",
@@ -722,6 +736,12 @@
         "savedBadge": "Saved",
         "configuredBadge": "Configured",
         "activeBadge": "● Active",
+        "enabledBadge": "{{count}} models enabled",
+        "fetchedModelsCount": "{{count}} models fetched",
+        "selectedModelsCount": "{{count}} selected",
+        "toggleModelHint": "Click model tags to select/deselect",
+        "selectedModels": "Selected models",
+        "pleaseFetchModels": "Please fetch and select models first",
         "useModel": "Use {{model}}",
         "typeCustomModel": "Enter custom model ID",
         "customModel": "Custom...",
@@ -777,7 +797,30 @@
         "providerTests": "Model tests",
         "providerTestsHint": "Connection test checks reachability. Functional test asks the model to return a specific token, confirming it can generate usable output.",
         "testConnection": "Test connection",
-        "testFunction": "Test function"
+        "testFunction": "Test function",
+        "savedModels": {
+          "title": "Saved models",
+          "addModel": "Add model",
+          "editModel": "Edit model",
+          "delete": "Delete",
+          "edit": "Edit",
+          "empty": "No saved models yet",
+          "endpoint": "Endpoint",
+          "confirmDelete": "Are you sure you want to delete this model configuration?",
+          "dialogDescription": "Configure a new model. You can use a different API key or endpoint address to switch quickly in AI Chat.",
+          "modelName": "Model name",
+          "modelNamePlaceholder": "e.g. GPT-4o",
+          "modelId": "Model ID",
+          "modelIdPlaceholder": "e.g. gpt-4o",
+          "apiKey": "API Key (optional)",
+          "apiKeyPlaceholder": "Leave blank to reuse the provider's key",
+          "apiKeyHint": "Leave blank to reuse the current provider's API key",
+          "customEndpoint": "Custom endpoint (optional)",
+          "customEndpointPlaceholder": "Leave blank to reuse the provider's endpoint",
+          "customEndpointHint": "Leave blank to reuse the current provider's endpoint",
+          "description": "Description",
+          "descriptionPlaceholder": "e.g. good for coding"
+        }
       },
       "embedding": {
         "title": "Vector Search / Embedding Model",
@@ -908,6 +951,24 @@
         "uiLanguage": "UI language",
         "uiLanguageHint": "Only affects menus, labels, and other interface text. AI output language is configured separately under Output."
       },
+      "dataManagement": {
+        "title": "Data Management",
+        "description": "Backup and restore all your data, including model configs, AI chats, novel content, outlines, memory, book analysis results, etc.",
+        "exportTitle": "Export Backup",
+        "exportDescription": "Pack all data into a zip file for backup before reinstalling OS. Includes: global configs, all project data, UI preferences.",
+        "exportButton": "Export Backup",
+        "exporting": "Exporting...",
+        "exportSuccess": "Export successful",
+        "fileCount": "{{count}} files, {{size}}",
+        "importTitle": "Import Backup",
+        "importDescription": "Restore data from a zip backup file. Restart required after import.",
+        "importStrategy": "Import method",
+        "importButton": "Import Backup",
+        "importing": "Importing...",
+        "importSuccess": "Import successful. Please restart the app.",
+        "restoredProjects": "Restored {{count}} projects",
+        "securityWarning": "Backup files contain sensitive information like API keys. Keep them safe and do not share."
+      },
       "changelog": {
         "title": "Release Notes",
         "description": "Highlights worth noticing in the current version."
@@ -1009,9 +1070,12 @@
     "cancelMove": "Cancel Move",
     "moveModeHint": "Select the chapter to move, then select the target chapter",
     "moveSourceSelected": "Move source selected",
+    "moveToVolume": "Move to volume",
+    "moveTargetExists": "A file with the same name already exists in the target volume",
     "rename": "Rename",
     "deleteFolder": "Delete folder",
-    "deleteFolderConfirm": "Move folder \"{{name}}\" and its {{count}} outline files to trash?",
+    "deleteVolume": "Delete volume",
+    "deleteFolderConfirm": "Move \"{{name}}\" and its {{count}} files to trash?",
     "deleteEmptyFolderConfirm": "Delete empty folder \"{{name}}\"?",
     "deleteFolderBlocked": "Folder \"{{name}}\" still contains other files that were not moved to trash, so the folder itself was kept.",
     "rawSources": "Raw Sources",

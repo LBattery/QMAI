@@ -63,6 +63,33 @@ export interface CustomCharacterAuraSkillInput {
   enableWebSearch?: boolean
 }
 
+/**
+ * 由"已经生成好的拆书 Skill"创建自定义灵魂的输入（feature/book-analysis-6d-skill）
+ * 适用于：6 维度分析已经在外部跑完，只需要把结果保存为角色灵魂
+ */
+export interface GeneratedCharacterAuraSkillInput {
+  name: string
+  category?: string
+  sourceBook?: string
+  sourceNote: string
+  corpus: string
+  styleDescription: string
+  behaviorRules: string
+  boundaries: string
+  notes: string
+  expressionDna: string
+  mentalModel: string
+  decisionHeuristics: string
+  valueAntiPatterns: string
+  honestyBoundaries: string
+  /** 完整的 SKILL.md 内容（6 维度分析已生成） */
+  skillContent: string
+  /** 生成提示词，用于追溯 */
+  generationPrompt?: string
+  /** 6 份研究文件的内容（key: 文件名，value: markdown 内容） */
+  researchFiles?: Record<string, string>
+}
+
 interface LocalDocumentImportResult {
   path: string
   content: string
@@ -236,7 +263,7 @@ function createBuiltInAura(id: string, category: string, name: string, corpus: s
     decisionHeuristics,
     valueAntiPatterns,
     honestyBoundaries,
-    skillFolder: `NvwaSKILL/examples/${skillSlug}-perspective`,
+    skillFolder: `skills/soulskill/${skillSlug}-perspective`,
   }
 }
 
@@ -363,6 +390,60 @@ export async function createCustomCharacterAuraSkill(
     await writeFileAtomic(
       joinPath(skillFolder, "references", "research", file.fileName),
       workflowResearchFiles[file.fileName] ?? customResearchMarkdown(aura, generationInput, file.fileName),
+    )
+  }
+  store.customAuras.push(aura)
+  await saveCharacterAuraStore(projectPath, store)
+  return aura
+}
+
+/**
+ * 由已生成的拆书 Skill 创建自定义灵魂（feature/book-analysis-6d-skill）
+ *
+ * 区别于 createCustomCharacterAuraSkill：本函数不再调用 LLM，
+ * 假定 skillContent 和 researchFiles 已经由 6 维度分析生成完毕，
+ * 只负责把结果落盘到 <projectPath>/.qmai/character-auras/<id>-perspective/。
+ */
+export async function createCustomCharacterAuraFromGeneratedSkill(
+  projectPath: string,
+  input: GeneratedCharacterAuraSkillInput,
+): Promise<CharacterAura> {
+  const store = await loadCharacterAuraStore(projectPath)
+  const now = Date.now()
+  const id = `custom-${now}-${Math.random().toString(36).slice(2, 8)}`
+  const skillFolder = `${normalizePath(projectPath)}/.qmai/character-auras/${safeSkillSlug(id, input.name)}-perspective`
+  const aura: CharacterAura = {
+    id,
+    builtIn: false,
+    name: input.name,
+    category: input.category || "拆书角色",
+    sourceNote: input.sourceNote,
+    corpus: input.corpus,
+    styleDescription: input.styleDescription,
+    behaviorRules: input.behaviorRules,
+    boundaries: input.boundaries,
+    notes: input.notes,
+    expressionDna: input.expressionDna,
+    mentalModel: input.mentalModel,
+    decisionHeuristics: input.decisionHeuristics,
+    valueAntiPatterns: input.valueAntiPatterns,
+    honestyBoundaries: input.honestyBoundaries,
+    generationPrompt: input.generationPrompt ?? "",
+    webSearchEnabled: false,
+    skillFolder,
+    createdAt: now,
+    updatedAt: now,
+  }
+  await createDirectory(skillFolder)
+  await createDirectory(joinPath(skillFolder, "references", "research"))
+  await writeFileAtomic(joinPath(skillFolder, "SKILL.md"), input.skillContent)
+  const researchFiles = input.researchFiles ?? {}
+  // 写已提供的 6 份研究文件；缺失文件用空 markdown 兜底，避免下游读不到
+  for (const file of CHARACTER_AURA_RESEARCH_FILES) {
+    const content = researchFiles[file.fileName]
+    await writeFileAtomic(
+      joinPath(skillFolder, "references", "research", file.fileName),
+      content ?? `# ${input.name} - ${file.label}\n\n（拆书分析未提供该维度）\n`,
     )
   }
   store.customAuras.push(aura)
@@ -683,8 +764,8 @@ async function readSkillFileWithFallback(filePath: string, projectPath?: string)
         try {
           const exeDir = await getExecutableDir()
           roots.push(exeDir)
-          // 便携版：NvwaSKILL 直接在 exe 旁边
-          // 安装版：NvwaSKILL 在 exe 目录下的 _up_ 子目录中
+          // 便携版：skills 直接在 exe 旁边
+          // 安装版：skills 在 exe 目录下的 _up_ 子目录中
           roots.push(joinPath(exeDir, "_up_"))
           // 也尝试 exe 的上一级目录
           const parentDir = exeDir.replace(/[\\/][^\\/]+[\\/]?$/, "")
@@ -693,7 +774,7 @@ async function readSkillFileWithFallback(filePath: string, projectPath?: string)
         try {
           const resDir = await getResourceDir()
           roots.push(resDir)
-          // Tauri NSIS 安装版把 ../NvwaSKILL 放到 _up_/NvwaSKILL
+          // Tauri NSIS 安装版把 ../skills 放到 _up_/skills
           roots.push(joinPath(resDir, "_up_"))
         } catch {}
       } catch {}

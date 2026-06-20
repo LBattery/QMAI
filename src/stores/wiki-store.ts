@@ -12,6 +12,7 @@ const GRAPH_EDGE_STRENGTH_KEY = "lk-graph-edge-strength"
 const GRAPH_EDGE_STYLE_KEY = "lk-graph-edge-style"
 const GRAPH_EDGE_LABELS_ALWAYS_KEY = "lk-graph-edge-labels-always"
 const CHAT_DOCK_POSITION_KEY = "qmai-chat-dock-position"
+const UI_FONT_SIZE_SCALE_KEY = "qmai-ui-font-size-scale"
 
 export type ChatDockPosition = "bottom" | "right"
 export type SettingsCategoryId =
@@ -23,6 +24,7 @@ export type SettingsCategoryId =
   | "novel"
   | "usage-guide"
   | "maintenance"
+  | "data-management"
   | "feedback"
   | "contact-support"
   | "changelog"
@@ -31,6 +33,12 @@ const readStoredChatDockPosition = (): ChatDockPosition => {
   if (typeof localStorage === "undefined") return "bottom"
   const saved = localStorage.getItem(CHAT_DOCK_POSITION_KEY)
   return saved === "right" || saved === "bottom" ? saved : "bottom"
+}
+
+const readStoredUiFontSizeScale = (): number => {
+  if (typeof localStorage === "undefined") return 1
+  const saved = Number(localStorage.getItem(UI_FONT_SIZE_SCALE_KEY) ?? "1")
+  return Number.isFinite(saved) ? Math.max(0.85, Math.min(1.3, Number(saved.toFixed(2)))) : 1
 }
 
 const readStoredGraphLabelDisplayMode = (): string => {
@@ -330,11 +338,32 @@ type OutputLanguage =
   | "Ukrainian"
 
 /**
+ * 已保存的模型配置项
+ */
+export interface SavedModel {
+  /** 唯一ID */
+  id: string
+  /** 显示名称 */
+  name: string
+  /** 模型ID */
+  model: string
+  /** API密钥（可选，可以复用供应商的密钥） */
+  apiKey?: string
+  /** 自定义接口地址（可选，可以复用供应商的地址） */
+  customEndpoint?: string
+  /** 备注说明 */
+  description?: string
+  /** 创建时间 */
+  createdAt: number
+}
+
+/**
  * Per-preset saved fields. Each entry survives turning the preset off
  * and coming back — users don't have to re-enter an API key when they
  * briefly switch to a different provider.
  */
 export interface ProviderOverride {
+  label?: string             // 自定义配置的显示名称
   apiKey?: string
   model?: string
   baseUrl?: string           // customEndpoint for custom presets, ollamaUrl for ollama
@@ -345,6 +374,10 @@ export interface ProviderOverride {
   reasoning?: ReasoningConfig
   localCliIsolation?: boolean
   codexCliTimeoutMinutes?: number
+  /** 是否在 AI 会话中显示该 provider 下的模型（仅用于自定义供应商）。默认 true。 */
+  enabled?: boolean
+  /** 已保存的模型列表（仅用于自定义供应商） */
+  savedModels?: SavedModel[]
 }
 
 export type ProviderConfigs = Record<string, ProviderOverride>
@@ -431,7 +464,7 @@ interface WikiState {
   chatExpanded: boolean
   chatDockPosition: ChatDockPosition
   searchPanelOpen: boolean
-  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "soul" | "dismantling" | "settings" | "trash" | "reviewCenter"
+  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "soul" | "dismantling" | "bookAnalysis" | "settings" | "trash" | "reviewCenter"
   activeSettingsCategory: SettingsCategoryId | null
   selectedSoulId: string | null
   selectedSoulTab: "project" | "character"
@@ -476,6 +509,7 @@ interface WikiState {
   lintRun: LintRunState | null
   reviewRun: ReviewRunState | null
   theme: "light" | "dark" | "deep-blue"
+  uiFontSizeScale: number
   dataVersion: number
 
   setProject: (project: WikiProject | null) => void
@@ -535,6 +569,7 @@ interface WikiState {
   finishReviewRun: (runId: string, reviewRun: ReviewRunFinishState) => void
   clearTransientTaskState: () => void
   setTheme: (theme: "light" | "dark" | "deep-blue") => void
+  setUiFontSizeScale: (scale: number) => void
   bumpDataVersion: () => void
 }
 
@@ -604,7 +639,7 @@ export const useWikiStore = create<WikiState>((set) => ({
     set({ chatDockPosition })
   },
   setSearchPanelOpen: (searchPanelOpen) => set({ searchPanelOpen }),
-  setActiveView: (activeView) => set({ activeView: activeView === "dismantling" ? "wiki" : activeView }),
+  setActiveView: (activeView) => set({ activeView }),
   setActiveSettingsCategory: (activeSettingsCategory) => set({ activeSettingsCategory }),
   setSelectedSoulId: (selectedSoulId) => set({ selectedSoulId }),
   setSelectedSoulTab: (selectedSoulTab) => set({ selectedSoulTab }),
@@ -698,6 +733,7 @@ export const useWikiStore = create<WikiState>((set) => ({
   lintRun: null,
   reviewRun: null,
   theme: "light",
+  uiFontSizeScale: readStoredUiFontSizeScale(),
 
   setLlmConfig: (llmConfig) => set({ llmConfig }),
   setAiChatModel: (aiChatModel) => set({ aiChatModel }),
@@ -731,6 +767,13 @@ export const useWikiStore = create<WikiState>((set) => ({
   }),
   clearTransientTaskState: () => set({ finalChapterSave: null, lintRun: null, reviewRun: null }),
   setTheme: (theme) => set({ theme }),
+  setUiFontSizeScale: (scale) => {
+    const clamped = Math.max(0.85, Math.min(1.3, Number(scale.toFixed(2))))
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(UI_FONT_SIZE_SCALE_KEY, String(clamped))
+    }
+    set({ uiFontSizeScale: clamped })
+  },
   bumpDataVersion: () => set((state) => ({ dataVersion: state.dataVersion + 1 })),
 }))
 

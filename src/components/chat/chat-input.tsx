@@ -2,6 +2,7 @@ import { useRef, useState, useCallback, type ReactNode } from "react"
 import { Send, Square } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { isImeComposing } from "@/lib/keyboard-utils"
+import { useChatStore } from "@/stores/chat-store"
 import {
   clampResizableInputHeight,
   DEFAULT_RESIZABLE_INPUT_HEIGHT,
@@ -15,6 +16,9 @@ interface ChatInputProps {
   placeholder?: string
   leadingControls?: ReactNode
   footerControls?: ReactNode
+  inlineSendButton?: boolean
+  value?: string
+  onChange?: (value: string) => void
 }
 
 function resolveResizePanelHeight(root: HTMLDivElement | null): number {
@@ -28,11 +32,32 @@ function resolveResizePanelHeight(root: HTMLDivElement | null): number {
   return panelHeight
 }
 
-export function ChatInput({ onSend, onStop, isStreaming, placeholder, leadingControls, footerControls }: ChatInputProps) {
-  const [value, setValue] = useState("")
+export function ChatInput({ onSend, onStop, isStreaming, placeholder, leadingControls, footerControls, inlineSendButton = true, value: controlledValue, onChange }: ChatInputProps) {
+  const activeConversationId = useChatStore((state) => state.activeConversationId)
+  const setConversationInputDraft = useChatStore((state) => state.setConversationInputDraft)
+  const conversation = useChatStore((state) =>
+    activeConversationId
+      ? state.conversations.find((c) => c.id === activeConversationId)
+      : undefined
+  )
+  const isControlled = controlledValue !== undefined
+  const storeValue = conversation?.inputDraft ?? ""
+  const value = isControlled ? controlledValue : storeValue
+
   const [inputHeight, setInputHeight] = useState(DEFAULT_RESIZABLE_INPUT_HEIGHT)
   const rootRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const setValue = useCallback(
+    (draft: string) => {
+      if (isControlled) {
+        onChange?.(draft)
+      } else if (activeConversationId) {
+        setConversationInputDraft(activeConversationId, draft)
+      }
+    },
+    [isControlled, onChange, activeConversationId, setConversationInputDraft]
+  )
 
   const getResizeBounds = useCallback(() => {
     const panelHeight = resolveResizePanelHeight(rootRef.current)
@@ -51,7 +76,7 @@ export function ChatInput({ onSend, onStop, isStreaming, placeholder, leadingCon
     if (ta.scrollHeight > inputHeight) {
       setInputHeight(clampResizableInputHeight(ta.scrollHeight, getResizeBounds()))
     }
-  }, [getResizeBounds, inputHeight])
+  }, [getResizeBounds, inputHeight, setValue])
 
   const handleResizePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
@@ -95,7 +120,7 @@ export function ChatInput({ onSend, onStop, isStreaming, placeholder, leadingCon
     if (!trimmed || isStreaming) return
     onSend(trimmed)
     setValue("")
-  }, [value, isStreaming, onSend])
+  }, [value, isStreaming, onSend, setValue])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -123,9 +148,9 @@ export function ChatInput({ onSend, onStop, isStreaming, placeholder, leadingCon
       >
         <span className="h-0.5 w-10 rounded-full bg-border" />
       </div>
-      {footerControls ?? leadingControls ? (
+      {leadingControls ? (
         <div className="px-3 pb-2">
-          {footerControls ?? leadingControls}
+          {leadingControls}
         </div>
       ) : null}
       <div className="flex items-end gap-2 px-3 pb-3">
@@ -141,7 +166,7 @@ export function ChatInput({ onSend, onStop, isStreaming, placeholder, leadingCon
           className="flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
           style={{ height: inputHeight, maxHeight: inputHeight, overflowY: "auto" }}
         />
-        {isStreaming ? (
+        {inlineSendButton && (isStreaming ? (
           <Button
             variant="destructive"
             size="icon"
@@ -163,8 +188,13 @@ export function ChatInput({ onSend, onStop, isStreaming, placeholder, leadingCon
           >
             <Send className="h-4 w-4" />
           </Button>
-        )}
+        ))}
       </div>
+      {footerControls ? (
+        <div className="px-3 pb-2">
+          {footerControls}
+        </div>
+      ) : null}
     </div>
   )
 }
