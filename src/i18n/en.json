@@ -1190,7 +1190,14 @@
       "testSuccess": "Model test succeeded.",
       "testFailed": "Model test failed: {{message}}",
       "testUsingDefaultMainModel": "Using main model: {{model}}",
-      "testUsingCurrentModel": "Testing model: {{model}}"
+      "testUsingCurrentModel": "Testing model: {{model}}",
+      "communitySummaryEnabled": "Auto Community Summary",
+      "communitySummaryEnabledHint": "When enabled, an LLM generates narrative summaries for graph communities every N chapters, used to answer global questions (e.g., character factions, main relationship networks). Requires vector model to be enabled.",
+      "communitySummaryInterval": "Community Summary Interval",
+      "communitySummaryIntervalHint": "How many chapters to ingest before auto-rebuilding community summaries. Smaller values mean fresher summaries but more frequent LLM calls.",
+      "communitySummaryAsync": "Background Async Execution",
+      "communitySummaryAsyncHint": "When enabled, community summaries are generated in the background without blocking chapter ingestion. Disable to wait synchronously.",
+      "communitySummaryFailed": "Community summary generation failed: {{message}}. Will retry on next trigger."
     },
     "soul": {
       "projectSoul": "Project Soul",

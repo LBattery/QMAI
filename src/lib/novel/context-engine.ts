@@ -943,11 +943,23 @@ export async function searchGraphRelevantContent(
         purpose: "用于补充图谱关联上下文，优先保留和当前任务最直接相关的关联节点。",
       },
     ).catch(() => scoredNodes.slice(0, 10))
-    if (topNodes.length === 0) return ""
 
-    return topNodes.map(
-      n => `- 【${n.title}】(关联度 ${n.relevance}): ${n.snippet}`,
-    ).join("\n")
+    const nodeResults = topNodes.length > 0
+      ? topNodes.map(
+          n => `- 【${n.title}】(关联度 ${n.relevance}): ${n.snippet}`,
+        ).join("\n")
+      : ""
+
+    // 追加社区摘要向量检索
+    let communityResults = ""
+    try {
+      const { searchCommunitySummaries } = await import("./community-summary")
+      communityResults = await searchCommunitySummaries(pp, task, 3)
+    } catch {
+      // 社区摘要检索失败不影响主流程
+    }
+
+    return [nodeResults, communityResults].filter(Boolean).join("\n")
   } catch {
     return ""
   }

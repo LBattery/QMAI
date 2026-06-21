@@ -13,6 +13,7 @@ import { emptyCognitionState, mergeCognitionFromSnapshot, loadCognitionState, sa
 import { createEmptyCharacterStateStore, loadCharacterStates, saveCharacterStates, type CharacterStateStore } from "./character-state"
 import { createEmptyForeshadowingStore, loadForeshadowingTracker, saveForeshadowingTracker, type Foreshadowing, type ForeshadowingStore } from "./foreshadowing-tracker"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
+import { shouldRebuildCommunitySummaries, generateCommunitySummaries } from "./community-summary"
 import { buildChapterIngestOutput, type ChapterIngestOutput } from "./chapter-ingest-output"
 import { createChapterPipeline } from "./chapter-pipeline"
 import { mergeSnapshotTimeline } from "./timeline"
@@ -498,6 +499,29 @@ export async function ingestChapter(
   }
 
   const syncResult = await syncSnapshotToMemory(pp, snapshot)
+
+  // 社区摘要定期重建
+  if (snapshot && shouldRebuildCommunitySummaries(snapshot.chapterNumber, novelConfig)) {
+    const rebuildCommunitySummaries = async () => {
+      try {
+        await generateCommunitySummaries(pp, llmConfig, novelConfig)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.warn("[Chapter Ingest] 社区摘要生成失败:", message)
+        // 弹窗提示（通过 store 触发 UI 通知）
+        useWikiStore.getState().setCommunitySummaryError(message)
+      }
+    }
+
+    if (novelConfig.communitySummaryAsync) {
+      // 后台异步执行，不阻塞章节摄取
+      void rebuildCommunitySummaries()
+    } else {
+      // 同步等待
+      await rebuildCommunitySummaries()
+    }
+  }
+
   return { snapshot: { ...snapshot, memorySyncedAt: syncResult.memorySyncedAt } }
 }
 

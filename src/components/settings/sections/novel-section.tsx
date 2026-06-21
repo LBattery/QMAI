@@ -341,6 +341,67 @@ export function NovelSection({ draft, setDraft }: Props) {
             </div>
           </div>
 
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-1.5">
+              <Label>{t("novel.settings.communitySummaryEnabled")}</Label>
+              {settingTooltip("communitySummaryEnabledHint")}
+            </div>
+            <button
+              type="button"
+              onClick={() => updateNovelConfig({ communitySummaryEnabled: !draft.novelConfig.communitySummaryEnabled })}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                draft.novelConfig.communitySummaryEnabled ? "bg-primary" : "bg-input"
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
+                  draft.novelConfig.communitySummaryEnabled ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+
+          {draft.novelConfig.communitySummaryEnabled && (
+            <>
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <Label>{t("novel.settings.communitySummaryInterval")}</Label>
+                  {settingTooltip("communitySummaryIntervalHint")}
+                </div>
+                <Input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={draft.novelConfig.communitySummaryInterval}
+                  onChange={(e) => updateNovelConfig({
+                    communitySummaryInterval: Math.max(1, Math.min(50, Number(e.target.value) || 1)),
+                  })}
+                  className="w-24"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5">
+                  <Label>{t("novel.settings.communitySummaryAsync")}</Label>
+                  {settingTooltip("communitySummaryAsyncHint")}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => updateNovelConfig({ communitySummaryAsync: !draft.novelConfig.communitySummaryAsync })}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                    draft.novelConfig.communitySummaryAsync ? "bg-primary" : "bg-input"
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
+                      draft.novelConfig.communitySummaryAsync ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+              </div>
+            </>
+          )}
+
           {modelItems.map((item) => {
             const state = testStates[item.task]
             const modelValue = draft.novelConfig[item.field] || ""

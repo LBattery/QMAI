@@ -22,6 +22,7 @@ import { resetProjectState, resetProjectStores } from "@/lib/reset-project-state
 import { LLM_PRESETS } from "@/components/settings/llm-presets"
 import { resolveConfig } from "@/components/settings/preset-resolver"
 import { loadEnvLlmDefault } from "@/lib/env-llm-defaults"
+import { toast } from "@/lib/toast"
 import type { WikiProject } from "@/types/wiki"
 
 function App() {
@@ -31,12 +32,22 @@ function App() {
   const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
   const setActiveView = useWikiStore((s) => s.setActiveView)
   const uiFontSizeScale = useWikiStore((s) => s.uiFontSizeScale)
+  const communitySummaryError = useWikiStore((s) => s.communitySummaryError)
+  const setCommunitySummaryError = useWikiStore((s) => s.setCommunitySummaryError)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     document.documentElement.style.fontSize = `${Math.round(uiFontSizeScale * 100)}%`
   }, [uiFontSizeScale])
+
+  // 监听社区摘要生成错误，弹窗提示
+  useEffect(() => {
+    if (communitySummaryError) {
+      toast.error(i18n.t("novel.settings.communitySummaryFailed", { message: communitySummaryError }))
+      setCommunitySummaryError(null)
+    }
+  }, [communitySummaryError, setCommunitySummaryError])
 
   // Set up auto-save and clip watcher once on mount
   useEffect(() => {
