@@ -7,13 +7,12 @@ import { useEffect, useState } from "react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useBookAnalysisStore } from "@/stores/book-analysis-store"
 import { Button } from "@/components/ui/button"
-import { BookOpen, Trash2, RefreshCw, Loader2, Square } from "lucide-react"
+import { BookOpen, Trash2, RefreshCw, Loader2, Square, CheckCircle2 } from "lucide-react"
 import { listDirectory, readFile, deleteFile } from "@/commands/fs"
 import { joinPath, normalizePath } from "@/lib/path-utils"
 import { toast } from "@/lib/toast"
 import { deleteOrphanAurasForBook } from "@/lib/novel/book-analysis/aura-cleanup"
 import { listCharacterAuras } from "@/lib/novel/character-aura"
-import { CheckCircle2 } from "lucide-react"
 import type { BookAnalysisMetadata } from "@/lib/novel/book-analysis/types"
 
 interface BookItem {
@@ -35,13 +34,21 @@ export function BookAnalysisSidebarPanel() {
   const { setSelectedLibraryBookId, sidebarRefreshCounter, triggerSidebarRefresh } = useBookAnalysisStore()
   const tasks = useBookAnalysisStore((s) => s.tasks)
   const cancelTask = useBookAnalysisStore((s) => s.cancelTask)
+  const requestReopenChapterSelection = useBookAnalysisStore((s) => s.requestReopenChapterSelection)
   const [books, setBooks] = useState<BookItem[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null)
   const [bookAuraCount, setBookAuraCount] = useState<Record<string, number>>({})
 
-  // 正在运行的任务（用于显示进度）
-  const runningTasks = tasks.filter((t) => t.status === "running")
+  // 正在运行的任务：识别已完成的任务退出"运行中"，不再显示 Loader2 转圈
+  const runningTasks = tasks.filter((t) => t.status === "running" && t.progress.recognitionStatus !== "done")
+  // 识别完成、等待用户处理（点"现在处理"重新打开面板）的任务
+  const recognitionDoneTasks = tasks.filter((t) => t.status === "running" && t.progress.recognitionStatus === "done")
+
+  const handleReopenRecognition = (taskId: string) => {
+    requestReopenChapterSelection(taskId)
+    setActiveView("bookAnalysis")
+  }
 
   useEffect(() => {
     if (project?.path) {
@@ -273,8 +280,29 @@ export function BookAnalysisSidebarPanel() {
       </div>
 
       {/* 提取进度区域 */}
-      {runningTasks.length > 0 && (
+      {(runningTasks.length > 0 || recognitionDoneTasks.length > 0) && (
         <div className="shrink-0 border-t px-3 py-2 space-y-2">
+          {/* 识别完成、待处理：显示"现在处理"按钮，不再转圈 */}
+          {recognitionDoneTasks.map((task) => {
+            const stageLabel = task.progress.stageLabel || "识别完成"
+            return (
+              <div key={task.id} className="space-y-1">
+                <div className="flex items-center gap-1.5 text-xs">
+                  <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                  <span className="font-medium text-foreground truncate">{stageLabel}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleReopenRecognition(task.id)}
+                    className="ml-auto flex items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/20 transition-colors"
+                    title="打开角色选择面板"
+                  >
+                    现在处理
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+          {/* 运行中：显示进度条 + 停止按钮 */}
           {runningTasks.map((task) => {
             const stageLabel = task.progress.stageLabel || "处理中"
             const percentage = task.progress.percentage ?? 0

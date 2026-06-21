@@ -7,14 +7,16 @@
 import { act } from "react"
 import { createRoot } from "react-dom/client"
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import type { BookAnalysisTask } from "@/lib/novel/book-analysis/types"
 
 const mockSetSelectedLibraryBookId = vi.fn()
 const mockBookAnalysisState = {
   setSelectedLibraryBookId: mockSetSelectedLibraryBookId,
   sidebarRefreshCounter: 0,
   triggerSidebarRefresh: vi.fn(),
-  tasks: [],
+  tasks: [] as BookAnalysisTask[],
   cancelTask: vi.fn(),
+  requestReopenChapterSelection: vi.fn(),
 }
 
 // === mocks 必须在 import 之前 ===
@@ -78,6 +80,46 @@ beforeEach(async () => {
 })
 
 describe("BookAnalysisSidebarPanel", () => {
+  it("reopens character processing for a recognition-done running task", async () => {
+    mockBookAnalysisState.tasks = [{
+      id: "task-recognition-done",
+      projectPath: "/proj",
+      bookId: "book-1",
+      config: { sourceType: "file", sourcePath: "/books/a.txt", selectedChapters: [] },
+      progress: {
+        stage: "extracting_characters",
+        stageLabel: "识别完成",
+        completed: 100,
+        total: 100,
+        percentage: 100,
+        recognitionStatus: "done",
+        recognizedCharactersCount: 3,
+      },
+      status: "running",
+      startedAt: 0,
+      updatedAt: 0,
+      chapters: [],
+      characters: [],
+      skills: [],
+    }]
+    vi.mocked(listDirectory).mockResolvedValue([])
+
+    const { cleanup } = renderPanel()
+    await flushAsync(50)
+    const processButton = Array.from(document.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("处理")) as HTMLButtonElement | undefined
+    expect(processButton).toBeTruthy()
+
+    await act(async () => {
+      processButton?.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(mockBookAnalysisState.requestReopenChapterSelection).toHaveBeenCalledWith("task-recognition-done")
+    cleanup()
+    await flushAsync(20)
+  })
+
   it("点击作品行触发 setSelectedLibraryBookId", async () => {
     vi.mocked(listDirectory).mockImplementation(async (dir) => {
       if (dir.endsWith("book-analysis")) {
