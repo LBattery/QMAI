@@ -4,6 +4,7 @@ import { getProviderConfig, type RequestOverrides } from "./llm-providers"
 import { getHttpFetch, isFetchNetworkError } from "./tauri-fetch"
 import { countReasoningCharsInLine, extractReasoningTextFromLine } from "./reasoning-detector"
 import { resolveRuntimeLocalCliConfig } from "./local-cli-config"
+import { isTauri } from "@/lib/platform"
 
 export type { ChatMessage, RequestOverrides } from "./llm-providers"
 export { isFetchNetworkError } from "./tauri-fetch"
@@ -88,10 +89,18 @@ export async function streamChat(
   // HTTP. Dispatch before getProviderConfig — that function throws for
   // this provider because it has no URL/headers.
   if (runtimeConfig.provider === "claude-code") {
+    if (!isTauri()) {
+      onError(new Error("Claude Code CLI 仅桌面版支持。Web 版请切换到 HTTP API 模型。"))
+      return
+    }
     return streamViaClaudeCodeCli(runtimeConfig, messages, callbacks, signal, requestOverrides)
   }
 
   if (runtimeConfig.provider === "codex-cli") {
+    if (!isTauri()) {
+      onError(new Error("Codex CLI 仅桌面版支持。Web 版请切换到 HTTP API 模型。"))
+      return
+    }
     return streamViaCodexCli(runtimeConfig, messages, callbacks, signal, requestOverrides)
   }
 

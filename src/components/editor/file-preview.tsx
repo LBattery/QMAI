@@ -23,6 +23,7 @@ import { FrontmatterPanel } from "@/components/editor/frontmatter-panel"
 import { useWikiStore } from "@/stores/wiki-store"
 import { MermaidDiagram, unwrapMermaidPre } from "@/components/mermaid-diagram"
 import { isTauri } from "@/lib/platform"
+import { webAssetUrl } from "@/lib/web-service-fs"
 
 interface FilePreviewProps {
   filePath: string
@@ -64,7 +65,7 @@ function ImagePreview({ filePath, fileName }: { filePath: string; fileName: stri
         setSrc(convertFileSrc(filePath))
       })
     } else {
-      setSrc(filePath)
+      setSrc(webAssetUrl(filePath))
     }
   }, [filePath])
 
@@ -92,7 +93,7 @@ function VideoPreview({ filePath, fileName }: { filePath: string; fileName: stri
         setSrc(convertFileSrc(filePath))
       })
     } else {
-      setSrc(filePath)
+      setSrc(webAssetUrl(filePath))
     }
   }, [filePath])
 
@@ -122,7 +123,7 @@ function AudioPreview({ filePath, fileName }: { filePath: string; fileName: stri
         setSrc(convertFileSrc(filePath))
       })
     } else {
-      setSrc(filePath)
+      setSrc(webAssetUrl(filePath))
     }
   }, [filePath])
 

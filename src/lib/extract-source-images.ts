@@ -15,6 +15,7 @@
  */
 import { invoke } from "@tauri-apps/api/core"
 import { getFileName, normalizePath } from "@/lib/path-utils"
+import { isTauri } from "@/lib/platform"
 
 /** Mirrors `commands::extract_images::SavedImage` on the Rust side. */
 export interface SavedImage {
@@ -58,6 +59,7 @@ export async function extractAndSaveSourceImages(
   projectPath: string,
   sourcePath: string,
 ): Promise<SavedImage[]> {
+  if (!isTauri()) return []
   const pp = normalizePath(projectPath)
   const sp = normalizePath(sourcePath)
   const fileName = getFileName(sp)

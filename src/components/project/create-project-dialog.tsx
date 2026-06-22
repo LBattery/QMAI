@@ -14,7 +14,6 @@ import { normalizePath } from "@/lib/path-utils"
 import { useWikiStore, type OutputLanguage } from "@/stores/wiki-store"
 import { saveOutputLanguage } from "@/lib/project-store"
 import { isTauri, pickDirectory } from "@/lib/platform"
-import { getWebFs } from "@/lib/web-fs"
 import { buildDefaultNovelDir } from "@/lib/default-paths"
 
 interface CreateProjectDialogProps {
@@ -91,21 +90,18 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
       }
 
       setPath(parentDir)
-      await createDirectory(parentDir)
+      if (isTauri()) {
+        await createDirectory(parentDir)
+      }
 
       const project = await createProject(name.trim(), parentDir)
       const pp = normalizePath(project.path)
 
-      if (isTauri()) {
-        const template = getTemplate("general")
-        await writeFile(`${pp}/schema.md`, template.schema)
-        await writeFile(`${pp}/purpose.md`, template.purpose)
-        for (const dir of template.extraDirs) {
-          await createDirectory(`${pp}/${dir}`)
-        }
-      } else {
-        const template = getTemplate("general")
-        await getWebFs().initProjectWithTemplate(pp, template)
+      const template = getTemplate("general")
+      await writeFile(`${pp}/schema.md`, template.schema)
+      await writeFile(`${pp}/purpose.md`, template.purpose)
+      for (const dir of template.extraDirs) {
+        await createDirectory(`${pp}/${dir}`)
       }
 
       const lang: OutputLanguage = "Chinese"

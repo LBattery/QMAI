@@ -1,6 +1,7 @@
 import type { ChatMessage } from "@/lib/llm-providers"
 import { readFile } from "@/commands/fs"
-import { join, resourceDir } from "@tauri-apps/api/path"
+import { getResourceDir } from "@/commands/fs"
+import { joinPath } from "@/lib/path-utils"
 import deAiSkillMarkdown from "../../../skills/de-ai-writing/SKILL.md?raw"
 import type { ContextPack } from "./context-engine"
 
@@ -9,7 +10,7 @@ const QM_QUAI_SYSTEM_PROMPT = deAiSkillMarkdown.trim()
 export async function loadCustomDeAiSkill(projectPath?: string | null): Promise<string | null> {
   if (!projectPath) return null
   try {
-    const skillPath = await join(projectPath, "de-ai-skill.txt")
+    const skillPath = joinPath(projectPath, "de-ai-skill.txt")
     const content = await readFile(skillPath)
     const trimmed = content.trim()
     return trimmed || null
@@ -130,8 +131,8 @@ function genreToSkillPath(genre: ContentGenre): string {
  */
 async function tryLoadSkillFromBundle(skillPath: string): Promise<string | null> {
   try {
-    const resDir = await resourceDir()
-    const fullPath = await join(resDir, skillPath)
+    const resDir = await getResourceDir()
+    const fullPath = joinPath(resDir, skillPath)
     const content = await readFile(fullPath)
     return content.trim() || null
   } catch {
@@ -155,7 +156,7 @@ export async function loadSmartDeAiSkill(
 
   // 1. 最高优先：用户自定义 de-ai-skill.txt
   try {
-    const customPath = await join(projectPath, "de-ai-skill.txt")
+    const customPath = joinPath(projectPath, "de-ai-skill.txt")
     const customSkill = await readFile(customPath)
     const trimmed = customSkill.trim()
     if (trimmed) return trimmed

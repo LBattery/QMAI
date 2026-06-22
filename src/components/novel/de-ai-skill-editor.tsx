@@ -4,7 +4,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { useWikiStore } from "@/stores/wiki-store"
 import { readFile, writeFile } from "@/commands/fs"
-import { join } from "@tauri-apps/api/path"
+import { joinPath } from "@/lib/path-utils"
 
 // 从新的skill文件导入默认规则
 import defaultDeAiSkill from "../../../skills/de-ai-writing/SKILL.md?raw"
@@ -26,7 +26,7 @@ export function DeAiSkillEditor() {
   async function loadSkill() {
     if (!project) return
     try {
-      const skillPath = await join(project.path, "de-ai-skill.txt")
+      const skillPath = joinPath(project.path, "de-ai-skill.txt")
       const skillContent = await readFile(skillPath)
       setContent(skillContent)
       setIsDefault(false)
@@ -40,7 +40,7 @@ export function DeAiSkillEditor() {
     if (!project) return
     setSaving(true)
     try {
-      const skillPath = await join(project.path, "de-ai-skill.txt")
+      const skillPath = joinPath(project.path, "de-ai-skill.txt")
       await writeFile(skillPath, content)
       setMessage("保存成功")
       setIsDefault(false)

@@ -24,9 +24,6 @@ function identityPath(projectPath: string): string {
 }
 
 export async function ensureProjectId(projectPath: string): Promise<string> {
-  if (!isTauri()) {
-    return `web-${normalizePath(projectPath).replace(/[^a-zA-Z0-9]/g, "_")}`
-  }
   const path = identityPath(projectPath)
   try {
     const raw = await readFile(path)
@@ -45,6 +42,9 @@ export async function ensureProjectId(projectPath: string): Promise<string> {
     await writeFile(path, JSON.stringify(identity, null, 2))
   } catch (err) {
     console.warn("[project-identity] failed to write identity file:", err)
+    if (!isTauri()) {
+      return `web-${normalizePath(projectPath).replace(/[^a-zA-Z0-9]/g, "_")}`
+    }
   }
   return identity.id
 }

@@ -27,6 +27,7 @@ import type { FileNode } from "@/types/wiki"
 import { normalizePath } from "@/lib/path-utils"
 import { getHttpFetch, isFetchNetworkError } from "@/lib/tauri-fetch"
 import { chunkMarkdown, type Chunk } from "@/lib/text-chunker"
+import { isTauri } from "@/lib/platform"
 
 // ── Error surfacing ──────────────────────────────────────────────────────
 
@@ -374,6 +375,7 @@ export async function embedPage(
   content: string,
   cfg: EmbeddingConfig,
 ): Promise<void> {
+  if (!isTauri()) return
   if (!cfg.enabled || !cfg.model) return
 
   const t0 = performance.now()
@@ -425,6 +427,7 @@ export async function embedAllPages(
   cfg: EmbeddingConfig,
   onProgress?: (done: number, total: number) => void,
 ): Promise<number> {
+  if (!isTauri()) return 0
   if (!cfg.enabled || !cfg.model) return 0
 
   const pp = normalizePath(projectPath)
@@ -495,6 +498,7 @@ export async function searchByEmbedding(
   cfg: EmbeddingConfig,
   topK: number = 10,
 ): Promise<PageSearchResult[]> {
+  if (!isTauri()) return []
   if (!cfg.enabled || !cfg.model) return []
 
   const queryEmb = await fetchEmbedding(query, cfg)
@@ -556,6 +560,7 @@ export async function removePageEmbedding(
   projectPath: string,
   pageId: string,
 ): Promise<void> {
+  if (!isTauri()) return
   try {
     await vectorDeletePage(projectPath, pageId)
   } catch {
@@ -568,6 +573,7 @@ export async function removePageEmbedding(
  * in Settings.
  */
 export async function getEmbeddingCount(projectPath: string): Promise<number> {
+  if (!isTauri()) return 0
   try {
     return await vectorCountChunks(projectPath)
   } catch {

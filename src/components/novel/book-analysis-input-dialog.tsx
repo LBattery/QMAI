@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { FileText, AlertCircle } from "lucide-react"
-import { open as openDialog } from "@tauri-apps/plugin-dialog"
+import { isTauri } from "@/lib/platform"
 
 interface BookAnalysisInputDialogProps {
   open: boolean
@@ -25,6 +25,15 @@ export function BookAnalysisInputDialog({
 
   const handleSelectFile = async () => {
     try {
+      if (!isTauri()) {
+        const selected = window.prompt("请输入本地 TXT 文件完整路径：", filePath)
+        if (selected) {
+          setFilePath(selected)
+          setError("")
+        }
+        return
+      }
+      const { open: openDialog } = await import("@tauri-apps/plugin-dialog")
       const selected = await openDialog({
         multiple: false,
         filters: [
@@ -83,9 +92,10 @@ export function BookAnalysisInputDialog({
             <div className="flex gap-2">
               <Input
                 value={filePath}
-                placeholder="点击右侧按钮选择TXT文件..."
-                readOnly
+                placeholder={isTauri() ? "点击右侧按钮选择TXT文件..." : "请输入 TXT 文件完整路径..."}
+                readOnly={isTauri()}
                 className="flex-1"
+                onChange={(event) => setFilePath(event.target.value)}
               />
               <Button onClick={handleSelectFile} variant="outline">
                 <FileText className="h-4 w-4 mr-2" />

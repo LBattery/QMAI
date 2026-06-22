@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { save } from "@tauri-apps/plugin-dialog"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { loadRegistry } from "@/lib/project-identity"
+import { isTauri } from "@/lib/platform"
 import type {
   ExportParams,
   ExportResult,
@@ -38,6 +39,15 @@ async function collectProjects(): Promise<ProjectBackupInfo[]> {
 export async function exportBackup(
   onProgress?: BackupProgressCallback,
 ): Promise<ExportResult> {
+  if (!isTauri()) {
+    return {
+      success: false,
+      warnings: [],
+      fileCount: 0,
+      totalSize: 0,
+      error: "Web 快速版暂不支持完整 ZIP 备份，请直接备份项目文件夹；完整备份将在后续迁移。",
+    }
+  }
   const now = new Date()
   const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
   const defaultName = `qmai-backup-${dateStr}.zip`

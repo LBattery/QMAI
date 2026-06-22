@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 import type { LlmConfig } from "@/stores/wiki-store"
+import { isTauri } from "@/lib/platform"
 
 export interface LocalCliDetectResult {
   installed: boolean
@@ -18,6 +19,15 @@ function detectCommand(provider: LlmConfig["provider"]): "claude_cli_detect" | "
 export async function detectLocalCliConfig(provider: LlmConfig["provider"]): Promise<LocalCliDetectResult | null> {
   const command = detectCommand(provider)
   if (!command) return null
+  if (typeof window !== "undefined" && !isTauri()) {
+    return {
+      installed: false,
+      version: null,
+      path: null,
+      model: null,
+      error: "本地 CLI 模型仅桌面版支持。Web 版请使用 OpenAI/Anthropic/Gemini/Ollama 或自定义 HTTP 接口。",
+    }
+  }
   return invoke<LocalCliDetectResult>(command)
 }
 

@@ -389,7 +389,7 @@ export function SettingsView() {
     const newSourceWatch = normalizeSourceWatchConfig(draft.sourceWatchConfig)
     setSourceWatchConfig(newSourceWatch)
     await saveSourceWatchConfig(newSourceWatch, project?.id, project?.path)
-    if (project) {
+    if (project && isTauri()) {
       const { startProjectFileSync, stopProjectFileSync } = await import("@/lib/project-file-sync")
       if (newSourceWatch.enabled) {
         await startProjectFileSync(project, newSourceWatch).catch((err) =>
@@ -420,7 +420,7 @@ export function SettingsView() {
       lastScan: scheduledImportConfig.lastScan,
     }
     setScheduledImportConfig(newScheduledImport)
-    if (project) {
+    if (project && isTauri()) {
       await saveScheduledImportConfig(project.path, newScheduledImport)
       const { startScheduledImport, stopScheduledImport } = await import("@/lib/scheduled-import")
       if (
@@ -432,6 +432,8 @@ export function SettingsView() {
       } else {
         stopScheduledImport()
       }
+    } else if (project) {
+      await saveScheduledImportConfig(project.path, newScheduledImport)
     }
 
     setRevisionFeedbackWindowConfig(draft.revisionFeedbackWindowConfig)

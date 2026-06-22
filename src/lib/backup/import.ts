@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-dialog"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { loadRegistry, upsertProjectInfo } from "@/lib/project-identity"
+import { isTauri } from "@/lib/platform"
 import type {
   ImportParams,
   ImportResult,
@@ -15,6 +16,16 @@ export async function importBackup(
   projects?: ProjectRestoreInfo[],
   onProgress?: BackupProgressCallback,
 ): Promise<ImportResult> {
+  if (!isTauri()) {
+    return {
+      success: false,
+      appState: null,
+      localStorageData: null,
+      projects: [],
+      warnings: [],
+      error: "Web 快速版暂不支持完整 ZIP 恢复，请先打开已有项目文件夹。",
+    }
+  }
   const zipPath = await open({
     filters: [{ name: "ZIP 备份文件", extensions: ["zip"] }],
     multiple: false,
