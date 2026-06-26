@@ -4,7 +4,7 @@ import { resolveConfig } from "@/components/settings/preset-resolver"
 
 export type NovelTaskType = "writing" | "review" | "summary" | "extract" | "lint"
 
-function resolveModelConfig(
+export function resolveModelConfig(
   targetModel: string,
   baseConfig: LlmConfig,
   providerConfigs: Record<string, ProviderOverride>,
@@ -35,6 +35,20 @@ function resolveModelConfig(
   return { ...baseConfig, model: targetModel }
 }
 
+/**
+ * 解析后台任务的默认模型。
+ * 优先级：defaultLlmModel > aiChatModel > baseConfig
+ * 用于提取记忆、提取角色等后台 AI 任务。
+ */
+export function resolveDefaultModel(baseConfig: LlmConfig): LlmConfig {
+  const { providerConfigs, defaultLlmModel, aiChatModel } = useWikiStore.getState()
+  const targetModel = defaultLlmModel?.trim() || aiChatModel?.trim()
+  if (targetModel) {
+    return resolveModelConfig(targetModel, baseConfig, providerConfigs)
+  }
+  return baseConfig
+}
+
 export function resolveNovelModel(
   llmConfig: LlmConfig,
   novelConfig: NovelConfig,
@@ -48,13 +62,14 @@ export function resolveNovelModel(
     lint: novelConfig.reviewModel,
   }
 
-  const { providerConfigs, aiChatModel } = useWikiStore.getState()
+  const { providerConfigs, defaultLlmModel, aiChatModel } = useWikiStore.getState()
 
   const taskModel = modelMap[taskType]
   if (!taskModel) {
-    const sessionModel = aiChatModel.trim()
-    if (sessionModel) {
-      return resolveModelConfig(sessionModel, llmConfig, providerConfigs)
+    // 没有指定任务模型时：优先使用默认模型，再回退到 AI 会话当前模型
+    const targetModel = defaultLlmModel?.trim() || aiChatModel?.trim()
+    if (targetModel) {
+      return resolveModelConfig(targetModel, llmConfig, providerConfigs)
     }
     return llmConfig
   }

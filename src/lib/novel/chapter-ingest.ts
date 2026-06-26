@@ -3,7 +3,7 @@ import { normalizePath } from "@/lib/path-utils"
 import { useWikiStore } from "@/stores/wiki-store"
 import { parseFrontmatter } from "@/lib/frontmatter"
 import { isChapterPage, isFinalChapter, parseChapterNumber } from "./chapter-meta"
-import { DEFAULT_LLM_REQUEST_TIMEOUT_MS, streamChat, type StreamCallbacks } from "@/lib/llm-client"
+import { streamChat, type StreamCallbacks } from "@/lib/llm-client"
 import type { ChatMessage } from "@/lib/llm-providers"
 import { getOutputLanguage, buildLanguageReminder } from "@/lib/output-language"
 import type { LlmConfig } from "@/stores/wiki-store"
@@ -13,6 +13,7 @@ import { emptyCognitionState, mergeCognitionFromSnapshot, loadCognitionState, sa
 import { createEmptyCharacterStateStore, loadCharacterStates, saveCharacterStates, type CharacterStateStore } from "./character-state"
 import { createEmptyForeshadowingStore, loadForeshadowingTracker, saveForeshadowingTracker, type Foreshadowing, type ForeshadowingStore } from "./foreshadowing-tracker"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
+import { shouldRebuildCommunitySummaries, generateCommunitySummaries } from "./community-summary"
 import { buildChapterIngestOutput, type ChapterIngestOutput } from "./chapter-ingest-output"
 import { createChapterPipeline } from "./chapter-pipeline"
 import { mergeSnapshotTimeline } from "./timeline"
@@ -289,7 +290,7 @@ function materializeRestoredCurrentSnapshot(
   })
 }
 
-export type IngestFailReason = "no_llm" | "not_chapter" | "not_final" | "invalid_chapter_number" | "extract_failed"
+export type IngestFailReason = "no_llm" | "not_chapter" | "not_final" | "invalid_chapter_number" | "extract_failed" | "cancelled"
 
 export interface IngestResult {
   snapshot: ChapterSnapshot | null
@@ -300,6 +301,7 @@ export async function ingestChapter(
   projectPath: string,
   chapterPath: string,
   _reviewModel?: string,
+  signal?: AbortSignal,
 ): Promise<IngestResult> {
   const pp = normalizePath(projectPath)
   const novelMode = useWikiStore.getState().novelMode
@@ -327,7 +329,8 @@ export async function ingestChapter(
   }
   const body = parsed.body
 
-  const extractedSnapshot = await extractSnapshotWithLLM(chapterNumber, body, runtimeLlmConfig)
+  if (signal?.aborted) return { snapshot: null, failReason: "cancelled" }
+  const extractedSnapshot = await extractSnapshotWithLLM(chapterNumber, body, runtimeLlmConfig, signal)
   const snapshot = extractedSnapshot ? canonicalizeSnapshotCharacters(extractedSnapshot) : null
 
   if (!snapshot) {
@@ -502,6 +505,29 @@ export async function ingestChapter(
   }
 
   const syncResult = await syncSnapshotToMemory(pp, snapshot)
+
+  // 社区摘要定期重建
+  if (snapshot && shouldRebuildCommunitySummaries(snapshot.chapterNumber, novelConfig)) {
+    const rebuildCommunitySummaries = async () => {
+      try {
+        await generateCommunitySummaries(pp, llmConfig, novelConfig)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.warn("[Chapter Ingest] 社区摘要生成失败:", message)
+        // 弹窗提示（通过 store 触发 UI 通知）
+        useWikiStore.getState().setCommunitySummaryError(message)
+      }
+    }
+
+    if (novelConfig.communitySummaryAsync) {
+      // 后台异步执行，不阻塞章节摄取
+      void rebuildCommunitySummaries()
+    } else {
+      // 同步等待
+      await rebuildCommunitySummaries()
+    }
+  }
+
   return { snapshot: { ...snapshot, memorySyncedAt: syncResult.memorySyncedAt } }
 }
 
@@ -519,6 +545,7 @@ async function extractSnapshotWithLLM(
   chapterNumber: number,
   chapterBody: string,
   llmConfig: LlmConfig,
+  signal?: AbortSignal,
 ): Promise<ChapterSnapshot | null> {
   const outputLang = getOutputLanguage()
   const langReminder = buildLanguageReminder(outputLang)
@@ -556,7 +583,7 @@ ${chapterBody.slice(0, 8000)}
   "conflicts": ["冲突变化描述"],
   "endingHook": "章节结尾钩子描述",
   "graphNodes": ["图谱节点列表"],
-  "graphEdges": ["图谱关系边列表，格式：A->关系->B"],
+  "graphEdges": ["图谱关系边列表，格式：A->关系->B。关系必须是以下之一：出场于|发生于|属于|持有|敌对|合作|怀疑|隐瞒|知道|不知道|推进伏笔|回收伏笔|新增伏笔|导致|揭示|影响|位于"],
   "characterDetails": {
     "人物名": {
       "identity": "身份（具体身份描述）",
@@ -624,7 +651,7 @@ ${chapterBody.slice(0, 8000)}
       },
     }
 
-    await streamChat(llmConfig, messages, callbacks, AbortSignal.timeout(DEFAULT_LLM_REQUEST_TIMEOUT_MS))
+    await streamChat(llmConfig, messages, callbacks, signal)
     if (streamError) throw streamError
 
     const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.match(/\{[\s\S]*\}/) ?? result.match(/\{[\s\S]*\}/)
@@ -1382,10 +1409,14 @@ export async function deleteChapterSnapshots(projectPath: string, chapterNumber:
 export async function ingestOutline(
   projectPath: string,
   outlinePath: string,
+  signal?: AbortSignal,
 ): Promise<ChapterSnapshot | null> {
   const pp = normalizePath(projectPath)
   const llmConfig = useWikiStore.getState().llmConfig
-  if (!hasUsableLlm(llmConfig)) return null
+  const novelConfig = useWikiStore.getState().novelConfig
+  // 使用 resolveNovelModel 正确解析提取模型（含供应商配置切换），与 ingestChapter 保持一致
+  const runtimeLlmConfig = resolveNovelModel(llmConfig, novelConfig, "extract")
+  if (!hasUsableLlm(runtimeLlmConfig)) return null
 
   const content = await readFile(outlinePath)
   const body = content.length > 8000 ? content.slice(0, 8000) : content
@@ -1432,7 +1463,7 @@ ${body}
   "conflicts": ["核心冲突"],
   "endingHook": "",
   "graphNodes": ["图谱节点列表"],
-  "graphEdges": ["图谱关系边，格式：A->关系->B"]
+  "graphEdges": ["图谱关系边，格式：A->关系->B。关系必须是以下之一：出场于|发生于|属于|持有|敌对|合作|怀疑|隐瞒|知道|不知道|推进伏笔|回收伏笔|新增伏笔|导致|揭示|影响|位于"]
 }`
 
   try {
@@ -1449,7 +1480,7 @@ ${body}
       onError: (error: Error) => { streamError = error },
     }
 
-    await streamChat(llmConfig, messages, callbacks, AbortSignal.timeout(DEFAULT_LLM_REQUEST_TIMEOUT_MS))
+    await streamChat(runtimeLlmConfig, messages, callbacks, signal)
     if (streamError) throw streamError
 
     const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.match(/\{[\s\S]*\}/) ?? result.match(/\{[\s\S]*\}/)

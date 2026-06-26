@@ -32,6 +32,46 @@ use super::local_cli_config::{
     apply_local_cli_environment, read_claude_local_config, resolve_home_dir, LocalCliConfigInfo,
 };
 
+// ── Event emitter abstraction ─────────────────────────────────────
+// Allows both Tauri (app.emit) and the standalone server (broadcast
+// channel) to share the same spawn logic.
+
+/// Abstraction over "emit a data line" and "emit a done signal".
+pub trait CliEmitter: Clone + Send + Sync + 'static {
+    fn emit_data(&self, stream_id: &str, data: String);
+    fn emit_done(&self, stream_id: &str, code: Option<i32>, stderr: String);
+}
+
+/// Tauri-based emitter that forwards to `app.emit()`.
+#[derive(Clone)]
+pub struct TauriCliEmitter {
+    app: AppHandle,
+}
+
+impl TauriCliEmitter {
+    pub fn new(app: AppHandle) -> Self {
+        Self { app }
+    }
+}
+
+impl CliEmitter for TauriCliEmitter {
+    fn emit_data(&self, stream_id: &str, data: String) {
+        let topic = format!("claude-cli:{stream_id}");
+        let _ = self.app.emit(&topic, data);
+    }
+
+    fn emit_done(&self, stream_id: &str, code: Option<i32>, stderr: String) {
+        let done_topic = format!("claude-cli:{stream_id}:done");
+        let _ = self.app.emit(
+            &done_topic,
+            serde_json::json!({
+                "code": code,
+                "stderr": stderr,
+            }),
+        );
+    }
+}
+
 /// Shared state holding running `claude` child processes keyed by the
 /// frontend-generated stream id. Registered via .manage() in lib.rs.
 #[derive(Default)]
@@ -136,8 +176,9 @@ fn suppress_windows_console(_cmd: &mut Command) {
 /// Locate `claude` on PATH and confirm it's runnable by calling
 /// `claude --version` with a short timeout. Cheap — safe to call on
 /// mount of the settings panel.
-#[tauri::command]
-pub async fn claude_cli_detect() -> Result<DetectResult, String> {
+///
+/// Shared implementation used by both the Tauri command and the server handler.
+pub async fn do_claude_cli_detect() -> Result<DetectResult, String> {
     let local_config = read_current_claude_local_config();
     let path = match find_claude_command().await {
         Ok(p) => p,
@@ -209,16 +250,20 @@ pub async fn claude_cli_detect() -> Result<DetectResult, String> {
     }
 }
 
-/// Spawn `claude -p --output-format stream-json --input-format stream-json
-/// --verbose --model <model>` and pipe stdout back to the frontend as
-/// `claude-cli:{stream_id}` events (one line per event). Closes stdin
-/// after writing the serialized history so claude starts processing.
-/// Emits a final `claude-cli:{stream_id}:done` event with `{ code }`
-/// when the child exits.
 #[tauri::command]
-pub async fn claude_cli_spawn(
-    app: AppHandle,
-    state: State<'_, ClaudeCliState>,
+pub async fn claude_cli_detect() -> Result<DetectResult, String> {
+    do_claude_cli_detect().await
+}
+
+/// Spawn `claude -p --output-format stream-json --input-format stream-json
+/// --verbose --model <model>` and pipe stdout back via the given emitter.
+/// Closes stdin after writing the serialized history so claude starts
+/// processing. Emits a final done event with `{ code }` when the child exits.
+///
+/// Shared implementation used by both the Tauri command and the server handler.
+pub async fn do_claude_cli_spawn<E: CliEmitter>(
+    state: &ClaudeCliState,
+    emitter: E,
     stream_id: String,
     model: String,
     messages: Vec<ClaudeMessage>,
@@ -324,17 +369,14 @@ pub async fn claude_cli_spawn(
     state.children.lock().await.insert(stream_id.clone(), child);
 
     let children = Arc::clone(&state.children);
-    let app_for_task = app.clone();
     let stream_id_task = stream_id.clone();
-    let topic = format!("claude-cli:{stream_id}");
-    let done_topic = format!("claude-cli:{stream_id}:done");
+    let emitter_task = emitter.clone();
 
     // Drain stdout line-by-line in a background task, emitting each
     // line as an event. Completes when stdout closes (child exited).
     tokio::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
         let mut stderr_reader = BufReader::new(stderr).lines();
-        let app = app_for_task;
 
         // Collect stderr in a background task so we can ship it with the
         // final :done event — otherwise a non-zero exit produces only
@@ -354,9 +396,7 @@ pub async fn claude_cli_spawn(
         loop {
             match reader.next_line().await {
                 Ok(Some(line)) => {
-                    if app.emit(&topic, line).is_err() {
-                        break;
-                    }
+                    emitter_task.emit_data(&stream_id_task, line);
                 }
                 Ok(None) => break,
                 Err(e) => {
@@ -381,16 +421,23 @@ pub async fn claude_cli_spawn(
 
         let stderr_text = stderr_task.await.unwrap_or_default();
 
-        let _ = app.emit(
-            &done_topic,
-            serde_json::json!({
-                "code": exit_code,
-                "stderr": stderr_text,
-            }),
-        );
+        emitter_task.emit_done(&stream_id_task, exit_code, stderr_text);
     });
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn claude_cli_spawn(
+    app: AppHandle,
+    state: State<'_, ClaudeCliState>,
+    stream_id: String,
+    model: String,
+    messages: Vec<ClaudeMessage>,
+    isolate_local_config: bool,
+) -> Result<(), String> {
+    let emitter = TauriCliEmitter::new(app);
+    do_claude_cli_spawn(&state, emitter, stream_id, model, messages, isolate_local_config).await
 }
 
 fn build_claude_cli_args(model: &str, isolate_local_config: bool) -> Vec<String> {
@@ -433,18 +480,24 @@ fn read_current_claude_local_config() -> LocalCliConfigInfo {
 /// Kill a running child registered under `stream_id`. Called on
 /// AbortSignal in the frontend. No-op if the id is unknown (e.g. the
 /// process already exited).
-#[tauri::command]
-pub async fn claude_cli_kill(
-    state: State<'_, ClaudeCliState>,
-    stream_id: String,
-) -> Result<(), String> {
-    if let Some(mut child) = state.children.lock().await.remove(&stream_id) {
+///
+/// Shared implementation used by both the Tauri command and the server handler.
+pub async fn do_claude_cli_kill(state: &ClaudeCliState, stream_id: &str) -> Result<(), String> {
+    if let Some(mut child) = state.children.lock().await.remove(stream_id) {
         let _ = child.start_kill();
         // Don't wait() here — the stdout-drain task already holds a
         // wait future elsewhere when it can. Dropping the handle is
         // enough; kill_on_drop ensures the SIGKILL is sent.
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn claude_cli_kill(
+    state: State<'_, ClaudeCliState>,
+    stream_id: String,
+) -> Result<(), String> {
+    do_claude_cli_kill(&state, &stream_id).await
 }
 
 #[cfg(test)]
