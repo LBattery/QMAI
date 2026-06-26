@@ -6,6 +6,20 @@ import { Label } from "@/components/ui/label"
 import { FileText, AlertCircle } from "lucide-react"
 import { isTauri } from "@/lib/platform"
 
+function pickFileBrowser(): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input")
+    input.type = "file"
+    input.accept = ".txt"
+    input.onchange = () => {
+      const file = input.files?.[0] ?? null
+      resolve(file)
+    }
+    input.oncancel = () => resolve(null)
+    input.click()
+  })
+}
+
 interface BookAnalysisInputDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -25,28 +39,29 @@ export function BookAnalysisInputDialog({
 
   const handleSelectFile = async () => {
     try {
-      if (!isTauri()) {
-        const selected = window.prompt("请输入本地 TXT 文件完整路径：", filePath)
-        if (selected) {
+      if (isTauri()) {
+        const { open: openDialog } = await import("@tauri-apps/plugin-dialog")
+        const selected = await openDialog({
+          multiple: false,
+          filters: [
+            {
+              name: "文本文件",
+              extensions: ["txt"],
+            },
+          ],
+        })
+
+        if (selected && typeof selected === "string") {
           setFilePath(selected)
           setError("")
         }
-        return
-      }
-      const { open: openDialog } = await import("@tauri-apps/plugin-dialog")
-      const selected = await openDialog({
-        multiple: false,
-        filters: [
-          {
-            name: "文本文件",
-            extensions: ["txt"],
-          },
-        ],
-      })
-
-      if (selected && typeof selected === "string") {
-        setFilePath(selected)
-        setError("")
+      } else {
+        // 浏览器模式：使用 <input type="file"> 选择文件
+        const file = await pickFileBrowser()
+        if (file) {
+          setFilePath(file.name)
+          setError("")
+        }
       }
     } catch (err) {
       setError("选择文件失败")
@@ -92,10 +107,9 @@ export function BookAnalysisInputDialog({
             <div className="flex gap-2">
               <Input
                 value={filePath}
-                placeholder={isTauri() ? "点击右侧按钮选择TXT文件..." : "请输入 TXT 文件完整路径..."}
-                readOnly={isTauri()}
+                placeholder="点击右侧按钮选择TXT文件..."
+                readOnly
                 className="flex-1"
-                onChange={(event) => setFilePath(event.target.value)}
               />
               <Button onClick={handleSelectFile} variant="outline">
                 <FileText className="h-4 w-4 mr-2" />

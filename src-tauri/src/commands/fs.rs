@@ -65,98 +65,96 @@ fn virtualize_project_storage_path(path: &Path) -> String {
     normalized
 }
 
-#[tauri::command]
-pub async fn read_file(path: String) -> Result<String, String> {
-    // `spawn_blocking` is REQUIRED, not a perf nicety. The body does
-    // synchronous PDF/Office text extraction (pdfium FFI, calamine,
-    // zip + image decode) that can take 10s+ on big files. Running
-    // that directly inside an `async fn` body would block the tokio
-    // worker thread it's scheduled on, starving every other async
-    // task on that worker (notably re-rendering the import progress
-    // UI, which is what motivated the async conversion in the first
-    // place). `spawn_blocking` moves the work to tokio's blocking
-    // pool where blocking-for-seconds is the contract.
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("read_file", || {
-            let path = resolve_project_storage_path(&path);
-            let p = Path::new(&path);
-            let ext = p
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
+/// Core logic for `read_file`, callable from both Tauri commands and Axum handlers.
+pub fn do_read_file(path: &str) -> Result<String, String> {
+    run_guarded("read_file", || {
+        let path = resolve_project_storage_path(path);
+        let p = Path::new(&path);
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
 
-            if let Some(cached) = read_cache(p) {
-                return Ok(cached);
+        if let Some(cached) = read_cache(p) {
+            return Ok(cached);
+        }
+
+        match ext.as_str() {
+            "pdf" => extract_pdf_text(&path),
+            e if OFFICE_EXTS.contains(&e) => extract_office_text(&path, e),
+            "doc" => extract_legacy_doc_text(&path),
+            e if IMAGE_EXTS.contains(&e) => {
+                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                Ok(format!("[Image: {} ({:.1} KB)]", p.file_name().unwrap_or_default().to_string_lossy(), size as f64 / 1024.0))
             }
-
-            match ext.as_str() {
-                "pdf" => extract_pdf_text(&path),
-                e if OFFICE_EXTS.contains(&e) => extract_office_text(&path, e),
-                "doc" => extract_legacy_doc_text(&path),
-                e if IMAGE_EXTS.contains(&e) => {
-                    let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    Ok(format!("[Image: {} ({:.1} KB)]", p.file_name().unwrap_or_default().to_string_lossy(), size as f64 / 1024.0))
-                }
-                e if MEDIA_EXTS.contains(&e) => {
-                    let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    Ok(format!("[Media: {} ({:.1} MB)]", p.file_name().unwrap_or_default().to_string_lossy(), size as f64 / 1048576.0))
-                }
-                e if LEGACY_DOC_EXTS.contains(&e) => {
-                    Ok(format!("[Document: {} — text extraction not supported for .{} format]",
-                        p.file_name().unwrap_or_default().to_string_lossy(), e))
-                }
-                e if is_plain_text_ext(e) => read_plain_text_file(&path),
-                _ => {
-                    match fs::read_to_string(&path) {
-                        Ok(content) => Ok(content),
-                        Err(e) => {
-                            let exists = p.exists();
-                            if !exists {
-                                Err(format!("File does not exist: '{}'", path))
-                            } else {
-                                Err(format!(
-                                    "Failed to read file '{}' as text: {} (likely binary, locked, or non-UTF-8)",
-                                    path, e,
-                                ))
-                            }
+            e if MEDIA_EXTS.contains(&e) => {
+                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                Ok(format!("[Media: {} ({:.1} MB)]", p.file_name().unwrap_or_default().to_string_lossy(), size as f64 / 1048576.0))
+            }
+            e if LEGACY_DOC_EXTS.contains(&e) => {
+                Ok(format!("[Document: {} \u{2014} text extraction not supported for .{} format]",
+                    p.file_name().unwrap_or_default().to_string_lossy(), e))
+            }
+            e if is_plain_text_ext(e) => read_plain_text_file(&path),
+            _ => {
+                match fs::read_to_string(&path) {
+                    Ok(content) => Ok(content),
+                    Err(e) => {
+                        let exists = p.exists();
+                        if !exists {
+                            Err(format!("File does not exist: '{}'", path))
+                        } else {
+                            Err(format!(
+                                "Failed to read file '{}' as text: {} (likely binary, locked, or non-UTF-8)",
+                                path, e,
+                            ))
                         }
                     }
                 }
             }
-        })
+        }
     })
-    .await
-    .map_err(|e| format!("read_file blocking task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn read_file(path: String) -> Result<String, String> {
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || do_read_file(&p))
+        .await
+        .map_err(|e| format!("read_file blocking task join error: {e}"))?
+}
+
+/// Core logic for `preprocess_file`, callable from both Tauri commands and Axum handlers.
+pub fn do_preprocess_file(path: &str) -> Result<String, String> {
+    run_guarded("preprocess_file", || {
+        let path = resolve_project_storage_path(path);
+        let p = Path::new(&path);
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let text = match ext.as_str() {
+            "pdf" => extract_pdf_text(&path)?,
+            e if OFFICE_EXTS.contains(&e) => extract_office_text(&path, e)?,
+            e if is_plain_text_ext(e) => read_plain_text_file(&path)?,
+            _ => return Ok("no preprocessing needed".to_string()),
+        };
+
+        write_cache(p, &text)?;
+        Ok(text)
+    })
 }
 
 /// Pre-process a file and cache the extracted text.
 #[tauri::command]
 pub async fn preprocess_file(path: String) -> Result<String, String> {
-    // See `read_file` above for why `spawn_blocking` is required.
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("preprocess_file", || {
-            let path = resolve_project_storage_path(&path);
-            let p = Path::new(&path);
-            let ext = p
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-
-            let text = match ext.as_str() {
-                "pdf" => extract_pdf_text(&path)?,
-                e if OFFICE_EXTS.contains(&e) => extract_office_text(&path, e)?,
-                e if is_plain_text_ext(e) => read_plain_text_file(&path)?,
-                _ => return Ok("no preprocessing needed".to_string()),
-            };
-
-            write_cache(p, &text)?;
-            Ok(text)
-        })
-    })
-    .await
-    .map_err(|e| format!("preprocess_file blocking task join error: {e}"))?
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || do_preprocess_file(&p))
+        .await
+        .map_err(|e| format!("preprocess_file blocking task join error: {e}"))?
 }
 
 fn is_plain_text_ext(ext: &str) -> bool {
@@ -1076,89 +1074,103 @@ fn extract_odf_text(archive: &mut zip::ZipArchive<fs::File>) -> Result<String, S
     }
 }
 
+/// Core logic for `write_file`, callable from both Tauri commands and Axum handlers.
+pub fn do_write_file(path: &str, contents: &str) -> Result<(), String> {
+    run_guarded("write_file", || {
+        let path = resolve_project_storage_path(path);
+        let p = Path::new(&path);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create parent dirs for '{}': {}", path, e))?;
+        }
+        file_sync::mark_app_write_path(p);
+        fs::write(&path, contents)
+            .map_err(|e| format!("Failed to write file '{}': {}", path, e))?;
+        file_sync::mark_app_write_path(p);
+        Ok(())
+    })
+}
+
 #[tauri::command]
 pub async fn write_file(path: String, contents: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("write_file", || {
-            let path = resolve_project_storage_path(&path);
-            let p = Path::new(&path);
-            if let Some(parent) = p.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create parent dirs for '{}': {}", path, e))?;
-            }
-            file_sync::mark_app_write_path(p);
-            fs::write(&path, contents)
-                .map_err(|e| format!("Failed to write file '{}': {}", path, e))?;
-            file_sync::mark_app_write_path(p);
-            Ok(())
-        })
+    let p = path.clone();
+    let c = contents.clone();
+    tauri::async_runtime::spawn_blocking(move || do_write_file(&p, &c))
+        .await
+        .map_err(|e| format!("write_file blocking task join error: {e}"))?
+}
+
+/// Core logic for `write_file_atomic`, callable from both Tauri commands and Axum handlers.
+pub fn do_write_file_atomic(path: &str, contents: &str) -> Result<(), String> {
+    run_guarded("write_file_atomic", || {
+        let path = resolve_project_storage_path(path);
+        let p = Path::new(&path);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create parent dirs for '{}': {}", path, e))?;
+        }
+
+        let file_name = p
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "llm-wiki-file".to_string());
+        let tmp_path = p.with_file_name(format!(
+            ".{file_name}.{}.tmp",
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis())
+        ));
+
+        file_sync::mark_app_write_path(&tmp_path);
+        file_sync::mark_app_write_path(p);
+        fs::write(&tmp_path, contents)
+            .map_err(|e| format!("Failed to write temp file '{}': {}", tmp_path.display(), e))?;
+
+        fs::rename(&tmp_path, p).map_err(|e| {
+            let _ = fs::remove_file(&tmp_path);
+            format!(
+                "Failed to move temp file '{}' to '{}': {}",
+                tmp_path.display(),
+                path,
+                e
+            )
+        })?;
+        file_sync::mark_app_write_path(p);
+        Ok(())
     })
-    .await
-    .map_err(|e| format!("write_file blocking task join error: {e}"))?
 }
 
 #[tauri::command]
 pub async fn write_file_atomic(path: String, contents: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("write_file_atomic", || {
-            let path = resolve_project_storage_path(&path);
-            let p = Path::new(&path);
-            if let Some(parent) = p.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create parent dirs for '{}': {}", path, e))?;
-            }
+    let p = path.clone();
+    let c = contents.clone();
+    tauri::async_runtime::spawn_blocking(move || do_write_file_atomic(&p, &c))
+        .await
+        .map_err(|e| format!("write_file_atomic blocking task join error: {e}"))?
+}
 
-            let file_name = p
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| "llm-wiki-file".to_string());
-            let tmp_path = p.with_file_name(format!(
-                ".{file_name}.{}.tmp",
-                chrono::Utc::now()
-                    .timestamp_nanos_opt()
-                    .unwrap_or_else(|| chrono::Utc::now().timestamp_millis())
-            ));
-
-            file_sync::mark_app_write_path(&tmp_path);
-            file_sync::mark_app_write_path(p);
-            fs::write(&tmp_path, contents)
-                .map_err(|e| format!("Failed to write temp file '{}': {}", tmp_path.display(), e))?;
-
-            fs::rename(&tmp_path, p).map_err(|e| {
-                let _ = fs::remove_file(&tmp_path);
-                format!(
-                    "Failed to move temp file '{}' to '{}': {}",
-                    tmp_path.display(),
-                    path,
-                    e
-                )
-            })?;
-            file_sync::mark_app_write_path(p);
-            Ok(())
-        })
+/// Core logic for `list_directory`, callable from both Tauri commands and Axum handlers.
+pub fn do_list_directory(path: &str) -> Result<Vec<FileNode>, String> {
+    run_guarded("list_directory", || {
+        let path = resolve_project_storage_path(path);
+        let p = Path::new(&path);
+        if !p.exists() {
+            return Err(format!("Path does not exist: '{}'", path));
+        }
+        if !p.is_dir() {
+            return Err(format!("Path is not a directory: '{}'", path));
+        }
+        let nodes = build_tree(p, 0, 30)?;
+        Ok(nodes)
     })
-    .await
-    .map_err(|e| format!("write_file_atomic blocking task join error: {e}"))?
 }
 
 #[tauri::command]
 pub async fn list_directory(path: String) -> Result<Vec<FileNode>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("list_directory", || {
-            let path = resolve_project_storage_path(&path);
-            let p = Path::new(&path);
-            if !p.exists() {
-                return Err(format!("Path does not exist: '{}'", path));
-            }
-            if !p.is_dir() {
-                return Err(format!("Path is not a directory: '{}'", path));
-            }
-            let nodes = build_tree(p, 0, 30)?;
-            Ok(nodes)
-        })
-    })
-    .await
-    .map_err(|e| format!("list_directory blocking task join error: {e}"))?
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || do_list_directory(&p))
+        .await
+        .map_err(|e| format!("list_directory blocking task join error: {e}"))?
 }
 
 fn build_tree(dir: &Path, depth: usize, max_depth: usize) -> Result<Vec<FileNode>, String> {
@@ -1228,108 +1240,122 @@ fn build_tree(dir: &Path, depth: usize, max_depth: usize) -> Result<Vec<FileNode
     Ok(nodes)
 }
 
-#[tauri::command]
-pub async fn copy_file(source: String, destination: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("copy_file", || {
-            let source = resolve_project_storage_path(&source);
-            let destination = resolve_project_storage_path(&destination);
-            let dest = Path::new(&destination);
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create parent dirs: {}", e))?;
-            }
-            file_sync::mark_app_write_path(dest);
-            fs::copy(&source, &destination)
-                .map_err(|e| format!("Failed to copy '{}' to '{}': {}", source, destination, e))?;
-            file_sync::mark_app_write_path(dest);
-            Ok(())
-        })
+/// Core logic for `copy_file`, callable from both Tauri commands and Axum handlers.
+pub fn do_copy_file(source: &str, destination: &str) -> Result<(), String> {
+    run_guarded("copy_file", || {
+        let source = resolve_project_storage_path(source);
+        let destination = resolve_project_storage_path(destination);
+        let dest = Path::new(&destination);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create parent dirs: {}", e))?;
+        }
+        file_sync::mark_app_write_path(dest);
+        fs::copy(&source, &destination)
+            .map_err(|e| format!("Failed to copy '{}' to '{}': {}", source, destination, e))?;
+        file_sync::mark_app_write_path(dest);
+        Ok(())
     })
-    .await
-    .map_err(|e| format!("copy_file blocking task join error: {e}"))?
 }
 
+#[tauri::command]
+pub async fn copy_file(source: String, destination: String) -> Result<(), String> {
+    let s = source.clone();
+    let d = destination.clone();
+    tauri::async_runtime::spawn_blocking(move || do_copy_file(&s, &d))
+        .await
+        .map_err(|e| format!("copy_file blocking task join error: {e}"))?
+}
+
+/// Core logic for `copy_directory`, callable from both Tauri commands and Axum handlers.
 /// Recursively copy a directory, preserving structure.
 /// Returns list of copied file paths (destination paths).
+pub fn do_copy_directory(source: &str, destination: &str) -> Result<Vec<String>, String> {
+    run_guarded("copy_directory", || {
+        let source = resolve_project_storage_path(source);
+        let destination = resolve_project_storage_path(destination);
+        let src = Path::new(&source);
+        let dest = Path::new(&destination);
+        file_sync::mark_app_write_path(dest);
+
+        if !src.is_dir() {
+            return Err(format!("'{}' is not a directory", source));
+        }
+
+        let mut copied_files = Vec::new();
+
+        fn copy_recursive(
+            src: &Path,
+            dest: &Path,
+            files: &mut Vec<String>,
+        ) -> Result<(), String> {
+            fs::create_dir_all(dest)
+                .map_err(|e| format!("Failed to create dir '{}': {}", dest.display(), e))?;
+
+            let entries = fs::read_dir(src)
+                .map_err(|e| format!("Failed to read dir '{}': {}", src.display(), e))?;
+
+            for entry in entries {
+                let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+                let path = entry.path();
+                let name = entry.file_name();
+                let dest_path = dest.join(&name);
+
+                if name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
+
+                if path.is_dir() {
+                    copy_recursive(&path, &dest_path, files)?;
+                } else {
+                    fs::copy(&path, &dest_path).map_err(|e| {
+                        format!("Failed to copy '{}': {}", path.display(), e)
+                    })?;
+                    file_sync::mark_app_write_path(&dest_path);
+                    files.push(virtualize_project_storage_path(&dest_path));
+                }
+            }
+            Ok(())
+        }
+
+        copy_recursive(src, dest, &mut copied_files)?;
+        Ok(copied_files)
+    })
+}
+
 #[tauri::command]
 pub async fn copy_directory(source: String, destination: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("copy_directory", || {
-            let source = resolve_project_storage_path(&source);
-            let destination = resolve_project_storage_path(&destination);
-            let src = Path::new(&source);
-            let dest = Path::new(&destination);
-            file_sync::mark_app_write_path(dest);
+    let s = source.clone();
+    let d = destination.clone();
+    tauri::async_runtime::spawn_blocking(move || do_copy_directory(&s, &d))
+        .await
+        .map_err(|e| format!("copy_directory blocking task join error: {e}"))?
+}
 
-            if !src.is_dir() {
-                return Err(format!("'{}' is not a directory", source));
-            }
-
-            let mut copied_files = Vec::new();
-
-            fn copy_recursive(
-                src: &Path,
-                dest: &Path,
-                files: &mut Vec<String>,
-            ) -> Result<(), String> {
-                fs::create_dir_all(dest)
-                    .map_err(|e| format!("Failed to create dir '{}': {}", dest.display(), e))?;
-
-                let entries = fs::read_dir(src)
-                    .map_err(|e| format!("Failed to read dir '{}': {}", src.display(), e))?;
-
-                for entry in entries {
-                    let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
-                    let path = entry.path();
-                    let name = entry.file_name();
-                    let dest_path = dest.join(&name);
-
-                    if name.to_string_lossy().starts_with('.') {
-                        continue;
-                    }
-
-                    if path.is_dir() {
-                        copy_recursive(&path, &dest_path, files)?;
-                    } else {
-                        fs::copy(&path, &dest_path).map_err(|e| {
-                            format!("Failed to copy '{}': {}", path.display(), e)
-                        })?;
-                        file_sync::mark_app_write_path(&dest_path);
-                        files.push(virtualize_project_storage_path(&dest_path));
-                    }
-                }
-                Ok(())
-            }
-
-            copy_recursive(src, dest, &mut copied_files)?;
-            Ok(copied_files)
-        })
+/// Core logic for `delete_file`, callable from both Tauri commands and Axum handlers.
+pub fn do_delete_file(path: &str) -> Result<(), String> {
+    run_guarded("delete_file", || {
+        let path = resolve_project_storage_path(path);
+        let p = Path::new(&path);
+        file_sync::mark_app_write_path(p);
+        if p.is_dir() {
+            remove_path_with_retry(&path, true)
+                .map_err(|e| format!("Failed to delete directory '{}': {}", path, e))?;
+        } else {
+            remove_path_with_retry(&path, false)
+                .map_err(|e| format!("Failed to delete file '{}': {}", path, e))?;
+        }
+        file_sync::mark_app_write_path(p);
+        Ok(())
     })
-    .await
-    .map_err(|e| format!("copy_directory blocking task join error: {e}"))?
 }
 
 #[tauri::command]
 pub async fn delete_file(path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("delete_file", || {
-            let path = resolve_project_storage_path(&path);
-            let p = Path::new(&path);
-            file_sync::mark_app_write_path(p);
-            if p.is_dir() {
-                remove_path_with_retry(&path, true)
-                    .map_err(|e| format!("Failed to delete directory '{}': {}", path, e))?;
-            } else {
-                remove_path_with_retry(&path, false)
-                    .map_err(|e| format!("Failed to delete file '{}': {}", path, e))?;
-            }
-            file_sync::mark_app_write_path(p);
-            Ok(())
-        })
-    })
-    .await
-    .map_err(|e| format!("delete_file blocking task join error: {e}"))?
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || do_delete_file(&p))
+        .await
+        .map_err(|e| format!("delete_file blocking task join error: {e}"))?
 }
 
 fn remove_path_with_retry(path: &str, is_dir: bool) -> Result<(), std::io::Error> {
@@ -1365,29 +1391,36 @@ fn is_windows_transient_delete_error(err: &std::io::Error) -> bool {
     }
 }
 
+/// Core logic for `find_related_wiki_pages`, callable from both Tauri commands and Axum handlers.
+/// Find wiki pages that reference a given source file name.
+/// Scans all .md files under wiki/ for the source filename in frontmatter or content.
+pub fn do_find_related_wiki_pages(project_path: &str, source_name: &str) -> Result<Vec<String>, String> {
+    run_guarded("find_related_wiki_pages", || {
+        let wiki_dir = Path::new(project_path).join(KNOWLEDGE_DIR);
+        let wiki_dir = if wiki_dir.is_dir() {
+            wiki_dir
+        } else {
+            Path::new(project_path).join(LEGACY_KNOWLEDGE_DIR)
+        };
+        if !wiki_dir.is_dir() {
+            return Ok(vec![]);
+        }
+
+        let mut related = Vec::new();
+        collect_related_pages(&wiki_dir, source_name, &mut related)?;
+        Ok(related)
+    })
+}
+
 /// Find wiki pages that reference a given source file name.
 /// Scans all .md files under wiki/ for the source filename in frontmatter or content.
 #[tauri::command]
 pub async fn find_related_wiki_pages(project_path: String, source_name: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("find_related_wiki_pages", || {
-            let wiki_dir = Path::new(&project_path).join(KNOWLEDGE_DIR);
-            let wiki_dir = if wiki_dir.is_dir() {
-                wiki_dir
-            } else {
-                Path::new(&project_path).join(LEGACY_KNOWLEDGE_DIR)
-            };
-            if !wiki_dir.is_dir() {
-                return Ok(vec![]);
-            }
-
-            let mut related = Vec::new();
-            collect_related_pages(&wiki_dir, &source_name, &mut related)?;
-            Ok(related)
-        })
-    })
-    .await
-    .map_err(|e| format!("find_related_wiki_pages blocking task join error: {e}"))?
+    let pp = project_path.clone();
+    let sn = source_name.clone();
+    tauri::async_runtime::spawn_blocking(move || do_find_related_wiki_pages(&pp, &sn))
+        .await
+        .map_err(|e| format!("find_related_wiki_pages blocking task join error: {e}"))?
 }
 
 fn collect_related_pages(dir: &Path, source_name: &str, results: &mut Vec<String>) -> Result<(), String> {
@@ -1505,17 +1538,21 @@ fn collect_related_pages(dir: &Path, source_name: &str, results: &mut Vec<String
     Ok(())
 }
 
+/// Core logic for `create_directory`, callable from both Tauri commands and Axum handlers.
+pub fn do_create_directory(path: &str) -> Result<(), String> {
+    run_guarded("create_directory", || {
+        let path = resolve_project_storage_path(path);
+        fs::create_dir_all(&path)
+            .map_err(|e| format!("Failed to create directory '{}': {}", path, e))
+    })
+}
+
 #[tauri::command]
 pub async fn create_directory(path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("create_directory", || {
-            let path = resolve_project_storage_path(&path);
-            fs::create_dir_all(&path)
-                .map_err(|e| format!("Failed to create directory '{}': {}", path, e))
-        })
-    })
-    .await
-    .map_err(|e| format!("create_directory blocking task join error: {e}"))?
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || do_create_directory(&p))
+        .await
+        .map_err(|e| format!("create_directory blocking task join error: {e}"))?
 }
 
 /// Read any file as base64 + a guessed mime type. Used by the
@@ -1537,122 +1574,136 @@ pub struct FileBase64 {
     pub mime_type: String,
 }
 
+/// Core logic for `read_file_as_base64`, callable from both Tauri commands and Axum handlers.
+pub fn do_read_file_as_base64(path: &str) -> Result<FileBase64, String> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+    run_guarded("read_file_as_base64", || {
+        let path = resolve_project_storage_path(path);
+        let bytes = fs::read(&path)
+            .map_err(|e| format!("Failed to read '{}': {}", path, e))?;
+        let p = Path::new(&path);
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let mime_type = match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            "tiff" | "tif" => "image/tiff",
+            "svg" => "image/svg+xml",
+            _ => "application/octet-stream",
+        }
+        .to_string();
+        Ok(FileBase64 {
+            base64: B64.encode(&bytes),
+            mime_type,
+        })
+    })
+}
+
 #[tauri::command]
 pub async fn read_file_as_base64(path: String) -> Result<FileBase64, String> {
-    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("read_file_as_base64", || {
-            let path = resolve_project_storage_path(&path);
-            let bytes = fs::read(&path)
-                .map_err(|e| format!("Failed to read '{}': {}", path, e))?;
-            let p = Path::new(&path);
-            let ext = p
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let mime_type = match ext.as_str() {
-                "png" => "image/png",
-                "jpg" | "jpeg" => "image/jpeg",
-                "gif" => "image/gif",
-                "webp" => "image/webp",
-                "bmp" => "image/bmp",
-                "tiff" | "tif" => "image/tiff",
-                "svg" => "image/svg+xml",
-                _ => "application/octet-stream",
-            }
-            .to_string();
-            Ok(FileBase64 {
-                base64: B64.encode(&bytes),
-                mime_type,
-            })
-        })
-    })
-    .await
-    .map_err(|e| format!("read_file_as_base64 blocking task join error: {e}"))?
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || do_read_file_as_base64(&p))
+        .await
+        .map_err(|e| format!("read_file_as_base64 blocking task join error: {e}"))?
 }
 
+/// Core logic for `file_exists`, callable from both Tauri commands and Axum handlers.
 /// Cheap existence check without reading or classifying the file.
 /// Returns true iff `path` refers to something on disk right now.
-#[tauri::command]
-pub async fn file_exists(path: String) -> Result<bool, String> {
-    // `Path::exists()` does a `stat(2)` syscall — fast on a hot
-    // cache, but a blocking syscall nonetheless. Wrapping it keeps
-    // the rule "no sync IO on tokio worker threads" uniform across
-    // every fs command rather than carving out an exception that's
-    // easy to violate later.
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("file_exists", || {
-            let path = resolve_project_storage_path(&path);
-            Ok(Path::new(&path).exists())
-        })
+pub fn do_file_exists(path: &str) -> Result<bool, String> {
+    run_guarded("file_exists", || {
+        let path = resolve_project_storage_path(path);
+        Ok(Path::new(&path).exists())
     })
-    .await
-    .map_err(|e| format!("file_exists blocking task join error: {e}"))?
 }
 
+#[tauri::command]
+pub async fn file_exists(path: String) -> Result<bool, String> {
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || do_file_exists(&p))
+        .await
+        .map_err(|e| format!("file_exists blocking task join error: {e}"))?
+}
+
+/// Core logic for `get_file_modified_time`, callable from both Tauri commands and Axum handlers.
 /// Get the last modified timestamp of a file in milliseconds since Unix epoch.
-/// Returns 0 if the file doesn't exist or metadata can't be read.
+pub fn do_get_file_modified_time(path: &str) -> Result<u64, String> {
+    run_guarded("get_file_modified_time", || {
+        let path = resolve_project_storage_path(path);
+        let metadata = fs::metadata(&path)
+            .map_err(|e| format!("Failed to get metadata for '{}': {}", path, e))?;
+        let modified = metadata
+            .modified()
+            .map_err(|e| format!("Failed to get modified time for '{}': {}", path, e))?;
+        let duration = modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("Time error for '{}': {}", path, e))?;
+        Ok(duration.as_millis() as u64)
+    })
+}
+
 #[tauri::command]
 pub async fn get_file_modified_time(path: String) -> Result<u64, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("get_file_modified_time", || {
-            let path = resolve_project_storage_path(&path);
-            let metadata = fs::metadata(&path)
-                .map_err(|e| format!("Failed to get metadata for '{}': {}", path, e))?;
-            let modified = metadata
-                .modified()
-                .map_err(|e| format!("Failed to get modified time for '{}': {}", path, e))?;
-            let duration = modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| format!("Time error for '{}': {}", path, e))?;
-            Ok(duration.as_millis() as u64)
-        })
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || do_get_file_modified_time(&p))
+        .await
+        .map_err(|e| format!("get_file_modified_time blocking task join error: {e}"))?
+}
+
+/// Core logic for `get_file_size`, callable from both Tauri commands and Axum handlers.
+pub fn do_get_file_size(path: &str) -> Result<u64, String> {
+    run_guarded("get_file_size", || {
+        let path = resolve_project_storage_path(path);
+        let metadata = fs::metadata(&path)
+            .map_err(|e| format!("Failed to get metadata for '{}': {}", path, e))?;
+        Ok(metadata.len())
     })
-    .await
-    .map_err(|e| format!("get_file_modified_time blocking task join error: {e}"))?
 }
 
 #[tauri::command]
 pub async fn get_file_size(path: String) -> Result<u64, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("get_file_size", || {
-            let path = resolve_project_storage_path(&path);
-            let metadata = fs::metadata(&path)
-                .map_err(|e| format!("Failed to get metadata for '{}': {}", path, e))?;
-            Ok(metadata.len())
-        })
-    })
-    .await
-    .map_err(|e| format!("get_file_size blocking task join error: {e}"))?
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || do_get_file_size(&p))
+        .await
+        .map_err(|e| format!("get_file_size blocking task join error: {e}"))?
 }
 
+/// Core logic for `get_file_md5`, callable from both Tauri commands and Axum handlers.
 /// Compute MD5 hash of a file. Returns the hex-encoded hash string.
+pub fn do_get_file_md5(path: &str) -> Result<String, String> {
+    use md5::{Digest, Md5};
+    run_guarded("get_file_md5", || {
+        let path = resolve_project_storage_path(path);
+        let mut file = fs::File::open(&path)
+            .map_err(|e| format!("Failed to open file '{}': {}", path, e))?;
+        let mut hasher = Md5::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        let result = hasher.finalize();
+        Ok(format!("{:x}", result))
+    })
+}
+
 #[tauri::command]
 pub async fn get_file_md5(path: String) -> Result<String, String> {
-    use md5::{Digest, Md5};
-    tauri::async_runtime::spawn_blocking(move || {
-        run_guarded("get_file_md5", || {
-            let path = resolve_project_storage_path(&path);
-            let mut file = fs::File::open(&path)
-                .map_err(|e| format!("Failed to open file '{}': {}", path, e))?;
-            let mut hasher = Md5::new();
-            let mut buffer = [0u8; 64 * 1024];
-            loop {
-                let read = file
-                    .read(&mut buffer)
-                    .map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
-                if read == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..read]);
-            }
-            let result = hasher.finalize();
-            Ok(format!("{:x}", result))
-        })
-    })
-    .await
-    .map_err(|e| format!("get_file_md5 blocking task join error: {e}"))?
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || do_get_file_md5(&p))
+        .await
+        .map_err(|e| format!("get_file_md5 blocking task join error: {e}"))?
 }
 
 #[cfg(test)]
@@ -2208,8 +2259,8 @@ mod tests {
     }
 }
 
-#[tauri::command]
-pub fn get_executable_dir() -> Result<String, String> {
+/// Core logic for `get_executable_dir`, callable from both Tauri commands and Axum handlers.
+pub fn do_get_executable_dir() -> Result<String, String> {
     run_guarded("get_executable_dir", || {
         let exe = std::env::current_exe()
             .map_err(|e| format!("Failed to get executable path: {}", e))?;
@@ -2220,7 +2271,12 @@ pub fn get_executable_dir() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn get_resource_dir() -> Result<String, String> {
+pub fn get_executable_dir() -> Result<String, String> {
+    do_get_executable_dir()
+}
+
+/// Core logic for `get_resource_dir`, callable from both Tauri commands and Axum handlers.
+pub fn do_get_resource_dir() -> Result<String, String> {
     run_guarded("get_resource_dir", || {
         if let Some(dir) = RESOURCE_DIR_HINT.get() {
             Ok(dir.to_string_lossy().into_owned())
@@ -2228,4 +2284,9 @@ pub fn get_resource_dir() -> Result<String, String> {
             Err("Resource directory not set".to_string())
         }
     })
+}
+
+#[tauri::command]
+pub fn get_resource_dir() -> Result<String, String> {
+    do_get_resource_dir()
 }

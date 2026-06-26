@@ -69,6 +69,11 @@ export async function extractAndSaveSourceImages(
   const isOffice = (SUPPORTED_OFFICE_EXTS as readonly string[]).includes(ext)
   if (!isPdf && !isOffice) return []
 
+  if (!isTauri()) {
+    // 浏览器模式不支持本地图片提取（需要 Rust 命令）
+    return []
+  }
+
   const slug = fileName.replace(/\.[^.]+$/, "")
   const destDir = `${pp}/wiki/media/${slug}`
   const relTo = `${pp}/wiki`

@@ -7,6 +7,7 @@ import i18n from "@/i18n"
 import type { ChatMessage } from "@/lib/llm-providers"
 import { PROMPTS } from "@/lib/novel/prompt-templates"
 import { useOutlineGenerationStore } from "@/stores/outline-generation-store"
+import { useImportProgressStore } from "@/stores/import-progress-store"
 import type { LlmConfig } from "@/stores/wiki-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { ingestOutline } from "./chapter-ingest"
@@ -265,6 +266,7 @@ async function streamOutlineSectionContent(
   context: string,
   config: OutlineSectionGenerationConfig,
   userRequest: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   let content = ""
   let streamError: Error | null = null
@@ -277,7 +279,7 @@ async function streamOutlineSectionContent(
     onError: (err) => {
       streamError = err
     },
-  })
+  }, signal)
 
   if (streamError) throw streamError
   return content.trim()
@@ -341,6 +343,7 @@ export async function generateOutlineRefinementSectionFile(
   userRequest: string,
   sectionKey: OutlineSectionGenerationKey,
   writeOptions: OutlineRefinementWriteOptions = {},
+  signal?: AbortSignal,
 ): Promise<string> {
   const pp = normalizePath(projectPath)
   const config = OUTLINE_SECTION_GENERATION_CONFIGS.find((item) => item.key === sectionKey)
@@ -355,7 +358,7 @@ export async function generateOutlineRefinementSectionFile(
 
   const outlinesDir = `${pp}/wiki/outlines`
   await createDirectory(outlinesDir)
-  const sectionContent = await streamOutlineSectionContent(llmConfig, context, config, userRequest)
+  const sectionContent = await streamOutlineSectionContent(llmConfig, context, config, userRequest, signal)
   const outlinePath = await writeOutlineSectionFile(pp, outlinesDir, config, sectionContent, writeOptions)
   if (!outlinePath) {
     throw new Error(i18n.t("novel.outlineGenerator.refineEmpty"))
@@ -368,6 +371,7 @@ export async function generateOutlineRefinementFiles(
   llmConfig: LlmConfig,
   userRequest: string,
   writeOptions: OutlineRefinementWriteOptions = {},
+  signal?: AbortSignal,
 ): Promise<OutlineRefinementResult> {
   const pp = normalizePath(projectPath)
   const { context, hasOutline } = await buildOutlineRefinementContext(pp, userRequest)
@@ -383,7 +387,10 @@ export async function generateOutlineRefinementFiles(
   let primaryPath: string | null = null
 
   for (const config of OUTLINE_SECTION_GENERATION_CONFIGS) {
-    const sectionContent = await streamOutlineSectionContent(llmConfig, context, config, userRequest)
+    if (signal?.aborted) {
+      throw new Error("细化生成已取消")
+    }
+    const sectionContent = await streamOutlineSectionContent(llmConfig, context, config, userRequest, signal)
     sections[config.key] = sectionContent
     const outlinePath = await writeOutlineSectionFile(pp, outlinesDir, config, sectionContent, writeOptions)
     if (!outlinePath) continue
@@ -411,6 +418,7 @@ export async function generateOutlineFile(
   projectPath: string,
   llmConfig: LlmConfig,
   prompt: string,
+  signal?: AbortSignal,
 ): Promise<{ outlinePath: string; content: string }> {
   let content = ""
   let streamError: Error | null = null
@@ -425,7 +433,7 @@ export async function generateOutlineFile(
     onError: (err) => {
       streamError = err
     },
-  })
+  }, signal)
 
   if (streamError) {
     throw streamError
@@ -445,14 +453,30 @@ export async function runOutlineGenerationTask(taskId: string, llmConfig: LlmCon
   const task = useOutlineGenerationStore.getState().tasks.find((item) => item.id === taskId)
   if (!task) return
 
+  const abortController = new AbortController()
+  const progressTaskId = useImportProgressStore.getState().startTask({
+    projectPath: task.projectPath,
+    kind: "outline_generation",
+    total: 100,
+    currentTitle: "生成大纲",
+    message: "正在生成大纲",
+    abortController,
+  })
+
   try {
-    const { outlinePath } = await generateOutlineFile(task.projectPath, llmConfig, task.prompt)
+    const { outlinePath } = await generateOutlineFile(task.projectPath, llmConfig, task.prompt, abortController.signal)
     await refreshProjectState(task.projectPath)
     useOutlineGenerationStore.getState().updateTask(taskId, {
       status: "generated",
       outlinePath,
       message: i18n.t("novel.outlineGenerator.generatedNotification"),
       error: null,
+    })
+    useImportProgressStore.getState().finishTask(progressTaskId, "done", {
+      completed: 100,
+      total: 100,
+      currentTitle: "",
+      message: "大纲生成完成",
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -461,12 +485,28 @@ export async function runOutlineGenerationTask(taskId: string, llmConfig: LlmCon
       error: message,
       message,
     })
+    useImportProgressStore.getState().finishTask(progressTaskId, "error", {
+      completed: 0,
+      total: 100,
+      currentTitle: "",
+      message: `大纲生成失败: ${message}`,
+    })
   }
 }
 
 export async function runOutlineRefinementTask(taskId: string, llmConfig: LlmConfig): Promise<void> {
   const task = useOutlineGenerationStore.getState().tasks.find((item) => item.id === taskId)
   if (!task) return
+
+  const abortController = new AbortController()
+  const progressTaskId = useImportProgressStore.getState().startTask({
+    projectPath: task.projectPath,
+    kind: "outline_refinement",
+    total: 100,
+    currentTitle: task.displayTitle || "细化生成",
+    message: "正在细化生成大纲",
+    abortController,
+  })
 
   try {
     let outlinePath: string
@@ -480,6 +520,7 @@ export async function runOutlineRefinementTask(taskId: string, llmConfig: LlmCon
           mode: (task.writeMode as OutlineRefinementWriteMode | null) ?? undefined,
           targetPath: task.targetPath,
         },
+        abortController.signal,
       )
     } else {
       const result = await generateOutlineRefinementFiles(
@@ -490,6 +531,7 @@ export async function runOutlineRefinementTask(taskId: string, llmConfig: LlmCon
           mode: (task.writeMode as OutlineRefinementWriteMode | null) ?? undefined,
           targetPath: task.targetPath,
         },
+        abortController.signal,
       )
       if (!result.primaryPath) {
         throw new Error(i18n.t("novel.outlineGenerator.refineEmpty"))
@@ -506,12 +548,24 @@ export async function runOutlineRefinementTask(taskId: string, llmConfig: LlmCon
         : i18n.t("novel.outlineGenerator.refineGenerated"),
       error: null,
     })
+    useImportProgressStore.getState().finishTask(progressTaskId, "done", {
+      completed: 100,
+      total: 100,
+      currentTitle: "",
+      message: task.displayTitle ? `${task.displayTitle} 细化完成` : "细化生成完成",
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     useOutlineGenerationStore.getState().updateTask(taskId, {
       status: "error",
       error: message,
       message,
+    })
+    useImportProgressStore.getState().finishTask(progressTaskId, "error", {
+      completed: 0,
+      total: 100,
+      currentTitle: "",
+      message: `细化生成失败: ${message}`,
     })
   }
 }
@@ -634,13 +688,25 @@ export async function runBulkOutlineIngest(projectPath: string): Promise<{
 export async function runOutlineIngestTask(taskId: string): Promise<void> {
   const task = useOutlineGenerationStore.getState().tasks.find((item) => item.id === taskId)
   if (!task?.outlinePath) return
+
+  const outlineFileName = task.outlinePath.split("/").pop()?.replace(".md", "") || "大纲"
+  const abortController = new AbortController()
+  const progressTaskId = useImportProgressStore.getState().startTask({
+    projectPath: task.projectPath,
+    kind: "outline",
+    total: 1,
+    currentTitle: outlineFileName,
+    message: "正在提取大纲记忆",
+    abortController,
+  })
+
   try {
     useOutlineGenerationStore.getState().updateTask(taskId, {
       status: "ingesting",
       message: i18n.t("novel.outlineGenerator.ingestingNotification"),
       error: null,
     })
-    const snapshot = await ingestOutline(task.projectPath, task.outlinePath)
+    const snapshot = await ingestOutline(task.projectPath, task.outlinePath, abortController.signal)
     if (snapshot) {
       await refreshProjectState(task.projectPath)
     }
@@ -651,12 +717,24 @@ export async function runOutlineIngestTask(taskId: string): Promise<void> {
         : i18n.t("novel.outlineGenerator.ingestFailedNotification"),
       error: snapshot ? null : i18n.t("novel.outlineGenerator.ingestFailedNotification"),
     })
+    useImportProgressStore.getState().finishTask(progressTaskId, snapshot ? "done" : "error", {
+      completed: snapshot ? 1 : 0,
+      total: 1,
+      currentTitle: "",
+      message: snapshot ? `${outlineFileName} 提取完成` : `${outlineFileName} 提取失败`,
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     useOutlineGenerationStore.getState().updateTask(taskId, {
       status: "error",
       message,
       error: message,
+    })
+    useImportProgressStore.getState().finishTask(progressTaskId, "error", {
+      completed: 0,
+      total: 1,
+      currentTitle: "",
+      message: `${outlineFileName} 提取失败`,
     })
   }
 }

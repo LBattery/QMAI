@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core"
 import { save } from "@tauri-apps/plugin-dialog"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
-import { loadRegistry } from "@/lib/project-identity"
 import { isTauri } from "@/lib/platform"
+import { httpBackup } from "@/lib/http-adapter"
+import { serverEvents } from "@/lib/server-events"
+import { loadRegistry } from "@/lib/project-identity"
 import type {
   ExportParams,
   ExportResult,
@@ -40,14 +42,58 @@ export async function exportBackup(
   onProgress?: BackupProgressCallback,
 ): Promise<ExportResult> {
   if (!isTauri()) {
-    return {
-      success: false,
-      warnings: [],
-      fileCount: 0,
-      totalSize: 0,
-      error: "Web 快速版暂不支持完整 ZIP 备份，请直接备份项目文件夹；完整备份将在后续迁移。",
+    // ── HTTP mode: use httpBackup + serverEvents + browser download ──
+    serverEvents.connect()
+
+    let unsubProgress: (() => void) | undefined
+    try {
+      if (onProgress) {
+        unsubProgress = serverEvents.on("backup-progress", (event) => {
+          onProgress(event.payload as never)
+        })
+      }
+
+      const localStorageData = collectLocalStorage()
+      const projects = await collectProjects()
+
+      const params = {
+        localStorageData,
+        projects,
+      }
+
+      const result = await httpBackup.export(params) as ExportResult
+
+      // Trigger browser download if the server returned a download URL or blob
+      if (result.success) {
+        try {
+          const API_BASE = `http://${window.location.hostname}:5800/api`
+          const res = await fetch(`${API_BASE}/backup/download`, { method: "GET" })
+          if (res.ok) {
+            const blob = await res.blob()
+            const now = new Date()
+            const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
+            const filename = `qmai-backup-${dateStr}.zip`
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement("a")
+            a.href = url
+            a.download = filename
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
+          }
+        } catch {
+          // Download trigger failed, but export itself succeeded
+        }
+      }
+
+      return result
+    } finally {
+      unsubProgress?.()
     }
   }
+
+  // ── Tauri mode ──
   const now = new Date()
   const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
   const defaultName = `qmai-backup-${dateStr}.zip`
