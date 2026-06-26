@@ -690,6 +690,8 @@ async function safeBuildChapterContextPack(
       recentSummaries: [],
       previousChapterEnding: "",
       characterStates: "",
+      characterAppearance: "",
+      femaleCharacterEvents: "",
       soulDoc: "",
       characterAuras: "",
       cognitionStates: "",

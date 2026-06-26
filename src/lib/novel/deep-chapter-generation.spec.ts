@@ -35,6 +35,8 @@ const contextPack: ContextPack = {
   recentSummaries: ["第1章：主角收到匿名信。", "第2章：主角抵达旧城区。"],
   previousChapterEnding: "门缝里传来金属拖拽声。",
   characterStates: "主角谨慎，但急于确认真相。",
+  characterAppearance: "第2章：主角雨衣半湿，掌心握着锈钥匙。",
+  femaleCharacterEvents: "第2章：小晴与主角保持距离，未发生亲密事件。",
   soulDoc: "",
   characterAuras: "",
   cognitionStates: "主角不知道旧屋主人真实身份。",

@@ -130,6 +130,8 @@ function formatOutlineRefinementContext(pack: ContextPack): string {
   appendContextSection(sections, "已有大纲", pack.outline)
   appendContextSection(sections, "最近剧情摘要", pack.recentSummaries)
   appendContextSection(sections, "人物状态变化", pack.characterStates)
+  appendContextSection(sections, "角色穿着和当前状态", pack.characterAppearance)
+  appendContextSection(sections, "女角色边缘性行为及性行为事件", pack.femaleCharacterEvents)
   appendContextSection(sections, "角色认知", pack.cognitionStates)
   appendContextSection(sections, "伏笔状态", pack.foreshadowingStates)
   appendContextSection(sections, "时间线", pack.timeline)
@@ -146,6 +148,8 @@ function formatOutlineGenerationContext(pack: ContextPack): string {
   appendContextSection(sections, "已有大纲与故事骨架", pack.outline)
   appendContextSection(sections, "最近剧情记忆", pack.recentSummaries)
   appendContextSection(sections, "人物状态与关系", pack.characterStates)
+  appendContextSection(sections, "角色穿着和当前状态", pack.characterAppearance)
+  appendContextSection(sections, "女角色边缘性行为及性行为事件", pack.femaleCharacterEvents)
   appendContextSection(sections, "角色认知与信息差", pack.cognitionStates)
   appendContextSection(sections, "伏笔与未回收线索", pack.foreshadowingStates)
   appendContextSection(sections, "时间线与剧情节点", pack.timeline)
@@ -203,6 +207,8 @@ function emptyOutlineContextPack(task: string): ContextPack {
     recentSummaries: [],
     previousChapterEnding: "",
     characterStates: "",
+    characterAppearance: "",
+    femaleCharacterEvents: "",
     soulDoc: "",
     characterAuras: "",
     cognitionStates: "",

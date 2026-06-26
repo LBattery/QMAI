@@ -25,15 +25,20 @@ const SECTION_PRIORITY: Record<string, number> = {
   "最近剧情摘要": 6,
   "上一章结尾": 7,
   "当前人物状态": 8,
-  "角色灵魂": 9,
-  "当前伏笔状态": 10,
-  "时间线": 11,
-  "角色认知状态": 12,
-  "相关地点/组织/物品": 13,
-  "相关记忆检索": 14,
-  "修改反馈": 15,
-  "下一章推进建议": 16,
-  "写作风格": 17,
+  "角色穿着和当前状态": 9,
+  "女角色边缘性行为及性行为事件": 10,
+  "角色灵魂": 11,
+  "当前伏笔状态": 12,
+  "时间线": 13,
+  "角色认知状态": 14,
+  "相关地点/组织/物品": 15,
+  "相关记忆检索": 16,
+  "修改反馈": 17,
+  "下一章推进建议": 18,
+  "写作风格": 19,
+  "Current Character States": 8,
+  "Character Appearance And Current Status": 9,
+  "Female Character Intimacy Events": 10,
 }
 
 export interface ContextPack {
@@ -43,6 +48,8 @@ export interface ContextPack {
   recentSummaries: string[]
   previousChapterEnding: string
   characterStates: string
+  characterAppearance: string
+  femaleCharacterEvents: string
   soulDoc: string
   characterAuras: string
   cognitionStates: string
@@ -137,6 +144,8 @@ async function buildContextPackFromRawData(
     rawData.snapshots.characterStates, 
     rawData.fallbackCharacterStates
   ], "\n\n")
+  const characterAppearance = rawData.snapshots.characterAppearance ?? ""
+  const femaleCharacterEvents = rawData.snapshots.femaleCharacterEvents ?? ""
   
   const timeline = joinNonEmpty([
     rawData.snapshots.timeline, 
@@ -177,6 +186,8 @@ async function buildContextPackFromRawData(
       rawData.chapterOutline,
       rawData.fallbackCharacterStates,
       rawData.snapshots.characterStates,
+      characterAppearance,
+      femaleCharacterEvents,
       rawData.cognitionText,
     ], "\n\n"),
   })
@@ -188,6 +199,8 @@ async function buildContextPackFromRawData(
     recentSummaries,
     previousChapterEnding,
     characterStates,
+    characterAppearance,
+    femaleCharacterEvents,
     soulDoc: rawData.soulDoc,
     characterAuras,
     cognitionStates: rawData.cognitionText,
@@ -336,6 +349,8 @@ function emptyPack(task: string): ContextPack {
     recentSummaries: [],
     previousChapterEnding: "",
     characterStates: "",
+    characterAppearance: "",
+    femaleCharacterEvents: "",
     soulDoc: "",
     characterAuras: "",
     cognitionStates: "",
@@ -487,6 +502,8 @@ async function readSnapshotContext(
   recentSummaries: string[]
   previousChapterEnding: string
   characterStates: string
+  characterAppearance: string
+  femaleCharacterEvents: string
   foreshadowingSignals: string[]
   timeline: string
 }> {
@@ -496,6 +513,8 @@ async function readSnapshotContext(
       recentSummaries: [],
       previousChapterEnding: "",
       characterStates: "",
+      characterAppearance: "",
+      femaleCharacterEvents: "",
       foreshadowingSignals: [],
       timeline: "",
     }
@@ -523,6 +542,16 @@ async function readSnapshotContext(
       .flatMap((snapshot) => snapshot.characterStateChanges.map((change) => `第${snapshot.chapterNumber}章：${change}`)),
     "\n",
   )
+  const characterAppearance = joinNonEmpty(
+    validLookback
+      .flatMap((snapshot) => snapshot.characterAppearanceAndStatus.map((change) => `第${snapshot.chapterNumber}章：${change}`)),
+    "\n",
+  )
+  const femaleCharacterEvents = joinNonEmpty(
+    validLookback
+      .flatMap((snapshot) => snapshot.femaleCharacterSexualEvents.map((event) => `第${snapshot.chapterNumber}章：${event}`)),
+    "\n",
+  )
   const foreshadowingSignals = validLookback.flatMap((snapshot) => snapshot.foreshadowingChanges)
   const timeline = joinNonEmpty(
     validLookback
@@ -534,6 +563,8 @@ async function readSnapshotContext(
     recentSummaries,
     previousChapterEnding: previousSnapshot?.endingHook || "",
     characterStates,
+    characterAppearance,
+    femaleCharacterEvents,
     foreshadowingSignals,
     timeline,
   }
@@ -984,6 +1015,8 @@ const FIELD_CONFIGS: FieldConfig[] = [
   { titleKey: "novel.contextPack.recentPlotSummaries", fieldKey: "recentSummaries" },
   { titleKey: "novel.contextPack.previousChapterEnding", fieldKey: "previousChapterEnding" },
   { titleKey: "novel.contextPack.characterStates", fieldKey: "characterStates" },
+  { titleKey: "novel.contextPack.characterAppearance", fieldKey: "characterAppearance" },
+  { titleKey: "novel.contextPack.femaleCharacterEvents", fieldKey: "femaleCharacterEvents" },
   { titleKey: "novel.contextPack.characterAuras", fieldKey: "characterAuras" },
   { titleKey: "novel.contextPack.cognitionStates", fieldKey: "cognitionStates" },
   { titleKey: "novel.contextPack.foreshadowingStates", fieldKey: "foreshadowingStates" },

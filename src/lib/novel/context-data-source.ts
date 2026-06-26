@@ -115,6 +115,8 @@ export class DataSourceRegistry {
         recentSummaries: [],
         previousChapterEnding: "",
         characterStates: "",
+        characterAppearance: "",
+        femaleCharacterEvents: "",
         foreshadowingSignals: [],
         timeline: "",
       },

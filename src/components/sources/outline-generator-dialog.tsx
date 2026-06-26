@@ -41,7 +41,7 @@ const GENRE_KEYS = [
 
 const SCALE_KEYS = ["short", "medium", "long", "epic"] as const
 
-export type OutlineGeneratorMode = "outline" | "refine"
+export type OutlineGeneratorMode = "outline" | "refine" | "continue"
 
 interface OutlineFileEntry {
   path: string
@@ -129,7 +129,8 @@ export function OutlineGeneratorDialog({
   const [selectedOutlineFiles, setSelectedOutlineFiles] = useState<Set<string>>(new Set())
   const [chapterFiles, setChapterFiles] = useState<OutlineFileEntry[]>([])
   const [selectedChapterFiles, setSelectedChapterFiles] = useState<Set<string>>(new Set())
-  const taskKind = mode === "refine" ? "refine" : "outline"
+  const taskKind = mode === "outline" ? "outline" : "refine"
+  const isContinueMode = mode === "continue"
   const selectedSectionConfig = useMemo(
     () => OUTLINE_SECTION_GENERATION_CONFIGS.find((config) => config.key === selectedSectionKey) ?? null,
     [selectedSectionKey],
@@ -144,7 +145,7 @@ export function OutlineGeneratorDialog({
 
   const taskGenerating = latestTask?.status === "generating"
   const hasGeneratedOutline = Boolean(latestTask?.outlinePath)
-  const isRefineMode = mode === "refine"
+  const isRefineMode = mode !== "outline"
   const activeSectionTitle = isRefineMode ? latestTask?.displayTitle ?? selectedSectionConfig?.title ?? null : null
   const canAppendToCurrentOutline = Boolean(
     selectedFile &&
@@ -160,24 +161,32 @@ export function OutlineGeneratorDialog({
     if (latestTask.status === "done" || latestTask.status === "ingesting") {
       setIngestResult(latestTask.message)
     }
-    if (mode === "refine" && latestTask.status === "generated") {
+    if (isRefineMode && latestTask.status === "generated") {
       setRefineResult(latestTask.message)
     }
-  }, [latestTask, mode])
+  }, [isRefineMode, latestTask])
 
   useEffect(() => {
     if (!open) return
     setError(null)
-    setSelectedSectionKey(null)
     if (mode === "outline") {
+      setSelectedSectionKey(null)
       setRefineResult(null)
       return
     }
     setIngestResult(null)
-  }, [mode, open])
+    setRefineResult(null)
+    if (isContinueMode) {
+      setSelectedSectionKey("chapterOutlines")
+      setRefineRequest(t("novel.outlineGenerator.continueDefaultRequest"))
+      setRefineWriteMode("newFileAndAddToList")
+      return
+    }
+    setSelectedSectionKey(null)
+  }, [isContinueMode, mode, open, t])
 
   useEffect(() => {
-    if (!open || mode !== "refine" || !project) {
+    if (!open || !isRefineMode || !project) {
       setCheckingOutline(false)
       if (!project) {
         setCanRefine(false)
@@ -206,10 +215,10 @@ export function OutlineGeneratorDialog({
     return () => {
       cancelled = true
     }
-  }, [dataVersion, mode, open, project])
+  }, [dataVersion, isRefineMode, open, project])
 
   useEffect(() => {
-    if (!open || mode !== "refine" || !project) {
+    if (!open || !isRefineMode || !project) {
       setOutlineFiles([])
       setSelectedOutlineFiles(new Set())
       setChapterFiles([])
@@ -236,7 +245,7 @@ export function OutlineGeneratorDialog({
       })
 
     return () => { cancelled = true }
-  }, [open, mode, project])
+  }, [open, isRefineMode, project])
 
   async function handleGenerate() {
     if (!project || generating || taskGenerating) return
@@ -368,7 +377,7 @@ export function OutlineGeneratorDialog({
         kind: "refine",
         userRequest: effectiveRequest,
         selectedSectionKey,
-        displayTitle: currentSection?.title ?? t("novel.outlineGenerator.refineTitle"),
+        displayTitle: currentSection?.title ?? t(isContinueMode ? "novel.outlineGenerator.continueTitle" : "novel.outlineGenerator.refineTitle"),
         writeMode: refineWriteMode,
         targetPath: refineWriteMode === "appendCurrent" ? selectedFile : null,
       })
@@ -388,10 +397,14 @@ export function OutlineGeneratorDialog({
   const dialogTitle =
     mode === "outline"
       ? t("novel.outlineGenerator.title")
+      : isContinueMode
+        ? t("novel.outlineGenerator.continueTitle")
       : t("novel.outlineGenerator.refineTitle")
   const dialogDescription =
     mode === "outline"
       ? t("novel.outlineGenerator.premisePlaceholder")
+      : isContinueMode
+        ? t("novel.outlineGenerator.continueDescription")
       : t("novel.outlineGenerator.refineDescription")
 
   return (
@@ -560,8 +573,11 @@ export function OutlineGeneratorDialog({
                       type="button"
                       size="sm"
                       variant={selectedSectionKey === config.key ? "default" : "outline"}
-                      onClick={() => setSelectedSectionKey((current) => current === config.key ? null : config.key)}
-                      disabled={taskGenerating || checkingOutline || !canRefine}
+                      onClick={() => {
+                        if (isContinueMode) return
+                        setSelectedSectionKey((current) => current === config.key ? null : config.key)
+                      }}
+                      disabled={isContinueMode || taskGenerating || checkingOutline || !canRefine}
                       className="text-xs h-7"
                     >
                       {config.title}
@@ -684,11 +700,13 @@ export function OutlineGeneratorDialog({
 
               {/* Right column: input */}
               <div className="flex-1 flex flex-col gap-2.5 min-w-0">
-                <Label className="text-sm">{t("novel.outlineGenerator.refineRequestLabel")}</Label>
+                <Label className="text-sm">
+                  {t(isContinueMode ? "novel.outlineGenerator.continueRequestLabel" : "novel.outlineGenerator.refineRequestLabel")}
+                </Label>
                 <textarea
                   value={refineRequest}
                   onChange={(e) => setRefineRequest(e.target.value)}
-                  placeholder={t("novel.outlineGenerator.refineRequestPlaceholder")}
+                  placeholder={t(isContinueMode ? "novel.outlineGenerator.continueDefaultRequest" : "novel.outlineGenerator.refineRequestPlaceholder")}
                   disabled={taskGenerating}
                   rows={12}
                   className="w-full flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-[200px]"
@@ -712,7 +730,7 @@ export function OutlineGeneratorDialog({
             onClick={() => onOpenChange(false)}
             disabled={ingesting}
           >
-            {(mode === "outline" || mode === "refine") && taskGenerating
+            {(mode === "outline" || mode === "refine" || isContinueMode) && taskGenerating
               ? t("novel.outlineGenerator.hideAndContinue")
               : t("project.cancel")}
           </Button>
@@ -758,7 +776,9 @@ export function OutlineGeneratorDialog({
               ) : (
                 <>
                   <Sparkles className="mr-1 h-4 w-4" />
-                  {selectedSectionKey
+                  {isContinueMode
+                    ? t("novel.outlineGenerator.continueTitle")
+                    : selectedSectionKey
                     ? t(`novel.outlineGenerator.sectionButtons.${selectedSectionKey}`)
                     : t("novel.outlineGenerator.refineTitle")}
                 </>

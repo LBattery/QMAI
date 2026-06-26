@@ -97,7 +97,7 @@ export interface SearchIndexText {
 }
 
 export interface VectorIndexChunk {
-  kind: "summary" | "character" | "event" | "foreshadowing" | "canon" | "timeline" | "conflict"
+  kind: "summary" | "character" | "appearance" | "intimacy" | "event" | "foreshadowing" | "canon" | "timeline" | "conflict"
   text: string
   metadata: Record<string, string | number>
 }
@@ -262,6 +262,8 @@ function buildSearchIndexText(snapshot: ChapterSnapshot, title: string): SearchI
     sections: [
       section("摘要", snapshot.summary, 3),
       section("人物", snapshot.characters.join("\n"), 2),
+      section("角色穿着和当前状态", snapshot.characterAppearanceAndStatus.join("\n"), 3),
+      section("女角色边缘性行为及性行为事件", snapshot.femaleCharacterSexualEvents.join("\n"), 3),
       section("地点", snapshot.locations.join("\n"), 2),
       section("组织", snapshot.organizations.join("\n"), 2),
       section("物品", snapshot.items.join("\n"), 2),
@@ -284,6 +286,8 @@ function buildVectorIndexText(snapshot: ChapterSnapshot): VectorIndexText {
     chunks: [
       ...chunk("summary", [snapshot.summary], metadata),
       ...chunk("character", snapshot.characterStateChanges, metadata),
+      ...chunk("appearance", snapshot.characterAppearanceAndStatus, metadata),
+      ...chunk("intimacy", snapshot.femaleCharacterSexualEvents, metadata),
       ...chunk("event", snapshot.events, metadata),
       ...chunk("foreshadowing", snapshot.foreshadowingChanges, metadata),
       ...chunk("conflict", snapshot.conflicts, metadata),

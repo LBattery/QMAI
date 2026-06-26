@@ -81,6 +81,8 @@ export const snapshotDataSource: DataSource<{
   recentSummaries: string[]
   previousChapterEnding: string
   characterStates: string
+  characterAppearance: string
+  femaleCharacterEvents: string
   foreshadowingSignals: string[]
   timeline: string
 }> = {
@@ -95,6 +97,8 @@ export const snapshotDataSource: DataSource<{
         recentSummaries: [],
         previousChapterEnding: "",
         characterStates: "",
+        characterAppearance: "",
+        femaleCharacterEvents: "",
         foreshadowingSignals: [],
         timeline: "",
       }
@@ -123,6 +127,16 @@ export const snapshotDataSource: DataSource<{
         .flatMap((snapshot) => snapshot.characterStateChanges.map((change) => `第${snapshot.chapterNumber}章：${change}`)),
       "\n",
     )
+    const characterAppearance = joinNonEmpty(
+      validLookback
+        .flatMap((snapshot) => snapshot.characterAppearanceAndStatus.map((change) => `第${snapshot.chapterNumber}章：${change}`)),
+      "\n",
+    )
+    const femaleCharacterEvents = joinNonEmpty(
+      validLookback
+        .flatMap((snapshot) => snapshot.femaleCharacterSexualEvents.map((event) => `第${snapshot.chapterNumber}章：${event}`)),
+      "\n",
+    )
     const foreshadowingSignals = validLookback.flatMap((snapshot) => snapshot.foreshadowingChanges)
     const timeline = joinNonEmpty(
       validLookback
@@ -134,6 +148,8 @@ export const snapshotDataSource: DataSource<{
       recentSummaries,
       previousChapterEnding: previousSnapshot?.endingHook || "",
       characterStates,
+      characterAppearance,
+      femaleCharacterEvents,
       foreshadowingSignals,
       timeline,
     }
