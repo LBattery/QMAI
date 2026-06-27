@@ -1,5 +1,4 @@
-import { httpFs } from "@/lib/http-adapter"
-import { httpProject } from "@/lib/http-adapter"
+import { webServiceFs } from "@/lib/web-service-fs"
 import type { FileNode } from "@/types/wiki"
 
 interface WebFileSystemLike {
@@ -47,67 +46,69 @@ function baseName(path: string): string {
 
 class HttpWebFileSystem implements WebFileSystemLike {
   async readFile(path: string): Promise<string> {
-    return httpFs.readFile(path)
+    return webServiceFs.readFile(path)
   }
 
   async writeFile(path: string, contents: string): Promise<void> {
-    return httpFs.writeFile(path, contents)
+    return webServiceFs.writeFile(path, contents)
   }
 
   async writeFileAtomic(path: string, contents: string): Promise<void> {
-    return httpFs.writeFileAtomic(path, contents)
+    return webServiceFs.writeFile(path, contents)
   }
 
   async listDirectory(path: string): Promise<FileNode[]> {
-    return httpFs.listDirectory(path)
+    return webServiceFs.listDirectory(path)
   }
 
   async createDirectory(path: string): Promise<void> {
-    return httpFs.createDirectory(path)
+    return webServiceFs.createDirectory(path)
   }
 
   async deleteFile(path: string): Promise<void> {
-    return httpFs.deleteFile(path)
+    return webServiceFs.deleteFile(path)
   }
 
   async fileExists(path: string): Promise<boolean> {
-    return httpFs.fileExists(path)
+    return webServiceFs.fileExists(path)
   }
 
   async getFileModifiedTime(path: string): Promise<number> {
-    return httpFs.getFileModifiedTime(path)
+    return webServiceFs.getFileModifiedTime(path)
   }
 
   async getFileSize(path: string): Promise<number> {
-    return httpFs.getFileSize(path)
+    return webServiceFs.getFileSize(path)
   }
 
   async getFileMd5(path: string): Promise<string> {
-    return httpFs.getFileMd5(path)
+    return webServiceFs.getFileMd5(path)
   }
 
   async copyFile(source: string, destination: string): Promise<void> {
-    return httpFs.copyFile(source, destination)
+    return webServiceFs.copyFile(source, destination)
   }
 
   async copyDirectory(source: string, destination: string): Promise<string[]> {
-    return httpFs.copyDirectory(source, destination)
+    return webServiceFs.copyDirectory(source, destination)
   }
 
   async preprocessFile(path: string): Promise<string> {
-    return httpFs.preprocessFile(path)
+    return webServiceFs.readFile(path)
   }
 
   async findRelatedWikiPages(projectPath: string, sourceName: string): Promise<string[]> {
-    return httpFs.findRelatedWikiPages(projectPath, sourceName)
+    void projectPath
+    void sourceName
+    return []
   }
 
   async readFileAsBase64(path: string): Promise<{ base64: string; mimeType: string }> {
-    return httpFs.readFileAsBase64(path)
+    return webServiceFs.readFileAsBase64(path)
   }
 
-  async openProjectFolder(path: string): Promise<void> {
-    return httpProject.openFolder(path)
+  async openProjectFolder(_path: string): Promise<void> {
+    // Browser mode cannot reveal local folders without the full native bridge.
   }
 
   async clipServerStatus(): Promise<string> {
@@ -116,19 +117,19 @@ class HttpWebFileSystem implements WebFileSystemLike {
   }
 
   async getExecutableDir(): Promise<string> {
-    return httpFs.getExecutableDir()
+    return webServiceFs.getExecutableDir()
   }
 
   async getResourceDir(): Promise<string> {
-    return httpFs.getResourceDir()
+    return webServiceFs.getResourceDir()
   }
 
   async createProject(name: string, path: string): Promise<{ name: string; path: string }> {
-    return httpProject.create(name, path)
+    return webServiceFs.createProject(name, path)
   }
 
   async openProject(path: string): Promise<{ name: string; path: string }> {
-    return httpProject.open(path)
+    return webServiceFs.openProject(path)
   }
 
   initProjectWithTemplate(_projectPath: string, _template: { schema: string; purpose: string; extraDirs: string[] }) {

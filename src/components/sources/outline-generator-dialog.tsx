@@ -18,6 +18,7 @@ import {
   hasOutlineForRefinement,
   openGeneratedOutline,
   OUTLINE_SECTION_GENERATION_CONFIGS,
+  runOutlineContinuationTask,
   runOutlineGenerationTask,
   runOutlineRefinementTask,
   runOutlineIngestTask,
@@ -26,6 +27,9 @@ import {
 } from "@/lib/novel/outline-generation"
 import { useOutlineGenerationStore, type OutlineGenerationState, type OutlineGenerationTask } from "@/stores/outline-generation-store"
 import { useWikiStore } from "@/stores/wiki-store"
+import { parseFrontmatter } from "@/lib/frontmatter"
+import { parseChapterMeta } from "@/lib/novel/chapter-meta"
+import { loadSnapshot, type ChapterSnapshot } from "@/lib/novel/chapter-ingest"
 
 const GENRE_KEYS = [
   "mystery",
@@ -46,6 +50,34 @@ export type OutlineGeneratorMode = "outline" | "refine" | "continue"
 interface OutlineFileEntry {
   path: string
   title: string
+}
+
+function formatList(title: string, items: string[]): string {
+  if (items.length === 0) return ""
+  return [`### ${title}`, ...items.map((item) => `- ${item}`)].join("\n")
+}
+
+function formatChapterMemory(snapshot: ChapterSnapshot, fallbackTitle: string): string {
+  return [
+    `## 第${snapshot.chapterNumber}章：${snapshot.chapterTitle ?? fallbackTitle}`,
+    snapshot.summary ? `### 摘要\n${snapshot.summary}` : "",
+    formatList("关键事件", snapshot.events),
+    formatList("人物状态变化", snapshot.characterStateChanges),
+    formatList("角色穿着和当前状态", snapshot.characterAppearanceAndStatus),
+    formatList("女角色边缘性行为及性行为事件", snapshot.femaleCharacterSexualEvents),
+    formatList("角色认知变化", snapshot.knowledgeChanges),
+    formatList("伏笔变化", snapshot.foreshadowingChanges),
+    formatList("冲突", snapshot.conflicts),
+    formatList("时间线事件", snapshot.timelineEvents),
+    formatList("新增正史", snapshot.newCanonFacts),
+    snapshot.endingHook ? `### 结尾钩子\n${snapshot.endingHook}` : "",
+  ].filter(Boolean).join("\n\n")
+}
+
+function excerptText(text: string, maxLength = 1800): string {
+  const normalized = text.trim()
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, 900).trimEnd()}\n\n[正文中段已省略]\n\n${normalized.slice(-800).trimStart()}`
 }
 
 async function loadOutlineFileList(projectPath: string): Promise<OutlineFileEntry[]> {
@@ -129,7 +161,7 @@ export function OutlineGeneratorDialog({
   const [selectedOutlineFiles, setSelectedOutlineFiles] = useState<Set<string>>(new Set())
   const [chapterFiles, setChapterFiles] = useState<OutlineFileEntry[]>([])
   const [selectedChapterFiles, setSelectedChapterFiles] = useState<Set<string>>(new Set())
-  const taskKind = mode === "outline" ? "outline" : "refine"
+  const taskKind = mode === "outline" ? "outline" : mode === "continue" ? "continue" : "refine"
   const isContinueMode = mode === "continue"
   const selectedSectionConfig = useMemo(
     () => OUTLINE_SECTION_GENERATION_CONFIGS.find((config) => config.key === selectedSectionKey) ?? null,
@@ -146,6 +178,9 @@ export function OutlineGeneratorDialog({
   const taskGenerating = latestTask?.status === "generating"
   const hasGeneratedOutline = Boolean(latestTask?.outlinePath)
   const isRefineMode = mode !== "outline"
+  const hasSelectedReferenceFiles = selectedOutlineFiles.size > 0 || selectedChapterFiles.size > 0
+  const canRunContinuation = selectedChapterFiles.size > 0
+  const canRunRefinement = canRefine || (isContinueMode && hasSelectedReferenceFiles)
   const activeSectionTitle = isRefineMode ? latestTask?.displayTitle ?? selectedSectionConfig?.title ?? null : null
   const canAppendToCurrentOutline = Boolean(
     selectedFile &&
@@ -177,7 +212,7 @@ export function OutlineGeneratorDialog({
     setIngestResult(null)
     setRefineResult(null)
     if (isContinueMode) {
-      setSelectedSectionKey("chapterOutlines")
+      setSelectedSectionKey(null)
       setRefineRequest(t("novel.outlineGenerator.continueDefaultRequest"))
       setRefineWriteMode("newFileAndAddToList")
       return
@@ -186,7 +221,7 @@ export function OutlineGeneratorDialog({
   }, [isContinueMode, mode, open, t])
 
   useEffect(() => {
-    if (!open || !isRefineMode || !project) {
+    if (!open || mode !== "refine" || !project) {
       setCheckingOutline(false)
       if (!project) {
         setCanRefine(false)
@@ -215,7 +250,7 @@ export function OutlineGeneratorDialog({
     return () => {
       cancelled = true
     }
-  }, [dataVersion, isRefineMode, open, project])
+  }, [dataVersion, mode, open, project])
 
   useEffect(() => {
     if (!open || !isRefineMode || !project) {
@@ -328,7 +363,7 @@ export function OutlineGeneratorDialog({
   }
 
   async function handleRefineGenerate() {
-    if (!project || taskGenerating || checkingOutline || !canRefine) return
+    if (!project || taskGenerating || checkingOutline || !canRunRefinement) return
     setError(null)
     setRefineResult(null)
 
@@ -380,6 +415,7 @@ export function OutlineGeneratorDialog({
         displayTitle: currentSection?.title ?? t(isContinueMode ? "novel.outlineGenerator.continueTitle" : "novel.outlineGenerator.refineTitle"),
         writeMode: refineWriteMode,
         targetPath: refineWriteMode === "appendCurrent" ? selectedFile : null,
+        requireOutline: !(isContinueMode && hasSelectedReferenceFiles),
       })
       updateTask(taskId, {
         status: "generating",
@@ -389,6 +425,79 @@ export function OutlineGeneratorDialog({
         error: null,
       })
       void runOutlineRefinementTask(taskId, llmConfig)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function buildSelectedChapterMemory(): Promise<string> {
+    if (!project) return ""
+    const selectedEntries = chapterFiles.filter((file) => selectedChapterFiles.has(file.path))
+    const chunks = await Promise.all(
+      selectedEntries.map(async (file) => {
+        try {
+          const content = await readFile(file.path)
+          const parsed = parseFrontmatter(content)
+          const meta = parsed.frontmatter ? parseChapterMeta(parsed.frontmatter as Record<string, unknown>) : null
+          const snapshot = meta ? await loadSnapshot(project.path, meta.chapterNumber) : null
+          if (snapshot) return formatChapterMemory(snapshot, file.title)
+          return [
+            `## ${file.title}`,
+            "### 章节记忆",
+            "未找到该章节的结构化记忆快照，以下仅提供章节正文片段作为灵感参考。",
+            "",
+            excerptText(parsed.body || content),
+          ].join("\n")
+        } catch {
+          return `## ${file.title}\n### 章节记忆\n读取失败`
+        }
+      }),
+    )
+    return chunks.join("\n\n---\n\n")
+  }
+
+  async function buildSelectedOutlineContext(): Promise<string> {
+    const selectedFileEntries = outlineFiles.filter((file) => selectedOutlineFiles.has(file.path))
+    if (selectedFileEntries.length === 0) return ""
+    const chunks = await Promise.all(
+      selectedFileEntries.map(async (file) => {
+        try {
+          const content = await readFile(file.path)
+          return `## ${file.title}\n${content}`
+        } catch {
+          return `## ${file.title}\n（读取失败）`
+        }
+      }),
+    )
+    return chunks.join("\n\n")
+  }
+
+  async function handleContinueGenerate() {
+    if (!project || taskGenerating || selectedChapterFiles.size === 0) return
+    setError(null)
+    setRefineResult(null)
+
+    try {
+      const [selectedChapterMemory, selectedOutlineContext] = await Promise.all([
+        buildSelectedChapterMemory(),
+        buildSelectedOutlineContext(),
+      ])
+      const taskId = createTask({
+        projectPath: project.path,
+        kind: "continue",
+        userRequest: refineRequest.trim(),
+        selectedChapterMemory,
+        selectedOutlineContext,
+        displayTitle: t("novel.outlineGenerator.continueTitle"),
+        writeMode: refineWriteMode,
+        targetPath: refineWriteMode === "appendCurrent" ? selectedFile : null,
+      })
+      updateTask(taskId, {
+        status: "generating",
+        message: t("novel.outlineGenerator.continuing"),
+        error: null,
+      })
+      void runOutlineContinuationTask(taskId, llmConfig)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -528,12 +637,18 @@ export function OutlineGeneratorDialog({
                   </div>
                 ) : null}
 
-                {!checkingOutline && !canRefine && (
+                {!checkingOutline && mode === "refine" && !canRunRefinement && (
                   <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                     <div className="font-medium">{t("novel.outlineGenerator.refineMissingOutline")}</div>
                     <div className="mt-1">{t("novel.outlineGenerator.refineMissingOutlineHint")}</div>
                   </div>
                 )}
+
+                {isContinueMode && selectedChapterFiles.size === 0 ? (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    {t("novel.outlineGenerator.continueNeedChapters")}
+                  </div>
+                ) : null}
 
                 <div className="rounded-md border border-border/70 p-2 text-xs">
                   <div className="mb-2 font-medium text-foreground">{t("novel.outlineGenerator.refineWriteModeLabel")}</div>
@@ -566,26 +681,25 @@ export function OutlineGeneratorDialog({
                   ) : null}
                 </div>
 
-                <div className="grid grid-cols-2 gap-1.5">
-                  {OUTLINE_SECTION_GENERATION_CONFIGS.map((config) => (
-                    <Button
-                      key={config.key}
-                      type="button"
-                      size="sm"
-                      variant={selectedSectionKey === config.key ? "default" : "outline"}
-                      onClick={() => {
-                        if (isContinueMode) return
-                        setSelectedSectionKey((current) => current === config.key ? null : config.key)
-                      }}
-                      disabled={isContinueMode || taskGenerating || checkingOutline || !canRefine}
-                      className="text-xs h-7"
-                    >
-                      {config.title}
-                    </Button>
-                  ))}
-                </div>
+                {!isContinueMode ? (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {OUTLINE_SECTION_GENERATION_CONFIGS.map((config) => (
+                      <Button
+                        key={config.key}
+                        type="button"
+                        size="sm"
+                        variant={selectedSectionKey === config.key ? "default" : "outline"}
+                        onClick={() => setSelectedSectionKey((current) => current === config.key ? null : config.key)}
+                        disabled={taskGenerating || checkingOutline || !canRefine}
+                        className="text-xs h-7"
+                      >
+                        {config.title}
+                      </Button>
+                    ))}
+                  </div>
+                ) : null}
 
-                {selectedSectionConfig ? (
+                {selectedSectionConfig && !isContinueMode ? (
                   <div className="rounded-md border border-primary/20 bg-primary/5 px-2 py-1.5 text-[11px] text-primary">
                     {t("novel.outlineGenerator.sectionGeneratingHint", { title: selectedSectionConfig.title })}
                   </div>
@@ -651,7 +765,7 @@ export function OutlineGeneratorDialog({
                           className="text-[10px] text-primary hover:underline"
                           onClick={() => setSelectedChapterFiles(new Set(chapterFiles.map((f) => f.path)))}
                         >
-                          全选
+                          最近十章
                         </button>
                         <button
                           type="button"
@@ -765,7 +879,10 @@ export function OutlineGeneratorDialog({
               </Button>
             )
           ) : (
-            <Button onClick={handleRefineGenerate} disabled={taskGenerating || checkingOutline || !canRefine}>
+            <Button
+              onClick={isContinueMode ? handleContinueGenerate : handleRefineGenerate}
+              disabled={taskGenerating || checkingOutline || (isContinueMode ? !canRunContinuation : !canRunRefinement)}
+            >
               {taskGenerating ? (
                 <>
                   <Loader2 className="mr-1 h-4 w-4 animate-spin" />

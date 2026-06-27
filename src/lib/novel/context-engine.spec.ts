@@ -18,6 +18,8 @@ const basePack: ContextPack = {
   recentSummaries: [],
   previousChapterEnding: "",
   characterStates: "",
+  characterAppearance: "",
+  femaleCharacterEvents: "",
   soulDoc: "",
   characterAuras: "",
   cognitionStates: "",

@@ -1,7 +1,7 @@
 import { create } from "zustand"
 
 export type OutlineTaskStatus = "generating" | "generated" | "ingesting" | "done" | "error"
-export type OutlineTaskKind = "outline" | "refine" | "ingest"
+export type OutlineTaskKind = "outline" | "refine" | "continue" | "ingest"
 
 export interface OutlineGenerationTask {
   id: string
@@ -12,10 +12,13 @@ export interface OutlineGenerationTask {
   premise: string
   prompt: string
   userRequest: string
+  selectedChapterMemory: string
+  selectedOutlineContext: string
   selectedSectionKey: string | null
   displayTitle: string | null
   writeMode: string | null
   targetPath: string | null
+  requireOutline: boolean
   outlinePath: string | null
   status: OutlineTaskStatus
   message: string
@@ -32,10 +35,13 @@ interface CreateOutlineTaskInput {
   premise?: string
   prompt?: string
   userRequest?: string
+  selectedChapterMemory?: string
+  selectedOutlineContext?: string
   selectedSectionKey?: string | null
   displayTitle?: string | null
   writeMode?: string | null
   targetPath?: string | null
+  requireOutline?: boolean
   outlinePath?: string | null
   status?: OutlineTaskStatus
   message?: string
@@ -72,10 +78,13 @@ export const useOutlineGenerationStore = create<OutlineGenerationState>((set) =>
           premise: input.premise ?? "",
           prompt: input.prompt ?? "",
           userRequest: input.userRequest ?? "",
+          selectedChapterMemory: input.selectedChapterMemory ?? "",
+          selectedOutlineContext: input.selectedOutlineContext ?? "",
           selectedSectionKey: input.selectedSectionKey ?? null,
           displayTitle: input.displayTitle ?? null,
           writeMode: input.writeMode ?? null,
           targetPath: input.targetPath ?? null,
+          requireOutline: input.requireOutline ?? true,
           outlinePath: input.outlinePath ?? null,
           status: input.status ?? "generating",
           message: input.message ?? "",

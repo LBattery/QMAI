@@ -29,7 +29,6 @@ import type { FileNode } from "@/types/wiki"
 import { normalizePath } from "@/lib/path-utils"
 import { getHttpFetch, isFetchNetworkError } from "@/lib/tauri-fetch"
 import { chunkMarkdown, type Chunk } from "@/lib/text-chunker"
-import { isTauri } from "@/lib/platform"
 
 // ── Error surfacing ──────────────────────────────────────────────────────
 

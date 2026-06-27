@@ -80,6 +80,10 @@ export function OutlineActionToolbar({
           <MessageSquare className="mr-1 h-4 w-4" />
           AI大纲
         </Button>
+        <Button size="sm" variant="outline" onClick={() => openOutlineDialog("continue")}>
+          <Sparkles className="mr-1 h-4 w-4" />
+          {t("novel.outlineGenerator.continueTitle")}
+        </Button>
         <Button size="sm" variant="outline" onClick={() => openOutlineDialog("refine")}>
           {t("novel.outlineGenerator.refineTitle")}
         </Button>

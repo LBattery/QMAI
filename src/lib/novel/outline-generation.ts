@@ -35,6 +35,12 @@ export interface OutlineRefinementResult {
   writtenPaths: string[]
 }
 
+export interface OutlineContinuationInput {
+  userRequest: string
+  selectedChapterMemory: string
+  selectedOutlineContext?: string
+}
+
 export type OutlineRefinementWriteMode =
   | "replaceDefault"
   | "appendCurrent"
@@ -43,6 +49,7 @@ export type OutlineRefinementWriteMode =
 export interface OutlineRefinementWriteOptions {
   mode?: OutlineRefinementWriteMode
   targetPath?: string | null
+  requireOutline?: boolean
 }
 
 export const OUTLINE_SECTION_GENERATION_CONFIGS: OutlineSectionGenerationConfig[] = [
@@ -104,6 +111,10 @@ function getOutlineSectionFileName(config: OutlineSectionGenerationConfig): stri
 
 function getStoryOutlineFileName(): string {
   return useEnglishOutlineNames() ? "story-outline.md" : "总大纲.md"
+}
+
+function getContinuationOutlineFileName(): string {
+  return useEnglishOutlineNames() ? "continuation-inspiration.md" : "续写大纲.md"
 }
 
 function outlinePageMarkdown(title: string, content: string): string {
@@ -261,6 +272,56 @@ function buildSectionRefinementPrompt(
   ].join("\n")
 }
 
+function buildOutlineContinuationPrompt(
+  context: string,
+  input: OutlineContinuationInput,
+): string {
+  return [
+    "你是长篇小说的剧情策划顾问。本次任务不是细化设定文件，也不是重写已有大纲，而是基于用户选中的章节记忆，为后续故事发展提供可直接启发创作的续写大纲与剧情灵感。",
+    "",
+    "核心目标：",
+    "1. 承接选中章节的结尾钩子、人物状态、角色认知、伏笔、冲突和时间线，推演后续剧情可能性。",
+    "2. 给作者提供灵感，而不是替作者锁死唯一走向；允许提出多个分支，但每个分支都要能落回现有正史。",
+    "3. 优先生成后续 5-8 章的剧情推进方案，也可以补充中期转折、危机升级和回收伏笔的建议。",
+    "4. 不写正文，不输出 JSON，不输出代码块，只输出 Markdown。",
+    "",
+    "硬性约束：",
+    "1. 选中章节记忆是本次最高优先级，不能推翻其中的人物状态、认知边界、时间线和已发生事件。",
+    "2. 可以提出新冲突、新误会、新选择和新线索，但必须说明它们如何从已发生剧情自然生长出来。",
+    "3. 不要把后续剧情写成流水账；每一章都要有目标、冲突、转折和结尾牵引。",
+    "4. 如果信息不足，请明确标注“可选补完”，不要伪造已经发生的正史。",
+    "",
+    "输出结构：",
+    "## 当前剧情抓手",
+    "- 从选中章节记忆中提炼 5-8 个最值得承接的剧情抓手。",
+    "",
+    "## 后续剧情主推方案",
+    "- 给出后续 5-8 章章节灵感，每章包含：章节目标、核心事件、主要冲突、人物状态变化、伏笔推进/回收、时间线位置、结尾钩子。",
+    "",
+    "## 可选剧情分支",
+    "- 给出 2-3 条不同走向，说明优点、风险和推荐程度。",
+    "",
+    "## 伏笔与情绪回收建议",
+    "- 列出近期应推进、暂缓、回收或反转的伏笔和情绪线。",
+    "",
+    "## 写作提醒",
+    "- 标出最容易写崩的认知边界、人物状态和时间线风险。",
+    "",
+    "项目上下文：",
+    context || "当前暂无额外项目上下文，请主要依据选中章节记忆生成灵感。",
+    "",
+    input.selectedOutlineContext?.trim()
+      ? `用户选中的大纲参考：\n${input.selectedOutlineContext.trim()}`
+      : "",
+    "",
+    "用户选中的章节记忆：",
+    input.selectedChapterMemory.trim() || "未提供选中章节记忆。",
+    "",
+    "用户补充要求：",
+    input.userRequest.trim() || "未额外指定，请基于选中章节记忆提供后续故事灵感。",
+  ].filter((part) => part !== "").join("\n")
+}
+
 async function streamOutlineSectionContent(
   llmConfig: LlmConfig,
   context: string,
@@ -352,7 +413,7 @@ export async function generateOutlineRefinementSectionFile(
   }
 
   const { context, hasOutline } = await buildOutlineRefinementContext(pp, userRequest)
-  if (!hasOutline) {
+  if (!hasOutline && writeOptions.requireOutline !== false) {
     throw new Error(i18n.t("novel.outlineGenerator.refineMissingOutline"))
   }
 
@@ -375,7 +436,7 @@ export async function generateOutlineRefinementFiles(
 ): Promise<OutlineRefinementResult> {
   const pp = normalizePath(projectPath)
   const { context, hasOutline } = await buildOutlineRefinementContext(pp, userRequest)
-  if (!hasOutline) {
+  if (!hasOutline && writeOptions.requireOutline !== false) {
     throw new Error(i18n.t("novel.outlineGenerator.refineMissingOutline"))
   }
 
@@ -449,6 +510,71 @@ export async function generateOutlineFile(
   return { outlinePath, content }
 }
 
+async function writeOutlineContinuationFile(
+  projectPath: string,
+  content: string,
+  options: OutlineRefinementWriteOptions = {},
+): Promise<string> {
+  const pp = normalizePath(projectPath)
+  const title = useEnglishOutlineNames() ? "Continuation Inspiration" : "续写大纲"
+
+  if (options.mode === "appendCurrent" && options.targetPath) {
+    const targetPath = normalizePath(options.targetPath)
+    const existing = await readFile(targetPath).catch(() => "")
+    const appended = [
+      existing.trimEnd(),
+      "",
+      "---",
+      "",
+      `## ${title}`,
+      "",
+      content.trim(),
+      "",
+    ].filter((part, index) => index > 0 || part).join("\n")
+    await writeFile(targetPath, appended)
+    return targetPath
+  }
+
+  const outlinesDir = `${pp}/wiki/outlines`
+  await createDirectory(outlinesDir)
+  const outlinePath = options.mode === "newFileAndAddToList"
+    ? await getUniqueOutlinePath(outlinesDir, getContinuationOutlineFileName())
+    : `${outlinesDir}/${getContinuationOutlineFileName()}`
+  await writeFile(outlinePath, outlinePageMarkdown(title, content))
+  if (options.mode === "newFileAndAddToList") {
+    await addOutlineFileToSourceList(pp, outlinePath)
+  }
+  return outlinePath
+}
+
+export async function generateOutlineContinuationFile(
+  projectPath: string,
+  llmConfig: LlmConfig,
+  input: OutlineContinuationInput,
+  writeOptions: OutlineRefinementWriteOptions = {},
+  signal?: AbortSignal,
+): Promise<string> {
+  const pp = normalizePath(projectPath)
+  const { context } = await buildOutlineRefinementContext(pp, input.userRequest)
+  const prompt = buildOutlineContinuationPrompt(context, input)
+  let content = ""
+  let streamError: Error | null = null
+
+  await streamChat(llmConfig, [{ role: "user", content: prompt }], {
+    onToken: (token) => {
+      content += token
+    },
+    onDone: () => {},
+    onError: (err) => {
+      streamError = err
+    },
+  }, signal)
+
+  if (streamError) throw streamError
+  if (!content.trim()) throw new Error(i18n.t("novel.outlineGenerator.continueEmpty"))
+  return writeOutlineContinuationFile(pp, content, writeOptions)
+}
+
 export async function runOutlineGenerationTask(taskId: string, llmConfig: LlmConfig): Promise<void> {
   const task = useOutlineGenerationStore.getState().tasks.find((item) => item.id === taskId)
   if (!task) return
@@ -519,6 +645,7 @@ export async function runOutlineRefinementTask(taskId: string, llmConfig: LlmCon
         {
           mode: (task.writeMode as OutlineRefinementWriteMode | null) ?? undefined,
           targetPath: task.targetPath,
+          requireOutline: task.requireOutline,
         },
         abortController.signal,
       )
@@ -530,6 +657,7 @@ export async function runOutlineRefinementTask(taskId: string, llmConfig: LlmCon
         {
           mode: (task.writeMode as OutlineRefinementWriteMode | null) ?? undefined,
           targetPath: task.targetPath,
+          requireOutline: task.requireOutline,
         },
         abortController.signal,
       )
@@ -566,6 +694,65 @@ export async function runOutlineRefinementTask(taskId: string, llmConfig: LlmCon
       total: 100,
       currentTitle: "",
       message: `细化生成失败: ${message}`,
+    })
+  }
+}
+
+export async function runOutlineContinuationTask(taskId: string, llmConfig: LlmConfig): Promise<void> {
+  const task = useOutlineGenerationStore.getState().tasks.find((item) => item.id === taskId)
+  if (!task) return
+
+  const abortController = new AbortController()
+  const progressTaskId = useImportProgressStore.getState().startTask({
+    projectPath: task.projectPath,
+    kind: "outline_refinement",
+    total: 100,
+    currentTitle: task.displayTitle || i18n.t("novel.outlineGenerator.continueTitle"),
+    message: i18n.t("novel.outlineGenerator.continuing"),
+    abortController,
+  })
+
+  try {
+    const outlinePath = await generateOutlineContinuationFile(
+      task.projectPath,
+      llmConfig,
+      {
+        userRequest: task.userRequest,
+        selectedChapterMemory: task.selectedChapterMemory,
+        selectedOutlineContext: task.selectedOutlineContext,
+      },
+      {
+        mode: (task.writeMode as OutlineRefinementWriteMode | null) ?? undefined,
+        targetPath: task.targetPath,
+      },
+      abortController.signal,
+    )
+
+    await refreshProjectState(task.projectPath)
+    useOutlineGenerationStore.getState().updateTask(taskId, {
+      status: "generated",
+      outlinePath,
+      message: i18n.t("novel.outlineGenerator.continueGenerated"),
+      error: null,
+    })
+    useImportProgressStore.getState().finishTask(progressTaskId, "done", {
+      completed: 100,
+      total: 100,
+      currentTitle: "",
+      message: i18n.t("novel.outlineGenerator.continueGenerated"),
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    useOutlineGenerationStore.getState().updateTask(taskId, {
+      status: "error",
+      error: message,
+      message,
+    })
+    useImportProgressStore.getState().finishTask(progressTaskId, "error", {
+      completed: 0,
+      total: 100,
+      currentTitle: "",
+      message: i18n.t("novel.outlineGenerator.continueFailed", { message }),
     })
   }
 }
