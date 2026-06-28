@@ -19,7 +19,7 @@ import { readFile, writeFile, createDirectory, deleteFile } from "@/commands/fs"
 import { searchWiki, tokenizeQuery } from "@/lib/search"
 import { detectLastGeneratedChapterNumber, findChapterFileByNumber, getNextChapterNumber, readSelectedChapterNumberForFile, resolveTargetChapterNumberForChat } from "@/lib/novel/chapter-utils"
 import { buildQmQuaiSystemPrompt, injectDeAiDirective } from "@/lib/novel/de-ai-adapter"
-import { cleanGeneratedChapterContentForSave } from "@/lib/novel/chapter-content-cleanup"
+import { cleanGeneratedChapterContentWithTitle } from "@/lib/novel/chapter-content-cleanup"
 import { normalizePath, getFileName, getRelativePath } from "@/lib/path-utils"
 import { refreshProjectState } from "@/lib/project-refresh"
 import { getOutputLanguage, buildLanguageReminder } from "@/lib/output-language"
@@ -231,7 +231,9 @@ export function ChatPanel() {
     setIsSavingChapter(true)
     setChapterSaveStatus("")
     try {
-      const cleanedContent = cleanGeneratedChapterContentForSave(getCopyableAssistantContent(content))
+      const { content: cleanedContent, title: extractedTitle } = cleanGeneratedChapterContentWithTitle(
+        getCopyableAssistantContent(content),
+      )
       const selectedChapterNumber = await readSelectedChapterNumberForFile(selectedFile)
       const generatedTargetChapterNumber = detectGeneratedTargetChapterNumber(cleanedContent)
       const explicitTargetPath = generatedTargetChapterNumber ? await findChapterFileByNumber(pp, generatedTargetChapterNumber) : null
@@ -243,7 +245,14 @@ export function ChatPanel() {
       })
 
       const buildDraftContent = (chapterNumber: number) => {
-        const chapterTitle = `第${chapterNumber}章`
+        const titleText = extractedTitle
+          ?.replace(/^第\s*\d+\s*章\s*[：:\s]*/, "")
+          .trim()
+        const chapterTitle = titleText ? `第${chapterNumber}章 ${titleText}` : `第${chapterNumber}章`
+        const bodyContent = cleanedContent
+          .replace(/^#{1,6}\s*第\s*\d+\s*章[^\n]*(?:\n|$)/, "")
+          .replace(/^第\s*\d+\s*章[^\n]*(?:\n|$)/, "")
+          .trimStart()
         const now = new Date().toISOString().slice(0, 10)
         const frontmatter = [
           "---",
@@ -255,7 +264,7 @@ export function ChatPanel() {
           "---",
           "",
         ].join("\n")
-        return `${frontmatter}# ${chapterTitle}\n\n${cleanedContent}\n`
+        return `${frontmatter}# ${chapterTitle}\n\n${bodyContent || cleanedContent}\n`
       }
 
       if (strategy.action === "direct_explicit_target_new") {

@@ -24,6 +24,7 @@ import { resolveConfig } from "@/components/settings/preset-resolver"
 import { loadEnvLlmDefault } from "@/lib/env-llm-defaults"
 import { toast } from "@/lib/toast"
 import type { WikiProject } from "@/types/wiki"
+import { applyTheme, watchSystemTheme } from "@/lib/theme-utils"
 
 function App() {
   const project = useWikiStore((s) => s.project)
@@ -63,15 +64,9 @@ function App() {
       try {
         // 先加载和应用主题
         const savedTheme = await loadTheme()
-        if (savedTheme !== null) {
-          useWikiStore.getState().setTheme(savedTheme)
-          document.documentElement.classList.remove("dark", "deep-blue")
-          if (savedTheme === "dark") {
-            document.documentElement.classList.add("dark")
-          } else if (savedTheme === "deep-blue") {
-            document.documentElement.classList.add("deep-blue")
-          }
-        }
+        const themeToUse = savedTheme ?? "system"
+        useWikiStore.getState().setTheme(themeToUse)
+        applyTheme(themeToUse)
 
         const envLlmDefault = loadEnvLlmDefault()
         const savedConfig = await loadLlmConfig()
@@ -161,6 +156,13 @@ function App() {
     }
     init()
   }, [])
+
+  const theme = useWikiStore((s) => s.theme)
+  useEffect(() => {
+    applyTheme(theme)
+    if (theme !== "system") return
+    return watchSystemTheme(() => applyTheme("system"))
+  }, [theme])
 
   useEffect(() => {
     const title = formatAppTitle(project?.name)

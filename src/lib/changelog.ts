@@ -78,6 +78,29 @@ const TWO_POINT_TWO_ELEVEN_CHANGELOG: ChangelogEntry = {
   },
 }
 
+const TWO_POINT_TWO_TWENTY_FOUR_WEB_CHANGELOG: ChangelogEntry = {
+  version: "2.2.24",
+  date: "2026-06-26",
+  highlights: {
+    en: [
+      "Web branch sync: kept browser filesystem, clip, and HTTP server adapters while porting safe upstream fixes.",
+      "LLM streaming is more robust: decoder state is per request, abort listeners are cleaned up, and stuck requests keep clearer timeout behavior.",
+      "Saving AI chat output as a chapter now preserves a generated chapter title when the model returned one.",
+      "Trash deletion now tolerates stale file-tree entries whose original file has already disappeared.",
+      "Backup import refreshes the currently opened project when restored files affect it.",
+      "Added a system theme option that follows the operating system light/dark preference.",
+    ],
+    zh: [
+      "Web 分支同步：保留浏览器文件系统、剪藏和 HTTP 服务适配，同时迁入可安全落地的上游修复。",
+      "LLM 流式请求更稳：解码器状态按请求隔离，取消监听会被清理，卡住的请求保留更清晰的超时处理。",
+      "AI 会话保存为章节时，如果模型返回了章节标题，会自动保留并写入章节标题。",
+      "回收站删除现在能容错文件树里的幽灵条目，即原文件已不存在时也不会中断。",
+      "备份导入影响当前打开项目时，会自动刷新当前项目。",
+      "新增跟随系统主题模式，可随操作系统浅色/深色偏好切换。",
+    ],
+  },
+}
+
 const TWO_POINT_TWO_TWENTY_TWO_CHANGELOG: ChangelogEntry = {
   version: "2.2.22",
   date: "2026-06-23",
@@ -517,6 +540,7 @@ export const CHANGELOG: ChangelogEntry[] = [
 ]
 
 export function currentVersionChangelog(version: string): ChangelogEntry[] {
+  if (version === TWO_POINT_TWO_TWENTY_FOUR_WEB_CHANGELOG.version) return [TWO_POINT_TWO_TWENTY_FOUR_WEB_CHANGELOG]
   if (version === TWO_POINT_TWO_TWENTY_TWO_CHANGELOG.version) return [TWO_POINT_TWO_TWENTY_TWO_CHANGELOG]
   if (version === TWO_POINT_TWO_TWENTY_CHANGELOG.version) return [TWO_POINT_TWO_TWENTY_CHANGELOG]
   if (version === TWO_POINT_TWO_NINETEEN_CHANGELOG.version) return [TWO_POINT_TWO_NINETEEN_CHANGELOG]
@@ -543,6 +567,7 @@ export function currentVersionChangelog(version: string): ChangelogEntry[] {
 
 export function allChangelog(): ChangelogEntry[] {
   return [
+    TWO_POINT_TWO_TWENTY_FOUR_WEB_CHANGELOG,
     TWO_POINT_TWO_TWENTY_TWO_CHANGELOG,
     TWO_POINT_TWO_TWENTY_CHANGELOG,
     TWO_POINT_TWO_NINETEEN_CHANGELOG,

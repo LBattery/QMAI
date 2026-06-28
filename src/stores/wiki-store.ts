@@ -530,7 +530,7 @@ interface WikiState {
   finalChapterSave: FinalChapterSaveState | null
   lintRun: LintRunState | null
   reviewRun: ReviewRunState | null
-  theme: "light" | "dark" | "deep-blue"
+  theme: "light" | "dark" | "deep-blue" | "system"
   uiFontSizeScale: number
   dataVersion: number
 
@@ -592,7 +592,7 @@ interface WikiState {
   setReviewRun: (reviewRun: ReviewRunState | null) => void
   finishReviewRun: (runId: string, reviewRun: ReviewRunFinishState) => void
   clearTransientTaskState: () => void
-  setTheme: (theme: "light" | "dark" | "deep-blue") => void
+  setTheme: (theme: "light" | "dark" | "deep-blue" | "system") => void
   setUiFontSizeScale: (scale: number) => void
   bumpDataVersion: () => void
 }

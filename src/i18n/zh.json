@@ -123,7 +123,8 @@
     "switch": "切换主题",
     "toDark": "切换到深色模式",
     "toDeepBlue": "切换到深蓝护眼模式",
-    "toLight": "切换到浅色模式"
+    "toLight": "切换到浅色模式",
+    "toSystem": "切换到跟随系统"
   },
   "iconSidebar": {
     "toggleSidebar": "展开或隐藏章节栏",

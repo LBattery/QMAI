@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next"
 import logoImg from "@/assets/QM-LOGO.png"
 import type { WikiState } from "@/stores/wiki-store"
 import { saveTheme } from "@/lib/project-store"
+import { applyTheme } from "@/lib/theme-utils"
 
 type NavView = WikiState["activeView"]
 
@@ -47,21 +48,14 @@ export function IconSidebar({ onToggleSidebar, onOpenSidebar, onSwitchProject }:
   const pendingCount = useReviewStore((s) => s.items.filter((i) => !i.resolved).length)
 
   const handleCycleTheme = () => {
-    const themes: ("light" | "dark" | "deep-blue")[] = ["light", "dark", "deep-blue"]
+    const themes: ("light" | "dark" | "deep-blue" | "system")[] = ["system", "light", "dark", "deep-blue"]
     const currentIndex = themes.indexOf(theme)
     const nextIndex = (currentIndex + 1) % themes.length
     const nextTheme = themes[nextIndex]
     
     setTheme(nextTheme)
     saveTheme(nextTheme)
-    
-    // 更新 html 类
-    document.documentElement.classList.remove("dark", "deep-blue")
-    if (nextTheme === "dark") {
-      document.documentElement.classList.add("dark")
-    } else if (nextTheme === "deep-blue") {
-      document.documentElement.classList.add("deep-blue")
-    }
+    applyTheme(nextTheme)
   }
 
   const getThemeIcon = () => {
@@ -69,15 +63,17 @@ export function IconSidebar({ onToggleSidebar, onOpenSidebar, onSwitchProject }:
       case "light": return <Sun className="h-5 w-5" />
       case "dark": return <Moon className="h-5 w-5" />
       case "deep-blue": return <Monitor className="h-5 w-5" />
+      case "system": return <ArrowLeftRight className="h-5 w-5" />
       default: return <Sun className="h-5 w-5" />
     }
   }
 
   const getThemeTooltip = () => {
     switch (theme) {
+      case "system": return t("theme.toLight")
       case "light": return t("theme.toDark")
       case "dark": return t("theme.toDeepBlue")
-      case "deep-blue": return t("theme.toLight")
+      case "deep-blue": return t("theme.toSystem")
       default: return t("theme.switch")
     }
   }

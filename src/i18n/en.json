@@ -231,7 +231,8 @@
     "switch": "Switch theme",
     "toDark": "Switch to dark mode",
     "toDeepBlue": "Switch to deep blue eye-care mode",
-    "toLight": "Switch to light mode"
+    "toLight": "Switch to light mode",
+    "toSystem": "Switch to system default"
   },
   "iconSidebar": {
     "toggleSidebar": "Expand or collapse chapter sidebar",

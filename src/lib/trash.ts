@@ -157,7 +157,12 @@ export async function moveFileToTrash(
   const name = getBaseName(normalizedPath)
   const id = makeTrashId(now)
   const trashPath = `${trashFilesDir(pp)}/${id}${getExtension(name)}`
-  const content = await readFile(normalizedPath)
+  let content: string
+  try {
+    content = await readFile(normalizedPath)
+  } catch {
+    content = ""
+  }
   await ensureTrashDirs(pp)
   await writeFile(trashPath, content)
   const item: TrashItem = {
@@ -171,7 +176,13 @@ export async function moveFileToTrash(
   }
   const items = await readTrashItems(pp)
   await writeTrashItems(pp, [item, ...items])
-  await deleteFile(normalizedPath)
+  try {
+    await deleteFile(normalizedPath)
+  } catch {
+    // The tree can contain stale entries after external deletion. Keep the
+    // trash index consistent even when the original file is already gone.
+  }
+
   return item
 }
 
