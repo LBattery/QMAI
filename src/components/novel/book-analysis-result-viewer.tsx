@@ -5,12 +5,13 @@
 
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { User, X, Plus, Feather } from "lucide-react"
+import { User, X, Plus, Feather, Merge } from "lucide-react"
 import { useBookAnalysisStore } from "@/stores/book-analysis-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { bindCharacterAura, listBindableNovelCharacters } from "@/lib/novel/character-aura"
 import { importBookAnalysisSkillsAsAuras, type ImportedBookAnalysisAura } from "@/lib/novel/book-analysis/aura-adapter"
 import { extractSingleCharacter } from "@/lib/novel/book-analysis/character-extraction-engine"
+import { mergeCharacters, persistMergedCharacter } from "@/lib/novel/book-analysis/character-merger"
 import { analyzeWritingStyle } from "@/lib/novel/book-analysis/style-extraction-engine"
 import { STYLE_DIMENSIONS } from "@/lib/novel/book-analysis/style-prompts"
 import { upsertWritingStylePreset, setEnabledWritingStyle, getEnabledWritingStyle } from "@/lib/novel/writing-style-store"
@@ -45,6 +46,11 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
   // feature/book-style-extraction：作品文风提取 / 启用
   const [styleExtracting, setStyleExtracting] = useState(false)
   const [styleEnabledSourceBook, setStyleEnabledSourceBook] = useState<string | null>(null)
+
+  // 角色合并状态
+  const [mergeDialogOpen, setMergeDialogOpen] = useState(false)
+  const [mergePrimaryId, setMergePrimaryId] = useState<string>("")
+  const [mergeMerging, setMergeMerging] = useState(false)
 
   const currentProject = useWikiStore((s) => s.project)
   const tasks = useBookAnalysisStore((s) => s.tasks)
@@ -426,6 +432,59 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
     setSelectedNovelCharacterIds(new Set())
   }
 
+  const handleMergeCharacters = async () => {
+    if (!currentProject?.path || !effectiveResult || mergeMerging) return
+    const selectedChars = characters.filter((c) => selectedCharacterIds.has(c.id))
+    if (selectedChars.length < 2) return
+
+    const primary = selectedChars.find((c) => c.id === mergePrimaryId)
+    if (!primary) {
+      toast.error("请选择主角色")
+      return
+    }
+    const others = selectedChars.filter((c) => c.id !== mergePrimaryId)
+
+    setMergeMerging(true)
+    try {
+      // 1. 纯逻辑合并
+      const merged = mergeCharacters(primary, others)
+
+      // 2. 持久化到磁盘
+      const bookId = task?.bookId
+      const bookPath = joinPath(currentProject.path, "book-analysis", bookId ?? "unknown")
+      await persistMergedCharacter(bookPath, merged, others, bookTitle)
+
+      // 3. 更新 store
+      const deletedIds = others.map((c) => c.id)
+      if (task) {
+        useBookAnalysisStore.getState().mergeCharactersInTask(task.id, merged, deletedIds)
+      }
+
+      // 4. 同步 currentResult 快照
+      const storeState = useBookAnalysisStore.getState()
+      if (storeState.currentResult) {
+        storeState.setCurrentResult({
+          ...storeState.currentResult,
+          characters: (storeState.currentResult.characters ?? [])
+            .filter((c) => !deletedIds.includes(c.id))
+            .map((c) => (c.id === merged.id ? merged : c)),
+        })
+      }
+
+      // 5. 清空选中状态 + 关闭对话框
+      setSelectedCharacterIds(new Set())
+      setSelectedCharacter((prev) => (prev?.id === merged.id ? merged : prev))
+      setMergeDialogOpen(false)
+      setMergePrimaryId("")
+
+      toast.success(`已将 ${others.map((c) => c.name).join("、")} 合并到「${merged.name}」`)
+    } catch (err) {
+      toast.error(`合并失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setMergeMerging(false)
+    }
+  }
+
   // feature/fix-viewer-ui：删 skills tab，连带删 handleReanalyzeSkill（已无调用点）
 
   const getCategoryLabel = (category: string) => {
@@ -621,6 +680,21 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
                           >
                             清空
                           </button>
+                          {selectedCharacterIds.size >= 2 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                // 默认选中第一个被选角色作为主角色
+                                const firstId = Array.from(selectedCharacterIds)[0]
+                                setMergePrimaryId(firstId)
+                                setMergeDialogOpen(true)
+                              }}
+                              className="rounded border px-2 py-0.5 text-primary hover:bg-primary/10"
+                            >
+                              <Merge className="h-3 w-3 inline-block mr-1" />
+                              合并
+                            </button>
+                          )}
                         </div>
                       </div>
                       {sortedCharacters.map((character) => {
@@ -911,6 +985,106 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
           <Button onClick={onClose}>关闭</Button>
         </div>
       </div>
+
+      {/* 角色合并确认对话框 */}
+      {mergeDialogOpen && (() => {
+        const selectedChars = characters.filter((c) => selectedCharacterIds.has(c.id))
+        const primary = selectedChars.find((c) => c.id === mergePrimaryId)
+        const others = selectedChars.filter((c) => c.id !== mergePrimaryId)
+        const previewAliases = primary
+          ? Array.from(new Set([
+              ...primary.aliases,
+              ...others.map((c) => c.name),
+              ...others.flatMap((c) => c.aliases),
+            ].filter((a) => a !== primary?.name)))
+          : []
+        return (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
+            <div className="bg-background rounded-lg shadow-lg w-full max-w-md mx-4 p-6 space-y-4">
+              <div className="flex items-center gap-2">
+                <Merge className="h-5 w-5 text-primary" />
+                <h3 className="text-lg font-semibold">合并角色</h3>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                选择一个主角色，其他角色将合并到此角色中（其他角色的名字会作为别名保留）。
+              </p>
+
+              <div className="space-y-2">
+                <div className="text-sm font-medium">选择主角色：</div>
+                {selectedChars.map((c) => (
+                  <label
+                    key={c.id}
+                    className={`flex items-center gap-3 rounded-md border p-3 cursor-pointer transition-colors ${
+                      mergePrimaryId === c.id
+                        ? "border-primary bg-primary/5"
+                        : "border-border hover:bg-muted"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="merge-primary"
+                      checked={mergePrimaryId === c.id}
+                      onChange={() => setMergePrimaryId(c.id)}
+                      className="accent-primary"
+                    />
+                    <div>
+                      <div className="font-medium">{c.name}</div>
+                      {c.aliases.length > 0 && (
+                        <div className="text-xs text-muted-foreground">
+                          别名：{c.aliases.join("、")}
+                        </div>
+                      )}
+                    </div>
+                  </label>
+                ))}
+              </div>
+
+              {primary && (
+                <div className="rounded-md bg-muted/30 p-3 text-sm space-y-1">
+                  <div className="font-medium">合并预览</div>
+                  <div className="text-muted-foreground">
+                    <span>角色名：</span>
+                    <span className="text-foreground">{primary.name}</span>
+                  </div>
+                  <div className="text-muted-foreground">
+                    <span>合并后别名：</span>
+                    <span className="text-foreground">
+                      {previewAliases.length > 0 ? previewAliases.join("、") : "（无）"}
+                    </span>
+                  </div>
+                  <div className="text-muted-foreground">
+                    <span>将被合并：</span>
+                    <span className="text-foreground">
+                      {others.map((c) => c.name).join("、")}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setMergeDialogOpen(false)
+                    setMergePrimaryId("")
+                  }}
+                  disabled={mergeMerging}
+                >
+                  取消
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleMergeCharacters}
+                  disabled={mergeMerging || !mergePrimaryId}
+                >
+                  {mergeMerging ? "合并中..." : "确认合并"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

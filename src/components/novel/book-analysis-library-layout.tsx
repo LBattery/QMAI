@@ -20,6 +20,8 @@ interface BookAnalysisLibraryLayoutProps {
   onAddSelectedSkillsToSoul: (skillId: string) => void
   onReextractCharacters: () => void
   onDeleteBook: (bookId: string) => void
+  /** 合并角色后的刷新回调 */
+  onAfterMerge?: () => void
 }
 
 export function BookAnalysisLibraryLayout({
@@ -35,6 +37,7 @@ export function BookAnalysisLibraryLayout({
   onToggleStyle,
   onAddSelectedSkillsToSoul,
   onReextractCharacters,
+  onAfterMerge,
 }: BookAnalysisLibraryLayoutProps) {
   const selectedBook = state.books.find((book) => book.id === selectedBookId) ?? state.books[0] ?? null
 
@@ -85,6 +88,7 @@ export function BookAnalysisLibraryLayout({
               addingToSoul={addingToSoul}
               onSelectCharacter={onSelectCharacter}
               onAddSelectedSkillsToSoul={onAddSelectedSkillsToSoul}
+              onAfterMerge={onAfterMerge}
             />
           </div>
         ) : (

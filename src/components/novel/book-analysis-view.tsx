@@ -359,6 +359,7 @@ export function BookAnalysisView() {
       onAddSelectedSkillsToSoul={handleLibraryAddSkillsToSoul}
       onReextractCharacters={handleLibraryReextractCharacters}
       onDeleteBook={(bookId) => handleLibraryDeleteBook(bookId, selectedBookId)}
+      onAfterMerge={reloadLibraryState}
     />
   )
 

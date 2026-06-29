@@ -35,6 +35,12 @@ export interface BookAnalysisState {
   updateTaskCharacters: (taskId: string, characters: ExtractedCharacter[]) => void
   updateTaskSkills: (taskId: string, skills: CharacterSkill[]) => void
   updateTaskStyleProfile: (taskId: string, styleProfile: BookStyleProfile) => void
+  /** 合并角色：移除 deletedIds 对应角色，替换为 merged 角色，同步更新 skills */
+  mergeCharactersInTask: (taskId: string, merged: ExtractedCharacter, deletedIds: string[]) => void
+  /** 更新单个角色（编辑后保存），如果名字变了则同步更新 skills 中的 characterName */
+  updateCharacterInTask: (taskId: string, updated: ExtractedCharacter) => void
+  /** 删除角色：从 task.characters 和 task.skills 中移除 */
+  deleteCharacterFromTask: (taskId: string, characterId: string) => void
   pauseTask: (taskId: string) => void
   resumeTask: (taskId: string) => void
   cancelTask: (taskId: string) => void
@@ -193,6 +199,50 @@ export const useBookAnalysisStore = create<BookAnalysisState>((set, get) => ({
           ? { ...task, styleProfile, updatedAt: Date.now() }
           : task
       ),
+    }))
+  },
+
+  mergeCharactersInTask: (taskId: string, merged: ExtractedCharacter, deletedIds: string[]) => {
+    const deletedSet = new Set(deletedIds)
+    set((state) => ({
+      tasks: state.tasks.map((task) => {
+        if (task.id !== taskId) return task
+        // 替换主角色，移除被合并角色
+        const updatedCharacters = task.characters
+          ?.filter((c) => !deletedSet.has(c.id))
+          .map((c) => (c.id === merged.id ? merged : c)) ?? [merged]
+        // 移除被合并角色的 skills
+        const updatedSkills = task.skills
+          ?.filter((s) => !deletedSet.has(s.characterId)) ?? []
+        return {
+          ...task,
+          characters: updatedCharacters,
+          skills: updatedSkills,
+          updatedAt: Date.now(),
+        }
+      }),
+    }))
+  },
+
+  updateCharacterInTask: (taskId: string, updated: ExtractedCharacter) => {
+    set((state) => ({
+      tasks: state.tasks.map((task) => {
+        if (task.id !== taskId) return task
+        const oldCharacter = task.characters?.find((c) => c.id === updated.id)
+        const nameChanged = oldCharacter && oldCharacter.name !== updated.name
+        return {
+          ...task,
+          characters: task.characters?.map((c) => (c.id === updated.id ? updated : c)),
+          skills: nameChanged
+            ? task.skills?.map((s) =>
+                s.characterId === updated.id
+                  ? { ...s, characterName: updated.name }
+                  : s,
+              )
+            : task.skills,
+          updatedAt: Date.now(),
+        }
+      }),
     }))
   },
 
