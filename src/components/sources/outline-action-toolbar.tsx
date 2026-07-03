@@ -1,11 +1,13 @@
 import { useCallback, useMemo, useState } from "react"
-import { Loader2, MessageSquare, Sparkles } from "lucide-react"
+import { Loader2, MessageSquare, Sparkles, Lightbulb, NotebookPen } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import { OutlineGeneratorDialog, type OutlineGeneratorMode } from "@/components/sources/outline-generator-dialog"
+import { InspirationDialog } from "@/components/sources/inspiration-dialog"
 import { runBulkOutlineIngest } from "@/lib/novel/outline-generation"
 import { cn } from "@/lib/utils"
 import { useOutlineGenerationStore } from "@/stores/outline-generation-store"
+import { useInspirationNotesStore } from "@/stores/inspiration-notes-store"
 import { useWikiStore } from "@/stores/wiki-store"
 
 interface OutlineActionToolbarProps {
@@ -24,9 +26,12 @@ export function OutlineActionToolbar({
   const setActiveView = useWikiStore((s) => s.setActiveView)
   const outlineTasks = useOutlineGenerationStore((s) => s.tasks)
   const setOutlineChatOpen = useOutlineGenerationStore((s) => s.setPanelOpen)
+  const setNotesPanelOpen = useInspirationNotesStore((s) => s.setPanelOpen)
+  const notesPanelOpen = useInspirationNotesStore((s) => s.panelOpen)
   const [outlineDialogOpen, setOutlineDialogOpen] = useState(false)
   const [outlineDialogMode, setOutlineDialogMode] = useState<OutlineGeneratorMode>("outline")
   const [bulkIngestRunning, setBulkIngestRunning] = useState(false)
+  const [inspirationOpen, setInspirationOpen] = useState(false)
 
   const bulkIngesting = useMemo(() => (
     project != null && outlineTasks.some((task) => (
@@ -46,9 +51,22 @@ export function OutlineActionToolbar({
       onToggleOutlineChat()
       return
     }
+    setNotesPanelOpen(false)
     setOutlineChatOpen(true)
     setActiveView("sources")
-  }, [onToggleOutlineChat, setActiveView, setOutlineChatOpen])
+  }, [onToggleOutlineChat, setActiveView, setOutlineChatOpen, setNotesPanelOpen])
+
+  const handleToggleNotes = useCallback(() => {
+    const nextOpen = !notesPanelOpen
+    setNotesPanelOpen(nextOpen)
+    if (nextOpen) {
+      // The dock slot can only host one panel — close the outline chat
+      // when the notes panel opens, and surface the outline page so the
+      // docked panel is visible.
+      setOutlineChatOpen(false)
+      setActiveView("sources")
+    }
+  }, [notesPanelOpen, setNotesPanelOpen, setOutlineChatOpen, setActiveView])
 
   const handleBulkIngest = useCallback(async () => {
     if (!project || bulkIngestRunning || bulkIngesting) return
@@ -84,6 +102,14 @@ export function OutlineActionToolbar({
           <Sparkles className="mr-1 h-4 w-4" />
           {t("novel.outlineGenerator.continueTitle")}
         </Button>
+        <Button size="sm" variant="outline" onClick={() => setInspirationOpen(true)}>
+          <Lightbulb className="mr-1 h-4 w-4" />
+          {t("novel.inspiration.button")}
+        </Button>
+        <Button size="sm" variant="outline" onClick={handleToggleNotes}>
+          <NotebookPen className="mr-1 h-4 w-4" />
+          {t("novel.inspirationNotes.button")}
+        </Button>
         <Button size="sm" variant="outline" onClick={() => openOutlineDialog("refine")}>
           {t("novel.outlineGenerator.refineTitle")}
         </Button>
@@ -103,6 +129,10 @@ export function OutlineActionToolbar({
         open={outlineDialogOpen}
         onOpenChange={setOutlineDialogOpen}
         mode={outlineDialogMode}
+      />
+      <InspirationDialog
+        open={inspirationOpen}
+        onOpenChange={setInspirationOpen}
       />
     </>
   )

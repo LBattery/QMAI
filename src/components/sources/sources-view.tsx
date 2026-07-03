@@ -5,10 +5,16 @@ import { OutlineActionToolbar } from "@/components/sources/outline-action-toolba
 import { PreviewPanel } from "@/components/layout/preview-panel"
 import { clampChatHeight, clampChatWidth } from "@/lib/workspace-layout"
 import { useOutlineGenerationStore } from "@/stores/outline-generation-store"
+import { useInspirationNotesStore } from "@/stores/inspiration-notes-store"
 
 const OutlineChatPanel = lazy(async () => {
   const mod = await import("@/components/sources/outline-chat-panel")
   return { default: mod.OutlineChatPanel }
+})
+
+const InspirationNotesPanel = lazy(async () => {
+  const mod = await import("@/components/sources/inspiration-notes-panel")
+  return { default: mod.InspirationNotesPanel }
 })
 
 export function SourcesView() {
@@ -17,12 +23,23 @@ export function SourcesView() {
   const chatDockPosition = useWikiStore((s) => s.chatDockPosition)
   const outlineChatOpen = useOutlineGenerationStore((s) => s.panelOpen)
   const setOutlineChatOpen = useOutlineGenerationStore((s) => s.setPanelOpen)
+  const notesPanelOpen = useInspirationNotesStore((s) => s.panelOpen)
+  const setNotesPanelOpen = useInspirationNotesStore((s) => s.setPanelOpen)
   const [chatHeight, setChatHeight] = useState(300)
   const [chatWidth, setChatWidth] = useState(360)
   const [bulkIngestResult, setBulkIngestResult] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const resizingRef = useRef(false)
   const horizontalResizingRef = useRef(false)
+
+  // The dock slot is shared by the outline chat and the inspiration notes
+  // panel. The toolbar guarantees mutual exclusion when toggling, but we
+  // also guard here so only one ever renders — notes take precedence.
+  const dockPanel: "outlineChat" | "notes" | null = notesPanelOpen && novelMode
+    ? "notes"
+    : outlineChatOpen && novelMode
+      ? "outlineChat"
+      : null
 
   const startResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -94,7 +111,7 @@ export function SourcesView() {
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        {outlineChatOpen && novelMode && chatDockPosition === "right" ? (
+        {dockPanel && chatDockPosition === "right" ? (
           <div className="flex h-full min-h-0 overflow-hidden">
             <div className="min-w-0 flex-1 overflow-hidden">
               <PreviewPanel />
@@ -105,7 +122,11 @@ export function SourcesView() {
             />
             <div className="h-full min-h-0 shrink-0 overflow-hidden border-l bg-background" style={{ width: chatWidth }}>
               <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading...</div>}>
-                <OutlineChatPanel onClose={() => setOutlineChatOpen(false)} />
+                {dockPanel === "notes" ? (
+                  <InspirationNotesPanel onClose={() => setNotesPanelOpen(false)} />
+                ) : (
+                  <OutlineChatPanel onClose={() => setOutlineChatOpen(false)} />
+                )}
               </Suspense>
             </div>
           </div>
@@ -114,7 +135,7 @@ export function SourcesView() {
         )}
       </div>
 
-      {outlineChatOpen && novelMode && chatDockPosition === "bottom" ? (
+      {dockPanel && chatDockPosition === "bottom" ? (
         <>
           <div
             className="h-1.5 shrink-0 cursor-row-resize bg-border/40 transition-colors hover:bg-primary/30 active:bg-primary/40"
@@ -122,7 +143,11 @@ export function SourcesView() {
           />
           <div className="shrink-0 overflow-hidden border-t bg-background" style={{ height: chatHeight }}>
             <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading...</div>}>
-              <OutlineChatPanel onClose={() => setOutlineChatOpen(false)} />
+              {dockPanel === "notes" ? (
+                <InspirationNotesPanel onClose={() => setNotesPanelOpen(false)} />
+              ) : (
+                <OutlineChatPanel onClose={() => setOutlineChatOpen(false)} />
+              )}
             </Suspense>
           </div>
         </>
