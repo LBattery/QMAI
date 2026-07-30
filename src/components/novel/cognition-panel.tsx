@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+﻿import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { X, RefreshCw } from "lucide-react"
 import { loadCognitionState, type CognitionState } from "@/lib/novel/character-cognition"
@@ -51,7 +51,7 @@ export function CognitionPanel({ projectPath, onClose }: Props) {
           </button>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-3 text-sm">
+      <div className="min-h-0 flex-1 overflow-y-auto p-3 text-sm">
         {loading ? (
           <p className="text-muted-foreground">{t("novel.cognition.loading")}</p>
         ) : !state || (state.characters.length === 0 && state.readerKnows.length === 0) ? (

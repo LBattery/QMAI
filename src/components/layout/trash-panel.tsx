@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+﻿import { useCallback, useEffect, useState } from "react"
 import { RotateCcw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { listDirectory } from "@/commands/fs"
@@ -144,7 +144,7 @@ export function TrashPanel() {
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2">
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {loading ? (
           <div className="px-2 py-3 text-xs text-muted-foreground">{t("trash.loading", { defaultValue: "正在加载回收站…" })}</div>
         ) : items.length === 0 ? (

@@ -5,6 +5,8 @@ import {
   isAzureOpenAiEndpoint,
 } from "@/lib/azure-openai"
 import { normalizeEndpoint } from "@/lib/endpoint-normalizer"
+import type { LlmUsage } from "./llm-usage"
+import type { UserMemorySurface } from "./user-memory/types"
 
 /**
  * One piece of a multimodal message body. Text + image is the only
@@ -25,8 +27,17 @@ export type ContentBlock =
   | { type: "text"; text: string; cacheControl?: boolean }
   | { type: "image"; mediaType: string; dataBase64: string }
 
+export interface ToolCall {
+  id: string
+  type: "function"
+  function: {
+    name: string
+    arguments: string
+  }
+}
+
 export interface ChatMessage {
-  role: "system" | "user" | "assistant"
+  role: "system" | "user" | "assistant" | "tool"
   /**
    * `string` is the legacy shape — every existing call site uses it,
    * and providers that don't speak vision (or callers that don't
@@ -38,6 +49,9 @@ export interface ChatMessage {
    * `extractOllamaImages` below.
    */
   content: string | ContentBlock[]
+  tool_calls?: ToolCall[]
+  tool_call_id?: string
+  name?: string
 }
 
 /**
@@ -56,6 +70,16 @@ export interface RequestOverrides {
   max_tokens?: number
   stop?: string | string[]
   reasoning?: ReasoningConfig
+  tools?: { type: string; function: { name: string; description: string; parameters: object } }[]
+  toolChoice?: "auto" | "none"
+  /** Internal: prevent recursive global-user-memory injection for the memory extractor itself. */
+  skipUserMemory?: boolean
+  /** Internal: explicit task surface for global-user-memory selection. */
+  userMemorySurface?: UserMemorySurface
+  /** Internal: project scope key for layered user-memory selection. */
+  userMemoryProjectKey?: string
+  /** Internal: conversation/session scope key for layered user-memory selection. */
+  userMemorySessionKey?: string
 }
 
 interface ProviderConfig {
@@ -63,6 +87,7 @@ interface ProviderConfig {
   headers: Record<string, string>
   buildBody: (messages: ChatMessage[], overrides?: RequestOverrides) => unknown
   parseStream: (line: string) => string | null
+  parseUsage: (line: string) => LlmUsage | null
 }
 
 const JSON_CONTENT_TYPE = "application/json"
@@ -167,6 +192,52 @@ function parseOpenAiLine(line: string): string | null {
   }
 }
 
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined
+}
+
+function usageOrNull(usage: LlmUsage): LlmUsage | null {
+  return Object.values(usage).some((value) => value !== undefined) ? usage : null
+}
+
+function parseOpenAiUsage(line: string): LlmUsage | null {
+  if (!line.startsWith("data: ")) return null
+  const data = line.slice(6).trim()
+  if (data === "[DONE]") return null
+  try {
+    const parsed = JSON.parse(data) as {
+      usage?: {
+        prompt_tokens?: number
+        completion_tokens?: number
+        total_tokens?: number
+        cached_tokens?: number
+        prompt_cache_hit_tokens?: number
+        cache_read_input_tokens?: number
+        cache_creation_input_tokens?: number
+        prompt_tokens_details?: { cached_tokens?: number }
+        input_tokens_details?: { cached_tokens?: number }
+      }
+    }
+    const raw = parsed.usage
+    if (!raw) return null
+    return usageOrNull({
+      inputTokens: tokenCount(raw.prompt_tokens),
+      outputTokens: tokenCount(raw.completion_tokens),
+      totalTokens: tokenCount(raw.total_tokens),
+      cachedInputTokens: tokenCount(raw.prompt_tokens_details?.cached_tokens)
+        ?? tokenCount(raw.input_tokens_details?.cached_tokens)
+        ?? tokenCount(raw.cached_tokens)
+        ?? tokenCount(raw.prompt_cache_hit_tokens)
+        ?? tokenCount(raw.cache_read_input_tokens),
+      cacheWriteInputTokens: tokenCount(raw.cache_creation_input_tokens),
+    })
+  } catch {
+    return null
+  }
+}
+
 function parseResponsesLine(line: string): string | null {
   if (!line.startsWith("data: ")) return null
   const data = line.slice(6).trim()
@@ -177,6 +248,34 @@ function parseResponsesLine(line: string): string | null {
       return parsed.delta ?? null
     }
     return null
+  } catch {
+    return null
+  }
+}
+
+function parseResponsesUsage(line: string): LlmUsage | null {
+  if (!line.startsWith("data: ")) return null
+  const data = line.slice(6).trim()
+  if (data === "[DONE]") return null
+  try {
+    const parsed = JSON.parse(data) as {
+      response?: {
+        usage?: {
+          input_tokens?: number
+          output_tokens?: number
+          total_tokens?: number
+          input_tokens_details?: { cached_tokens?: number }
+        }
+      }
+    }
+    const raw = parsed.response?.usage
+    if (!raw) return null
+    return usageOrNull({
+      inputTokens: tokenCount(raw.input_tokens),
+      outputTokens: tokenCount(raw.output_tokens),
+      totalTokens: tokenCount(raw.total_tokens),
+      cachedInputTokens: tokenCount(raw.input_tokens_details?.cached_tokens),
+    })
   } catch {
     return null
   }
@@ -197,6 +296,33 @@ function parseAnthropicLine(line: string): string | null {
       return parsed.delta.text ?? null
     }
     return null
+  } catch {
+    return null
+  }
+}
+
+function parseAnthropicUsage(line: string): LlmUsage | null {
+  if (!line.startsWith("data: ")) return null
+  const data = line.slice(6).trim()
+  try {
+    const parsed = JSON.parse(data) as {
+      message?: { usage?: Record<string, unknown> }
+      usage?: Record<string, unknown>
+    }
+    const raw = parsed.message?.usage ?? parsed.usage
+    if (!raw) return null
+    const directInput = tokenCount(raw.input_tokens)
+    const cacheRead = tokenCount(raw.cache_read_input_tokens)
+    const cacheWrite = tokenCount(raw.cache_creation_input_tokens)
+    const hasInput = directInput !== undefined || cacheRead !== undefined || cacheWrite !== undefined
+    return usageOrNull({
+      inputTokens: hasInput
+        ? (directInput ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0)
+        : undefined,
+      outputTokens: tokenCount(raw.output_tokens),
+      cachedInputTokens: cacheRead,
+      cacheWriteInputTokens: cacheWrite,
+    })
   } catch {
     return null
   }
@@ -226,6 +352,31 @@ export function parseGoogleLine(line: string): string | null {
       if (p.text) out += p.text
     }
     return out.length > 0 ? out : null
+  } catch {
+    return null
+  }
+}
+
+function parseGoogleUsage(line: string): LlmUsage | null {
+  if (!line.startsWith("data: ")) return null
+  const data = line.slice(6).trim()
+  try {
+    const parsed = JSON.parse(data) as {
+      usageMetadata?: {
+        promptTokenCount?: number
+        candidatesTokenCount?: number
+        totalTokenCount?: number
+        cachedContentTokenCount?: number
+      }
+    }
+    const raw = parsed.usageMetadata
+    if (!raw) return null
+    return usageOrNull({
+      inputTokens: tokenCount(raw.promptTokenCount),
+      outputTokens: tokenCount(raw.candidatesTokenCount),
+      totalTokens: tokenCount(raw.totalTokenCount),
+      cachedInputTokens: tokenCount(raw.cachedContentTokenCount),
+    })
   } catch {
     return null
   }
@@ -273,8 +424,16 @@ function buildOpenAiBody(
   const translated = messages.map((m) => ({
     role: m.role,
     content: toOpenAiContent(m.content),
+    ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+    ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+    ...(m.name ? { name: m.name } : {}),
   }))
-  return { messages: translated, stream: true, ...stripWireAgnosticOverrides(overrides) }
+  const body: Record<string, unknown> = { messages: translated, stream: true, ...stripWireAgnosticOverrides(overrides) }
+  if (overrides?.tools && overrides.tools.length > 0) {
+    body.tools = overrides.tools
+    body.tool_choice = overrides.toolChoice ?? "auto"
+  }
+  return body
 }
 
 function toResponsesContent(content: string | ContentBlock[]): unknown {
@@ -318,8 +477,15 @@ function buildResponsesBody(
   return body
 }
 
-function stripWireAgnosticOverrides(overrides?: RequestOverrides): Omit<RequestOverrides, "reasoning"> {
-  const { reasoning: _reasoning, ...rest } = overrides ?? {}
+function stripWireAgnosticOverrides(overrides?: RequestOverrides): Omit<RequestOverrides, "reasoning" | "skipUserMemory" | "userMemorySurface" | "userMemoryProjectKey" | "userMemorySessionKey"> {
+  const {
+    reasoning: _reasoning,
+    skipUserMemory: _skipUserMemory,
+    userMemorySurface: _userMemorySurface,
+    userMemoryProjectKey: _userMemoryProjectKey,
+    userMemorySessionKey: _userMemorySessionKey,
+    ...rest
+  } = overrides ?? {}
   return rest
 }
 
@@ -398,6 +564,13 @@ function buildOpenAiCompatibleBody(
 ): Record<string, unknown> {
   const reasoning = effectiveReasoning(config, overrides)
   const body: Record<string, unknown> = buildOpenAiBody(messages, stripWireAgnosticOverrides(overrides))
+  if (
+    config.provider === "openai"
+    || config.provider === "azure"
+    || (config.provider === "custom" && isAzureOpenAiEndpoint(config.customEndpoint))
+  ) {
+    body.stream_options = { include_usage: true }
+  }
   adaptOpenAiStrictCompletionBody(config, body)
   adaptKimiBody(config, body)
 
@@ -472,18 +645,38 @@ function toAnthropicContent(content: string | ContentBlock[]): unknown {
   })
 }
 
-/**
- * Anthropic's top-level `system` field is a string, not blocks.
- * If a caller puts images inside a system message we drop them —
- * Anthropic doesn't accept system-level images today, and silently
- * losing them is the lesser evil compared to the request 400ing
- * out for "Unsupported content block in system".
- */
+/** Anthropic accepts top-level system as a string or text-block array. */
 function flattenAnthropicSystem(content: string | ContentBlock[]): string {
   if (typeof content === "string") return content
   return content
     .map((b) => (b.type === "text" ? b.text : ""))
     .join("")
+}
+
+function buildAnthropicSystem(messages: ChatMessage[]): string | unknown[] | undefined {
+  const hasCacheControl = messages.some(
+    (message) => Array.isArray(message.content)
+      && message.content.some((block) => block.type === "text" && block.cacheControl),
+  )
+  if (!hasCacheControl) {
+    return messages.map((message) => flattenAnthropicSystem(message.content)).join("\n") || undefined
+  }
+
+  const blocks: unknown[] = []
+  for (const [messageIndex, message] of messages.entries()) {
+    if (messageIndex > 0) blocks.push({ type: "text", text: "\n" })
+    if (typeof message.content === "string") {
+      if (message.content) blocks.push({ type: "text", text: message.content })
+      continue
+    }
+    for (const block of message.content) {
+      if (block.type !== "text") continue
+      blocks.push(block.cacheControl
+        ? { type: "text", text: block.text, cache_control: { type: "ephemeral" } }
+        : { type: "text", text: block.text })
+    }
+  }
+  return blocks.length > 0 ? blocks : undefined
 }
 
 function buildAnthropicBody(
@@ -494,9 +687,7 @@ function buildAnthropicBody(
   const conversationMessages = messages
     .filter((m) => m.role !== "system")
     .map((m) => ({ role: m.role, content: toAnthropicContent(m.content) }))
-  const system =
-    systemMessages.map((m) => flattenAnthropicSystem(m.content)).join("\n") ||
-    undefined
+  const system = buildAnthropicSystem(systemMessages)
 
   // Anthropic Messages uses top_p / top_k (Python-style snake_case), a
   // mandatory `max_tokens`, and `stop_sequences` instead of `stop`.
@@ -533,8 +724,10 @@ function buildAnthropicBodyWithReasoning(
           ? 4096
         : 8192
   const budgetTokens = Math.max(1024, budget)
-  if ((body.max_tokens as number) <= budgetTokens) {
-    body.max_tokens = budgetTokens + 1
+  const minAnswerTokens = 4096
+  const minTotalTokens = budgetTokens + minAnswerTokens
+  if ((body.max_tokens as number) < minTotalTokens) {
+    body.max_tokens = minTotalTokens
   }
   body.thinking = { type: "enabled", budget_tokens: budgetTokens }
   delete body.temperature
@@ -703,6 +896,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           model,
         }),
         parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
       }
 
     case "anthropic": {
@@ -715,6 +909,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           model,
         }),
         parseStream: parseAnthropicLine,
+        parseUsage: parseAnthropicUsage,
       }
     }
 
@@ -735,6 +930,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           reasoning: effectiveReasoning(config, overrides),
         }),
         parseStream: parseGoogleLine,
+        parseUsage: parseGoogleUsage,
       }
     }
 
@@ -752,6 +948,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
         buildBody: (messages, overrides) =>
           buildOpenAiCompatibleBody(config, messages, overrides),
         parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
       }
     }
 
@@ -777,6 +974,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           model,
         }),
         parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
       }
     }
 
@@ -795,6 +993,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           model,
         }),
         parseStream: parseAnthropicLine,
+        parseUsage: parseAnthropicUsage,
       }
     }
 
@@ -807,6 +1006,29 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
       throw new Error(
         `${provider} provider uses subprocess transport; getProviderConfig should not be called for it`,
       )
+
+    case "cursor-cli": {
+      // OpenAI-compatible HTTP via local cursor-api-proxy.
+      const endpoint = (customEndpoint || "http://127.0.0.1:8765/v1").replace(/\/+$/, "")
+      const base = normalizeEndpoint(endpoint, "chat_completions").normalized.replace(/\/+$/, "")
+      const url = /\/chat\/completions$/i.test(base)
+        ? base
+        : `${base}/chat/completions`
+      const key = apiKey.trim() || "unused"
+      return {
+        url,
+        headers: withCustomOriginHeader({
+          "Content-Type": JSON_CONTENT_TYPE,
+          Authorization: `Bearer ${key}`,
+        }, url),
+        buildBody: (messages, overrides) => ({
+          ...buildOpenAiCompatibleBody(config, messages, overrides),
+          model,
+        }),
+        parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
+      }
+    }
 
     case "custom": {
       // Custom endpoints can speak either OpenAI's /chat/completions
@@ -824,6 +1046,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
             model,
           }),
           parseStream: parseAnthropicLine,
+          parseUsage: parseAnthropicUsage,
         }
       }
       if (mode === "responses") {
@@ -836,6 +1059,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           headers: getCustomCompatibleHeaders(apiKey, url),
           buildBody: (messages, overrides) => buildResponsesBody(config, messages, overrides),
           parseStream: parseResponsesLine,
+          parseUsage: parseResponsesUsage,
         }
       }
       // Defense-in-depth: settings-side EndpointField normalizes URLs on
@@ -870,6 +1094,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           return body
         },
         parseStream: parseOpenAiLine,
+        parseUsage: parseOpenAiUsage,
       }
     }
 

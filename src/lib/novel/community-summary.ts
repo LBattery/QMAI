@@ -6,6 +6,10 @@ import { resolveNovelModel } from "@/lib/novel/model-resolver"
 import { embedPage, searchByEmbedding } from "@/lib/embedding"
 import { useWikiStore, type NovelConfig, type LlmConfig } from "@/stores/wiki-store"
 import { normalizePath } from "@/lib/path-utils"
+import {
+  buildNovelVectorSnippet,
+  selectRelevantNovelVectorResults,
+} from "./vector-relevance"
 
 /** 社区摘要持久化结构 */
 export interface CommunitySummaryRecord {
@@ -173,14 +177,15 @@ export async function searchCommunitySummaries(
   try {
     const results = await searchByEmbedding(pp, query, embCfg, topK * 3)
     // 只保留 community: 前缀的结果
-    const communityResults = results.filter(r => r.id.startsWith("community:"))
+    const communityResults = selectRelevantNovelVectorResults(
+      results.filter(r => r.id.startsWith("community:")),
+      topK,
+    )
     if (communityResults.length === 0) return ""
 
-    // 取 Top-K
-    const top = communityResults.slice(0, topK)
-    return top.map(r => {
+    return communityResults.map(r => {
       const communityId = r.id.replace("community:", "")
-      const snippet = r.matchedChunks?.[0]?.text?.slice(0, 400) ?? ""
+      const snippet = buildNovelVectorSnippet(r, 400)
       return `- 【社区摘要·社区${communityId}】: ${snippet}`
     }).join("\n")
   } catch {

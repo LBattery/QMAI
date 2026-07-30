@@ -2,7 +2,7 @@ import { readFile, writeFileAtomic, listDirectory, fileExists, createDirectory, 
 import { normalizePath } from "@/lib/path-utils"
 import { useWikiStore } from "@/stores/wiki-store"
 import { parseFrontmatter } from "@/lib/frontmatter"
-import { isChapterPage, isFinalChapter, parseChapterNumber } from "./chapter-meta"
+import { isChapterPage, isFinalChapter, parseChapterMeta, parseChapterNumber } from "./chapter-meta"
 import { streamChat, type StreamCallbacks } from "@/lib/llm-client"
 import type { ChatMessage } from "@/lib/llm-providers"
 import { getOutputLanguage, buildLanguageReminder } from "@/lib/output-language"
@@ -11,6 +11,7 @@ import { canonicalizeSnapshotCharacters, writeSnapshotToWiki, writePatchFieldsTo
 import { resolveNovelModel } from "./model-resolver"
 import { emptyCognitionState, mergeCognitionFromSnapshot, loadCognitionState, saveCognitionState } from "./character-cognition"
 import { createEmptyCharacterStateStore, loadCharacterStates, saveCharacterStates, type CharacterStateStore } from "./character-state"
+import { updateTrackingAfterChapter } from "./tracking-updater"
 import { createEmptyForeshadowingStore, loadForeshadowingTracker, saveForeshadowingTracker, type Foreshadowing, type ForeshadowingStore } from "./foreshadowing-tracker"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { shouldRebuildCommunitySummaries, generateCommunitySummaries } from "./community-summary"
@@ -19,6 +20,9 @@ import { createChapterPipeline } from "./chapter-pipeline"
 import { mergeSnapshotTimeline } from "./timeline"
 import { buildStructuredMemoryDocuments, isValidMemorySnapshot } from "./memory-rebuild"
 import { clearGraphCache } from "@/lib/graph-relevance"
+import { RetrievalStore } from "./retrieval"
+import { computeOutlineIngestBodyBudget } from "@/lib/context-budget"
+import { CHAPTER_BODY_EXCERPT_MAX_CHARS } from "./chapter-excerpts"
 
 export interface ValidationWarning {
   type: "entity_new" | "canon_conflict"
@@ -69,8 +73,9 @@ export interface ChapterSnapshot {
   summary: string
   characters: string[]
   characterAliases?: Record<string, string[]>
-  characterAppearanceAndStatus: string[]
-  femaleCharacterSexualEvents: string[]
+  characterAppearanceAndStatus?: string[]
+  /** Kept only so legacy snapshots can be read and saved without losing data. */
+  femaleCharacterSexualEvents?: string[]
   locations: string[]
   organizations: string[]
   items: string[]
@@ -165,7 +170,7 @@ function normalizeSnapshotDetailRecord<T extends object>(value: unknown): Record
   return value as Record<string, T>
 }
 
-function normalizeChapterSnapshot(
+export function normalizeChapterSnapshot(
   value: unknown,
   fallback: Partial<Pick<ChapterSnapshot, "chapterId" | "chapterNumber">> = {},
 ): ChapterSnapshot | null {
@@ -184,7 +189,9 @@ function normalizeChapterSnapshot(
     characters: normalizeSnapshotList(raw.characters),
     characterAliases: normalizeSnapshotAliasRecord(raw.characterAliases),
     characterAppearanceAndStatus: normalizeSnapshotList(raw.characterAppearanceAndStatus),
-    femaleCharacterSexualEvents: normalizeSnapshotList(raw.femaleCharacterSexualEvents),
+    ...(Object.prototype.hasOwnProperty.call(raw, "femaleCharacterSexualEvents")
+      ? { femaleCharacterSexualEvents: normalizeSnapshotList(raw.femaleCharacterSexualEvents) }
+      : {}),
     locations: normalizeSnapshotList(raw.locations),
     organizations: normalizeSnapshotList(raw.organizations),
     items: normalizeSnapshotList(raw.items),
@@ -297,32 +304,38 @@ export interface IngestResult {
   failReason?: IngestFailReason
 }
 
+interface IngestChapterOptions {
+  allowDraft?: boolean
+}
+
 export async function ingestChapter(
   projectPath: string,
   chapterPath: string,
   _reviewModel?: string,
   signal?: AbortSignal,
+  chapterNumberOverride?: number,
+  options: IngestChapterOptions = {},
 ): Promise<IngestResult> {
   const pp = normalizePath(projectPath)
-  const novelMode = useWikiStore.getState().novelMode
-  if (!novelMode) return { snapshot: null }
+  const state = useWikiStore.getState()
+  if (!state.novelMode) return { snapshot: null }
 
-  const llmConfig = useWikiStore.getState().llmConfig
-  const novelConfig = useWikiStore.getState().novelConfig
+  const llmConfig = state.llmConfig
+  const novelConfig = state.novelConfig
   // 使用 resolveNovelModel 正确解析提取模型（含供应商配置切换）
   const runtimeLlmConfig = resolveNovelModel(llmConfig, novelConfig, "extract")
-  if (!hasUsableLlm(runtimeLlmConfig)) return { snapshot: null, failReason: "no_llm" }
+  if (!hasUsableLlm(runtimeLlmConfig, state.providerConfigs)) return { snapshot: null, failReason: "no_llm" }
 
   const content = await readFile(chapterPath)
   const parsed = parseFrontmatter(content)
   const fm = parsed.frontmatter as Record<string, unknown> | null
   if (!fm || !isChapterPage(fm)) return { snapshot: null, failReason: "not_chapter" }
-  if (!isFinalChapter(fm)) {
+  if (!options.allowDraft && !isFinalChapter(fm)) {
     console.warn(`[Chapter Ingest] Chapter status is not final, skipping ingest.`)
     return { snapshot: null, failReason: "not_final" }
   }
 
-  const chapterNumber = parseChapterNumber(fm.chapter_number) ?? 0
+  const chapterNumber = chapterNumberOverride ?? parseChapterNumber(fm.chapter_number) ?? 0
   if (chapterNumber <= 0) {
     console.warn("[Chapter Ingest] Invalid chapter number, skipping ingest.")
     return { snapshot: null, failReason: "invalid_chapter_number" }
@@ -528,7 +541,137 @@ export async function ingestChapter(
     }
   }
 
+  if (snapshot) {
+    try {
+      const retrievalStore = createRetrievalStore(pp)
+      const sourceHash = buildSourceHash(content)
+      const relativePath = normalizePath(chapterPath).startsWith(normalizePath(pp) + "/")
+        ? normalizePath(chapterPath).slice(normalizePath(pp).length + 1)
+        : chapterPath
+      await retrievalStore.updateChapterEntry(snapshot.chapterNumber, snapshot, {
+        filePath: relativePath,
+        sourceHash,
+      }).catch((err) => {
+        console.warn("[Chapter Ingest] Retrieval index update failed:", err)
+      })
+    } catch (err) {
+      console.warn("[Chapter Ingest] Retrieval index update failed:", err instanceof Error ? err.message : err)
+    }
+  }
+
+  // 章节写完后自动更新追踪文件
+  if (snapshot) {
+    try {
+      const chapterTitle = snapshot.chapterTitle || (typeof fm?.title === "string" ? fm.title : `第${chapterNumber}章`)
+      await updateTrackingAfterChapter(pp, chapterNumber, chapterTitle, body, snapshot.summary)
+    } catch (err) {
+      console.warn("[Chapter Ingest] 追踪文件更新失败:", err instanceof Error ? err.message : err)
+    }
+  }
+
   return { snapshot: { ...snapshot, memorySyncedAt: syncResult.memorySyncedAt } }
+}
+
+function createRetrievalStore(projectPath: string): RetrievalStore {
+  const fsAdapter = {
+    readFile,
+    writeFile: writeFileAtomic,
+    fileExists,
+    listDirectory: async (path: string): Promise<string[]> => {
+      const nodes = await listDirectory(path)
+      return nodes.map((n: any) => n.name)
+    },
+    createDirectory,
+    joinPath: (...parts: string[]) => parts.join("/"),
+  }
+  return new RetrievalStore(projectPath, fsAdapter as any)
+}
+
+export function buildSourceHash(content: string): string {
+  let hash = 0
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash |= 0
+  }
+  return String(hash)
+}
+
+async function findChapterPathForSnapshot(projectPath: string, snapshot: ChapterSnapshot): Promise<string> {
+  const chaptersDir = `${projectPath}/wiki/chapters`
+  const fallback = `${chaptersDir}/chapter-${String(snapshot.chapterNumber).padStart(3, "0")}.md`
+  try {
+    const nodes = await listDirectory(chaptersDir)
+    for (const node of nodes as any[]) {
+      if (node?.isDir) continue
+      if (!String(node?.name || "").toLowerCase().endsWith(".md")) continue
+      const path = `${chaptersDir}/${node.name}`
+      try {
+        const content = await readFile(path)
+        const parsed = parseFrontmatter(content)
+        const meta = parseChapterMeta(parsed.frontmatter as Record<string, unknown>)
+        if (meta?.chapterNumber === snapshot.chapterNumber) {
+          return path
+        }
+      } catch {
+        // 忽略单文件读取失败，继续尝试其他章节文件。
+      }
+    }
+  } catch {
+    // 章节目录不存在或不可读时使用稳定的默认路径。
+  }
+  return fallback
+}
+
+async function buildRetrievalIndexSourceHash(projectPath: string, snapshot: ChapterSnapshot): Promise<string> {
+  const chapterPath = await findChapterPathForSnapshot(projectPath, snapshot)
+  try {
+    return buildSourceHash(await readFile(chapterPath))
+  } catch {
+    return buildSourceHash(JSON.stringify(snapshot))
+  }
+}
+
+export async function buildRetrievalIndex(projectPath: string): Promise<{ success: boolean; chapterCount: number }> {
+  const pp = normalizePath(projectPath)
+  const snapshotNumbers = await listSnapshots(pp)
+  
+  if (snapshotNumbers.length === 0) {
+    return { success: false, chapterCount: 0 }
+  }
+
+  const snapshots: ChapterSnapshot[] = []
+  for (const num of snapshotNumbers) {
+    const snapshot = await loadSnapshot(pp, num)
+    if (snapshot) {
+      snapshots.push(snapshot)
+    }
+  }
+
+  if (snapshots.length === 0) {
+    return { success: false, chapterCount: 0 }
+  }
+
+  const store = createRetrievalStore(pp)
+  
+  const snapshotPaths = new Map<number, string>()
+  const snapshotHashes = new Map<number, string>()
+  for (const snapshot of snapshots) {
+    const chapterPath = await findChapterPathForSnapshot(pp, snapshot)
+    const relativePath = normalizePath(chapterPath).startsWith(pp + "/")
+      ? normalizePath(chapterPath).slice(pp.length + 1)
+      : chapterPath
+    snapshotPaths.set(snapshot.chapterNumber, relativePath)
+    snapshotHashes.set(snapshot.chapterNumber, await buildRetrievalIndexSourceHash(pp, snapshot))
+  }
+
+  await store.buildFromSnapshots(
+    snapshots,
+    (snapshot) => snapshotPaths.get(snapshot.chapterNumber) || `wiki/chapters/chapter-${String(snapshot.chapterNumber).padStart(3, "0")}.md`,
+    (snapshot) => snapshotHashes.get(snapshot.chapterNumber) || buildSourceHash(JSON.stringify(snapshot)),
+  )
+  
+  return { success: true, chapterCount: snapshots.length }
 }
 
 export const ingestChapterPipeline = createChapterPipeline({ ingestChapter })
@@ -539,6 +682,50 @@ function normalizeOutlineIngestError(err: unknown): Error {
     return new Error("大纲摄取已中断，请稍后重试")
   }
   return new Error(message)
+}
+
+const OUTLINE_INGEST_JSON_TEMPLATE = `输出 JSON：
+{
+  "chapterId": "outline-init",
+  "chapterNumber": 0,
+  "summary": "大纲摘要",
+  "characters": ["初始人物"],
+  "characterAppearanceAndStatus": ["人物名：外貌与衣着，当前状态"],
+  "locations": ["初始地点"],
+  "organizations": ["初始组织/势力"],
+  "items": ["关键物品"],
+  "events": ["背景事件"],
+  "characterStateChanges": ["人物初始状态"],
+  "relationshipChanges": ["人物初始关系"],
+  "knowledgeChanges": [],
+  "foreshadowingChanges": ["初始伏笔"],
+  "newCanonFacts": ["世界观正史设定"],
+  "timelineEvents": ["时间线背景"],
+  "conflicts": ["核心冲突"],
+  "endingHook": "",
+  "graphNodes": ["图谱节点列表"],
+  "graphEdges": ["图谱关系边，格式：A->关系->B。关系必须是以下之一：出场于|发生于|属于|持有|敌对|合作|怀疑|隐瞒|知道|不知道|推进伏笔|回收伏笔|新增伏笔|导致|揭示|影响|位于"]
+}`
+
+export interface OutlineIngestResult {
+  snapshot: ChapterSnapshot | null
+  truncated: boolean
+  originalLength: number
+  bodyLength: number
+  bodyBudget: number
+  failureReason?: "no_llm" | null
+}
+
+export interface IngestOutlineOptions {
+  skipSync?: boolean
+}
+
+function buildOutlineIngestUserPrompt(body: string): string {
+  return `请从以下大纲中提取初始设定：
+
+${body}
+
+${OUTLINE_INGEST_JSON_TEMPLATE}`
 }
 
 async function extractSnapshotWithLLM(
@@ -559,17 +746,16 @@ ${langReminder}`
 章节编号：第${chapterNumber}章
 
 章节正文：
-${chapterBody.slice(0, 8000)}
+${chapterBody.slice(0, CHAPTER_BODY_EXCERPT_MAX_CHARS)}
 
 请输出以下格式的 JSON：
 {
   "chapterId": "chapter-${chapterNumber}",
   "chapterNumber": ${chapterNumber},
-  "summary": "章节摘要（400字以内）",
+  "summary": "章节摘要（200字以内）",
   "characters": ["出场人物列表"],
   "characterAliases": { "人物正式名": ["昵称", "小名", "旧名"] },
-  "characterAppearanceAndStatus": ["角色穿着和当前状态描述"],
-  "femaleCharacterSexualEvents": ["女角色的边缘性行为及性行为事件"],
+  "characterAppearanceAndStatus": ["角色名：本章可见的外貌与衣着，当前状态"],
   "locations": ["出场地点列表"],
   "organizations": ["出场组织列表"],
   "items": ["出场物品列表"],
@@ -629,8 +815,7 @@ ${chapterBody.slice(0, 8000)}
 }
 
 注意：如果同一个人物在正文里有昵称、小名、旧名或全名，请把正式名放进 characters，把其他称呼放进 characterAliases，不要把同一人物拆成多个 characters。
-注意：characterAppearanceAndStatus 记录角色在本章的穿着打扮和当前状态，格式如"角色名：穿着描述，当前状态描述"。
-注意：femaleCharacterSexualEvents 仅记录女性角色涉及的边缘性行为或性行为相关事件，如亲密接触、暧昧行为、性暗示或实际性行为等，无相关内容时留空数组。
+注意：characterAppearanceAndStatus 只记录正文明确出现的信息，格式为“角色名：外貌与衣着；当前状态”。未描写衣着时不要推测，可仅记录明确的当前状态；完全没有相关信息时返回空数组。
 注意：characterDetails、locationDetails、organizationDetails、itemDetails、eventDetails 仅在章节中确实有相关信息时才填写；如果某个字段没有相关信息，直接省略该字段即可。`
 
   try {
@@ -663,11 +848,9 @@ ${chapterBody.slice(0, 8000)}
     return normalizeChapterSnapshot({
       ...parsed,
       chapterId: parsed.chapterId || `chapter-${chapterNumber}`,
-      chapterNumber: parsed.chapterNumber || chapterNumber,
+      chapterNumber: chapterNumber, // 强制使用代码传入的章节号，不信任LLM输出
       entityIsNew: {},
       validationWarnings: [],
-      characterAppearanceAndStatus: parsed.characterAppearanceAndStatus || [],
-      femaleCharacterSexualEvents: parsed.femaleCharacterSexualEvents || [],
       characterDetails: parsed.characterDetails || undefined,
       locationDetails: parsed.locationDetails || undefined,
       organizationDetails: parsed.organizationDetails || undefined,
@@ -690,11 +873,10 @@ function snapshotToMarkdown(snapshot: ChapterSnapshot): string {
     `## 出场人物`,
     ...(snapshot.characters.length > 0 ? snapshot.characters.map(c => `- ${c}`) : ["（无）"]),
     "",
-    `## 角色穿着和当前状态`,
-    ...(snapshot.characterAppearanceAndStatus.length > 0 ? snapshot.characterAppearanceAndStatus.map(c => `- ${c}`) : ["（无）"]),
-    "",
-    `## 女角色边缘性行为及性行为事件`,
-    ...(snapshot.femaleCharacterSexualEvents.length > 0 ? snapshot.femaleCharacterSexualEvents.map(e => `- ${e}`) : ["（无）"]),
+    `## 角色外貌、衣着和当前状态`,
+    ...((snapshot.characterAppearanceAndStatus ?? []).length > 0
+      ? (snapshot.characterAppearanceAndStatus ?? []).map(c => `- ${c}`)
+      : ["（无）"]),
     "",
     `## 出场地点`,
     ...(snapshot.locations.length > 0 ? snapshot.locations.map(l => `- ${l}`) : ["（无）"]),
@@ -873,6 +1055,7 @@ export function buildSnapshotMemorySyncPreview(snapshot: ChapterSnapshot): strin
   const lines = ["本次将同步以下内容：", ""]
 
   appendPreviewSection(lines, "人物状态", snapshot.characterStateChanges)
+  appendPreviewSection(lines, "角色外貌、衣着和当前状态", snapshot.characterAppearanceAndStatus ?? [])
   appendPreviewSection(lines, "角色认知", snapshot.knowledgeChanges)
   appendPreviewSection(lines, "伏笔追踪", snapshot.foreshadowingChanges)
   appendPreviewSection(lines, "实体页 / 图谱", uniqueGraphItems)
@@ -961,9 +1144,15 @@ export interface SyncSnapshotToMemoryResult {
   memorySyncedAt: string
 }
 
+export interface SyncSnapshotToMemoryOptions {
+  deferStructuredMemoryExport?: boolean
+  deferDerivedRebuild?: boolean
+}
+
 export async function syncSnapshotToMemory(
   projectPath: string,
   snapshot: ChapterSnapshot,
+  options?: SyncSnapshotToMemoryOptions,
 ): Promise<SyncSnapshotToMemoryResult> {
   const pp = normalizePath(projectPath)
   const currentSnapshot = await readCurrentSnapshot(pp, snapshot.chapterNumber)
@@ -1029,9 +1218,13 @@ export async function syncSnapshotToMemory(
 
   await backupSnapshotBeforeOverwrite(pp, syncedSnapshot.chapterNumber)
   await saveSnapshot(pp, syncedSnapshot)
-  const memoryPagePaths = await exportStructuredMemoryToWiki(pp, syncedSnapshot)
-  clearGraphCache()
-  useWikiStore.getState().bumpDataVersion()
+  const memoryPagePaths = options?.deferStructuredMemoryExport
+    ? []
+    : await exportStructuredMemoryToWiki(pp, syncedSnapshot)
+  if (!options?.deferDerivedRebuild) {
+    clearGraphCache()
+    useWikiStore.getState().bumpDataVersion()
+  }
 
   return { writtenEntityPaths, memoryPagePaths, memorySyncedAt }
 }
@@ -1237,6 +1430,13 @@ async function rebuildDerivedMemoryFromSnapshots(projectPath: string, latestSnap
   await writeStructuredMemoryDocuments(projectPath, snapshots)
 }
 
+export async function finalizeProjectMemoryRebuild(projectPath: string): Promise<void> {
+  const pp = normalizePath(projectPath)
+  await rebuildDerivedMemoryFromSnapshots(pp)
+  clearGraphCache()
+  useWikiStore.getState().bumpDataVersion()
+}
+
 async function saveSnapshot(projectPath: string, snapshot: ChapterSnapshot): Promise<void> {
   const canonicalSnapshot = ensureSnapshotIdentity(canonicalizeSnapshotCharacters(snapshot))
   const normalizedSnapshot = normalizeChapterSnapshot(canonicalSnapshot, {
@@ -1410,16 +1610,38 @@ export async function ingestOutline(
   projectPath: string,
   outlinePath: string,
   signal?: AbortSignal,
-): Promise<ChapterSnapshot | null> {
+  options?: IngestOutlineOptions,
+): Promise<OutlineIngestResult> {
+  const emptyResult = (
+    snapshot: ChapterSnapshot | null = null,
+    failureReason: OutlineIngestResult["failureReason"] = null,
+  ): OutlineIngestResult => ({
+    snapshot,
+    truncated: false,
+    originalLength: 0,
+    bodyLength: 0,
+    bodyBudget: 0,
+    failureReason,
+  })
+
   const pp = normalizePath(projectPath)
-  const llmConfig = useWikiStore.getState().llmConfig
-  const novelConfig = useWikiStore.getState().novelConfig
+  const state = useWikiStore.getState()
+  const llmConfig = state.llmConfig
+  const novelConfig = state.novelConfig
   // 使用 resolveNovelModel 正确解析提取模型（含供应商配置切换），与 ingestChapter 保持一致
   const runtimeLlmConfig = resolveNovelModel(llmConfig, novelConfig, "extract")
-  if (!hasUsableLlm(runtimeLlmConfig)) return null
+  if (!hasUsableLlm(runtimeLlmConfig, state.providerConfigs)) return emptyResult(null, "no_llm")
 
   const content = await readFile(outlinePath)
-  const body = content.length > 8000 ? content.slice(0, 8000) : content
+  const originalLength = content.length
+
+  const outputLang = getOutputLanguage()
+  const langReminder = buildLanguageReminder(outputLang)
+  const systemPrompt = `你是一个专业的小说编辑助手。请从大纲中提取初始设定信息，输出 JSON。${langReminder}`
+  const promptOverhead = systemPrompt.length + buildOutlineIngestUserPrompt("").length
+  const bodyBudget = computeOutlineIngestBodyBudget(runtimeLlmConfig.maxContextSize, promptOverhead)
+  const truncated = content.length > bodyBudget
+  const body = truncated ? content.slice(0, bodyBudget) : content
 
   // 从文件路径提取大纲名称作为标题
   const normalizedOutlinePath = normalizePath(outlinePath)
@@ -1435,36 +1657,7 @@ export async function ingestOutline(
   const outlineNumber = -(Math.abs(hash % 999) + 1) // -1 到 -999
   const chapterId = `outline-${outlineName}`
 
-  const outputLang = getOutputLanguage()
-  const langReminder = buildLanguageReminder(outputLang)
-
-  const systemPrompt = `你是一个专业的小说编辑助手。请从大纲中提取初始设定信息，输出 JSON。${langReminder}`
-
-  const userPrompt = `请从以下大纲中提取初始设定：
-
-${body}
-
-输出 JSON：
-{
-  "chapterId": "outline-init",
-  "chapterNumber": 0,
-  "summary": "大纲摘要",
-  "characters": ["初始人物"],
-  "locations": ["初始地点"],
-  "organizations": ["初始组织/势力"],
-  "items": ["关键物品"],
-  "events": ["背景事件"],
-  "characterStateChanges": ["人物初始状态"],
-  "relationshipChanges": ["人物初始关系"],
-  "knowledgeChanges": [],
-  "foreshadowingChanges": ["初始伏笔"],
-  "newCanonFacts": ["世界观正史设定"],
-  "timelineEvents": ["时间线背景"],
-  "conflicts": ["核心冲突"],
-  "endingHook": "",
-  "graphNodes": ["图谱节点列表"],
-  "graphEdges": ["图谱关系边，格式：A->关系->B。关系必须是以下之一：出场于|发生于|属于|持有|敌对|合作|怀疑|隐瞒|知道|不知道|推进伏笔|回收伏笔|新增伏笔|导致|揭示|影响|位于"]
-}`
+  const userPrompt = buildOutlineIngestUserPrompt(body)
 
   try {
     const messages: ChatMessage[] = [
@@ -1496,15 +1689,31 @@ ${body}
       chapterTitle: outlineName,
       entityIsNew: {},
       validationWarnings: [],
-      characterAppearanceAndStatus: parsed.characterAppearanceAndStatus || [],
-      femaleCharacterSexualEvents: parsed.femaleCharacterSexualEvents || [],
     }, { chapterId, chapterNumber: outlineNumber })
     if (!snapshot) {
       throw new Error("Outline snapshot payload is invalid.")
     }
 
+    if (options?.skipSync) {
+      return {
+        snapshot,
+        truncated,
+        originalLength,
+        bodyLength: body.length,
+        bodyBudget,
+        failureReason: null,
+      }
+    }
+
     const syncResult = await syncSnapshotToMemory(pp, snapshot)
-    return { ...snapshot, memorySyncedAt: syncResult.memorySyncedAt }
+    return {
+      snapshot: { ...snapshot, memorySyncedAt: syncResult.memorySyncedAt },
+      truncated,
+      originalLength,
+      bodyLength: body.length,
+      bodyBudget,
+      failureReason: null,
+    }
   } catch (err) {
     console.error("[Outline Ingest] Failed:", err)
     throw normalizeOutlineIngestError(err)

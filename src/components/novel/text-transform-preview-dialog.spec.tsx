@@ -37,4 +37,44 @@ describe("TextTransformPreviewDialog", () => {
     act(() => root.unmount())
     document.body.removeChild(container)
   })
+
+  it("renders the shared editable comparison workspace when comparison mode is enabled", () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const onCandidateContentChange = vi.fn()
+
+    act(() => {
+      root.render(
+        <TextTransformPreviewDialog
+          open
+          title={"\u53bbAI\u5473\u9884\u89c8"}
+          sourceLabel={"\u539f\u6587\u7247\u6bb5"}
+          candidateLabel={"\u53bbAI\u5473\u7ed3\u679c"}
+          sourceContent="old paragraph"
+          candidateContent="new paragraph"
+          applyLabel={"\u66ff\u6362\u9009\u4e2d\u6587\u672c"}
+          comparisonMode
+          onApply={() => {}}
+          onClose={() => {}}
+          onCandidateContentChange={onCandidateContentChange}
+        />,
+      )
+    })
+
+    expect(document.body.textContent).toContain("\u6e90\u7801\u5bf9\u6bd4")
+    expect(document.body.textContent).toContain("\u6e32\u67d3\u9884\u89c8")
+    const editor = document.body.querySelector<HTMLTextAreaElement>('textarea[aria-label="\u6700\u65b0\u6e90\u7801"]')
+    expect(editor).not.toBeNull()
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set
+      setter?.call(editor, "user-edited paragraph")
+      editor!.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    expect(onCandidateContentChange).toHaveBeenCalledWith("user-edited paragraph")
+
+    act(() => root.unmount())
+    document.body.removeChild(container)
+  })
+
 })

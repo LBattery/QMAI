@@ -22,8 +22,8 @@ function preset(id: string) {
   return found
 }
 
-describe("LLM Wiki model settings copied into QMAI", () => {
-  it("includes the LLM Wiki provider rows below the custom row", () => {
+describe("QMAI model settings", () => {
+  it("includes the built-in provider rows below the custom row", () => {
     expect(LLM_PRESETS[0]?.id).toBe("custom")
 
     expect(LLM_PRESETS.map((item) => item.id)).toEqual([
@@ -31,10 +31,12 @@ describe("LLM Wiki model settings copied into QMAI", () => {
       "anthropic",
       "claude-code-cli",
       "codex-cli",
+      "cursor-cli",
       "openai",
       "google",
       "azure",
       "deepseek",
+      "atlascloud",
       "groq",
       "xai",
       "nvidia-nim",
@@ -105,9 +107,23 @@ describe("LLM Wiki model settings copied into QMAI", () => {
     expect(codex.localCliIsolation).toBe(true)
     expect(codex.model).toBe("")
     expect(codex.codexCliTimeoutMinutes).toBe(45)
+
+    const cursor = resolveConfig(
+      preset("cursor-cli"),
+      { baseUrl: "http://127.0.0.1:8765/v1" },
+      fallback,
+    )
+    expect(cursor.provider).toBe("cursor-cli")
+    expect(cursor.customEndpoint).toBe("http://127.0.0.1:8765/v1")
+    expect(cursor.model).toBe("composer-2-fast")
+    expect(cursor.apiKey).toBe("")
+
+    const cursorProvider = getProviderConfig(cursor)
+    expect(cursorProvider.url).toBe("http://127.0.0.1:8765/v1/chat/completions")
+    expect(cursorProvider.headers.Authorization).toBe("Bearer unused")
   })
 
-  it("has Chinese labels for the copied LLM Wiki settings instead of placeholder question marks", () => {
+  it("has Chinese labels for the built-in model settings instead of placeholder question marks", () => {
     const llm = zh.settings.sections.llm
     expect(llm.collapse).toBe("收起配置")
     expect(llm.apiKeyPlaceholder).toBe("输入 API Key")

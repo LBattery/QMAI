@@ -82,6 +82,8 @@ export function isFetchNetworkError(err: unknown): boolean {
   if (err.message === "Failed to fetch") return true
   // Tauri plugin-http / Rust reqwest send-stage failure
   if (/error sending request for url/i.test(err.message)) return true
+  // Tauri plugin-http / Rust reqwest response stream decode failure
+  if (/error decoding response body/i.test(err.message)) return true
   if (err.message.includes("network error")) return true
   return false
 }

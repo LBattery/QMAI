@@ -1,5 +1,8 @@
 import type { CustomApiMode } from "./llm-presets"
-import type { AzureModelFamily, ReasoningConfig, SourceWatchConfig, RevisionFeedbackWindowConfig, NovelConfig, RerankConfig } from "@/stores/wiki-store"
+import type { AzureModelFamily, ReasoningConfig, SourceWatchConfig, RevisionFeedbackWindowConfig, NovelConfig, RerankConfig, OutputLanguage } from "@/stores/wiki-store"
+import type { SidebarNavConfig } from "@/lib/sidebar-nav-preferences"
+import type { UiFontFamily } from "@/lib/font-settings"
+import type { VisualStyle } from "@/lib/visual-style-settings"
 
 /**
  * Shape of the draft state each section reads from and writes into.
@@ -9,7 +12,7 @@ import type { AzureModelFamily, ReasoningConfig, SourceWatchConfig, RevisionFeed
  */
 export interface SettingsDraft {
   // LLM provider
-  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
+  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli" | "cursor-cli"
   apiKey: string
   model: string
   ollamaUrl: string
@@ -36,7 +39,7 @@ export interface SettingsDraft {
   // Multimodal (image captioning at ingest time)
   multimodalEnabled: boolean
   multimodalUseMainLlm: boolean
-  multimodalProvider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
+  multimodalProvider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli" | "cursor-cli"
   multimodalApiKey: string
   multimodalModel: string
   multimodalOllamaUrl: string
@@ -47,7 +50,7 @@ export interface SettingsDraft {
   multimodalConcurrency: number
 
   // Output preferences
-  outputLanguage: string
+  outputLanguage: OutputLanguage
   maxHistoryMessages: number
 
   // Network — global outbound HTTP proxy. Persisted to app-state.json
@@ -56,8 +59,6 @@ export interface SettingsDraft {
   proxyEnabled: boolean
   proxyUrl: string
   proxyBypassLocal: boolean
-  clipServerEnabled: boolean
-  clipServerPort: number
 
   // Scheduled Import
   scheduledImportEnabled: boolean
@@ -67,6 +68,9 @@ export interface SettingsDraft {
   // UI
   uiLanguage: string
   uiFontSizeScale: number
+  uiFontFamily: UiFontFamily
+  visualStyle: VisualStyle
+  sidebarNavConfig: SidebarNavConfig
 
   // Source folder auto watch
   sourceWatchConfig: SourceWatchConfig

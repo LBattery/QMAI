@@ -60,6 +60,32 @@ describe("llm provider reasoning options", () => {
   })
 })
 
+describe("internal request overrides", () => {
+  it.each([
+    ["OpenAI-compatible", customConfig()],
+    ["Responses API", customConfig({ apiMode: "responses" })],
+    ["Anthropic Messages", customConfig({ apiMode: "anthropic_messages" })],
+    ["Gemini", customConfig({ provider: "google", model: "gemini-2.5-pro" })],
+  ])("does not send user-memory control fields through %s", (_label, config) => {
+    const body = getProviderConfig(config).buildBody(
+      [{ role: "user", content: "测试请求" }],
+      {
+        temperature: 0.2,
+        skipUserMemory: true,
+        userMemorySurface: "ai-chat",
+        userMemoryProjectKey: "project-1",
+        userMemorySessionKey: "session-1",
+      },
+    ) as Record<string, unknown>
+    const serialized = JSON.stringify(body)
+
+    expect(serialized).not.toContain("skipUserMemory")
+    expect(serialized).not.toContain("userMemorySurface")
+    expect(serialized).not.toContain("userMemoryProjectKey")
+    expect(serialized).not.toContain("userMemorySessionKey")
+  })
+})
+
 describe("custom provider headers", () => {
   it("clears Origin for remote custom gateways", () => {
     expect(getCustomCompatibleHeaders("sk-test", "https://example.test/v1/chat/completions")).toMatchObject({
@@ -121,6 +147,46 @@ describe("prompt caching cache_control breakpoints", () => {
       { type: "text", text: "STABLE_PREFIX", cache_control: { type: "ephemeral" } },
       { type: "text", text: "STAGE_SPECIFIC" },
     ])
+  })
+
+  it("preserves a cache breakpoint in Anthropic top-level system content", () => {
+    const body = getProviderConfig(customConfig({ apiMode: "anthropic_messages" }))
+      .buildBody([{
+        role: "system",
+        content: [
+          { type: "text", text: "软件规则\n" },
+          { type: "text", text: "稳定项目核心", cacheControl: true },
+          { type: "text", text: "\n动态上下文" },
+        ],
+      }]) as Record<string, unknown>
+
+    expect(body.system).toEqual([
+      { type: "text", text: "软件规则\n" },
+      { type: "text", text: "稳定项目核心", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "\n动态上下文" },
+    ])
+  })
+
+  it("keeps legacy Anthropic system strings unchanged without a breakpoint", () => {
+    const body = getProviderConfig(customConfig({ apiMode: "anthropic_messages" }))
+      .buildBody([{ role: "system", content: "原有系统提示词" }]) as Record<string, unknown>
+
+    expect(body.system).toBe("原有系统提示词")
+  })
+
+  it("ignores cache markers safely on Gemini while preserving all text", () => {
+    const body = getProviderConfig(customConfig({
+      provider: "google",
+      model: "gemini-2.5-pro",
+    })).buildBody([{
+      role: "system",
+      content: [
+        { type: "text", text: "稳定项目核心", cacheControl: true },
+        { type: "text", text: "动态上下文" },
+      ],
+    }]) as Record<string, any>
+
+    expect(body.systemInstruction.parts).toEqual([{ text: "稳定项目核心动态上下文" }])
   })
 
   it("collapses the same blocks to a byte-identical string for OpenAI-compatible wires (cache marker ignored)", () => {

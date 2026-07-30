@@ -10,7 +10,6 @@ import type { LlmConfig } from "@/stores/wiki-store"
 import { readFile, writeFile } from "@/commands/fs"
 import { joinPath } from "@/lib/path-utils"
 import { streamChat, type ChatMessage } from "@/lib/llm-client"
-import { resolveUserVisibleReasoning } from "@/lib/user-visible-reasoning"
 import type { BookStyleProfile } from "./types"
 import { loadChapterList, loadMetadata } from "./analysis-engine"
 import {
@@ -27,6 +26,8 @@ const MIN_SAMPLE_WORD_COUNT = 800
 export interface AnalyzeWritingStyleOptions {
   onProgress?: (message: string) => void
   signal?: AbortSignal
+  /** 新分析入口必须传入用户明确选择的章节；未传时仅保留旧入口兼容抽样。 */
+  selectedChapterIds?: string[]
 }
 
 function stripFrontmatter(content: string): string {
@@ -54,7 +55,7 @@ export async function analyzeWritingStyle(
   llmConfig: LlmConfig,
   options: AnalyzeWritingStyleOptions = {},
 ): Promise<BookStyleProfile> {
-  const { onProgress, signal } = options
+  const { onProgress, signal, selectedChapterIds } = options
   if (signal?.aborted) throw new Error("用户取消提取")
 
   onProgress?.("读取章节列表…")
@@ -65,9 +66,15 @@ export async function analyzeWritingStyle(
   const bookTitle = metadata?.title || "未命名作品"
 
   // 优先取有一定篇幅的章节，再在其中首/中/尾均匀抽样
+  const selected = selectedChapterIds?.length
+    ? chapters.filter((chapter) => selectedChapterIds.includes(chapter.chapterId))
+    : null
+  if (selectedChapterIds?.length && selected?.length !== selectedChapterIds.length) {
+    throw new Error("所选文风章节读取不完整，请检查章节后重试")
+  }
   const meaningful = chapters.filter((c) => c.wordCount >= MIN_SAMPLE_WORD_COUNT)
   const pool = meaningful.length >= 3 ? meaningful : chapters
-  const sampled = pickEvenlySpread(pool, MAX_SAMPLE_CHAPTERS)
+  const sampled = selected ?? pickEvenlySpread(pool, MAX_SAMPLE_CHAPTERS)
 
   onProgress?.(`读取 ${sampled.length} 章样本正文…`)
   const sampleBlocks: string[] = []
@@ -76,7 +83,7 @@ export async function analyzeWritingStyle(
     try {
       const raw = await readFile(joinPath(bookPath, "chapters", `${chapter.chapterId}.md`))
       const body = stripFrontmatter(raw).slice(0, PER_CHAPTER_CHAR_LIMIT)
-      if (body) sampleBlocks.push(`【${chapter.title}】\n${body}`)
+      if (body) sampleBlocks.push(`【章节ID：${chapter.chapterId} · ${chapter.title}】\n${body}`)
     } catch {
       // 跳过读不到的章节
     }
@@ -106,7 +113,7 @@ export async function analyzeWritingStyle(
       onError: (err) => { streamError = err },
     },
     signal,
-    { reasoning: resolveUserVisibleReasoning(llmConfig.reasoning) },
+    { reasoning: llmConfig.reasoning },
   )
   if (signal?.aborted) throw new Error("用户取消提取")
   if (streamError) throw streamError

@@ -7,6 +7,7 @@ import { getFileName, getRelativePath, normalizePath } from "@/lib/path-utils"
 import { buildLanguageDirective } from "@/lib/output-language"
 import { useWikiStore } from "@/stores/wiki-store"
 import { buildContextPack, contextPackToPrompt } from "@/lib/novel/context-engine"
+import { CHAPTER_BODY_EXCERPT_MAX_CHARS } from "@/lib/novel/chapter-excerpts"
 import i18n from "@/i18n"
 
 export interface LintResult {
@@ -182,6 +183,7 @@ async function buildSemanticNovelPrompt(
   projectPath: string,
   chapterContent: string,
   chapterNumber?: number,
+  maxContextSize?: number,
 ): Promise<string> {
   const contextPack = await buildContextPack(
     projectPath,
@@ -192,7 +194,7 @@ async function buildSemanticNovelPrompt(
   return [
     "你是一个小说连贯性检查编辑。请根据小说上下文包检查本章是否存在连贯性和执行偏差问题。",
     "",
-    contextPackToPrompt(contextPack),
+    contextPackToPrompt(contextPack, undefined, { maxContextSize }),
     "",
     "请重点检查：",
     "1. 本章必须完成：是否已完成，若未完成请指出缺失推进。",
@@ -218,7 +220,7 @@ async function buildSemanticNovelPrompt(
     "- info: 建议优化",
     "",
     "章节正文：",
-    chapterContent.slice(0, 8000),
+    chapterContent.slice(0, CHAPTER_BODY_EXCERPT_MAX_CHARS),
   ].join("\n")
 }
 
@@ -270,7 +272,7 @@ export async function runSemanticLint(
 
   const novelMode = useWikiStore.getState().novelMode
   const prompt = novelMode && options.chapterContent?.trim()
-    ? await buildSemanticNovelPrompt(pp, options.chapterContent, options.chapterNumber)
+    ? await buildSemanticNovelPrompt(pp, options.chapterContent, options.chapterNumber, llmConfig.maxContextSize)
     : buildSemanticWikiPrompt(summaries)
 
   let raw = ""

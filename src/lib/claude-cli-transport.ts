@@ -12,9 +12,6 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
-import { isTauri } from "@/lib/platform"
-import { httpCli } from "@/lib/http-adapter"
-import { serverEvents } from "@/lib/server-events"
 import type { LlmConfig } from "@/stores/wiki-store"
 import type { ChatMessage, RequestOverrides } from "./llm-providers"
 import type { StreamCallbacks } from "./llm-client"
@@ -188,11 +185,7 @@ export async function streamClaudeCodeCli(
 
   const abortListener = () => {
     aborted = true
-    if (isTauri()) {
-      void invoke("claude_cli_kill", { streamId }).catch(() => {})
-    } else {
-      void httpCli.claudeKill(streamId).catch(() => {})
-    }
+    void invoke("claude_cli_kill", { streamId }).catch(() => {})
     finishWith(onDone)
   }
   if (aborted) {
@@ -202,84 +195,26 @@ export async function streamClaudeCodeCli(
   signal?.addEventListener("abort", abortListener)
 
   try {
-    if (isTauri()) {
-      // ── Tauri mode: use Tauri listen + invoke ──
-      unlistenData = await listen<string>(`claude-cli:${streamId}`, (event) => {
-        const token = parse(event.payload)
-        if (token !== null) {
-          emittedToken = true
-          onToken(token)
-        } else {
-          captureUnparsed(event.payload)
-        }
-      })
-      if (aborted || finished) {
-        cleanup()
-        return
+    // ── Tauri mode: use Tauri listen + invoke ──
+    unlistenData = await listen<string>(`claude-cli:${streamId}`, (event) => {
+      const token = parse(event.payload)
+      if (token !== null) {
+        emittedToken = true
+        onToken(token)
+      } else {
+        captureUnparsed(event.payload)
       }
+    })
+    if (aborted || finished) {
+      cleanup()
+      return
+    }
 
-      unlistenDone = await listen<{ code: number | null; stderr: string }>(
-        `claude-cli:${streamId}:done`,
-        (event) => {
-          const code = event.payload?.code
-          const stderr = event.payload?.stderr?.trim() ?? ""
-          if (code !== null && code !== undefined && code !== 0) {
-            finishWith(() =>
-              onError(
-                new Error(buildExitError(code, stderr, unparsedLines.join("\n"))),
-              ),
-            )
-          } else if (!emittedToken) {
-            const details = stderr || unparsedLines.join("\n").trim()
-            finishWith(() =>
-              onError(new Error(
-                details
-                  ? `Claude Code CLI completed but returned no content:\n${details}`
-                  : "Claude Code CLI completed but returned no content. Try running `claude -p` in a terminal to inspect the output, or switch to the Anthropic API in Settings.",
-              )),
-            )
-          } else {
-            finishWith(onDone)
-          }
-        },
-      )
-      if (aborted || finished) {
-        cleanup()
-        return
-      }
-
-      const payload: SpawnPayload = {
-        streamId,
-        model: config.model,
-        messages,
-        isolateLocalConfig: config.localCliIsolation === true,
-      }
-      await invoke("claude_cli_spawn", payload)
-    } else {
-      // ── HTTP mode: use serverEvents + httpCli ──
-      serverEvents.connect()
-
-      unlistenData = serverEvents.on("claude-cli", (event) => {
-        const payload = event.payload as { streamId: string; data: string }
-        if (payload.streamId !== streamId) return
-        const token = parse(payload.data)
-        if (token !== null) {
-          emittedToken = true
-          onToken(token)
-        } else {
-          captureUnparsed(payload.data)
-        }
-      })
-      if (aborted || finished) {
-        cleanup()
-        return
-      }
-
-      unlistenDone = serverEvents.on("claude-cli:done", (event) => {
-        const payload = event.payload as { streamId: string; code: number | null; stderr: string }
-        if (payload.streamId !== streamId) return
-        const code = payload.code
-        const stderr = payload.stderr?.trim() ?? ""
+    unlistenDone = await listen<{ code: number | null; stderr: string }>(
+      `claude-cli:${streamId}:done`,
+      (event) => {
+        const code = event.payload?.code
+        const stderr = event.payload?.stderr?.trim() ?? ""
         if (code !== null && code !== undefined && code !== 0) {
           finishWith(() =>
             onError(
@@ -298,22 +233,24 @@ export async function streamClaudeCodeCli(
         } else {
           finishWith(onDone)
         }
-      })
-      if (aborted || finished) {
-        cleanup()
-        return
-      }
-
-      await httpCli.claudeSpawn(streamId, config.model, messages, config.localCliIsolation === true)
+      },
+    )
+    if (aborted || finished) {
+      cleanup()
+      return
     }
+
+    const payload: SpawnPayload = {
+      streamId,
+      model: config.model,
+      messages,
+      isolateLocalConfig: config.localCliIsolation === true,
+    }
+    await invoke("claude_cli_spawn", payload)
 
     if (aborted || signal?.aborted) {
       aborted = true
-      if (isTauri()) {
-        await invoke("claude_cli_kill", { streamId }).catch(() => {})
-      } else {
-        await httpCli.claudeKill(streamId).catch(() => {})
-      }
+      await invoke("claude_cli_kill", { streamId }).catch(() => {})
       finishWith(onDone)
       return
     }

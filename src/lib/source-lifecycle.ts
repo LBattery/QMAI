@@ -10,8 +10,10 @@ import {
 } from "@/commands/fs"
 import type { WikiProject, FileNode } from "@/types/wiki"
 import type { LlmConfig } from "@/stores/wiki-store"
+import { useWikiStore } from "@/stores/wiki-store"
 import { enqueueBatch } from "@/lib/ingest-queue"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
+import { resolveDefaultModel } from "@/lib/novel/model-resolver"
 import { getFileName, getFileStem, normalizePath } from "@/lib/path-utils"
 import {
   parseFrontmatterArray,
@@ -104,7 +106,8 @@ export async function enqueueSourceIngest(
   llmConfig: LlmConfig,
   options: { sourceRoot?: string; rootContext?: string } = {},
 ): Promise<string[]> {
-  if (!hasUsableLlm(llmConfig)) return []
+  const resolvedLlmConfig = resolveDefaultModel(llmConfig)
+  if (!hasUsableLlm(resolvedLlmConfig, useWikiStore.getState().providerConfigs)) return []
   const files = sourcePaths
     .filter(isIngestableSourcePath)
     .map((sourcePath) => ({

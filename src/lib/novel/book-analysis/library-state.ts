@@ -12,6 +12,7 @@ import type {
   ExtractedCharacter,
   RecognizedCharacter,
 } from "./types"
+import type { AnalysisEvidenceSnippet, BookAnalysisModuleManifest } from "./analysis-pipeline-types"
 
 export type BookStyleStatus = "missing" | "available" | "enabled"
 
@@ -26,6 +27,8 @@ export interface BookAnalysisLibraryBook {
   styleStatus: BookStyleStatus
   boundAurasCount: number
   addedAuraCharacterIds: string[]
+  analysisManifest?: BookAnalysisModuleManifest
+  evidence: AnalysisEvidenceSnippet[]
 }
 
 export interface BookAnalysisAuraBindingSummary {
@@ -174,6 +177,8 @@ export async function loadBookAnalysisLibraryState(projectPath: string): Promise
       : recognizedFromExtractedCharacters(entry.path, characters)
     const skills = await loadSkills(entry.path, metadata, characters)
     const styleProfile = await readJson<BookStyleProfile>(joinPath(entry.path, "style-profile.json"))
+    const analysisManifest = await readJson<BookAnalysisModuleManifest>(joinPath(entry.path, "analysis", "manifest.json"))
+    const evidenceCollection = await readJson<{ snippets?: AnalysisEvidenceSnippet[] }>(joinPath(entry.path, "analysis", "evidence.json"))
     const styleStatus: BookStyleStatus =
       enabledStyle?.sourceBook === metadata.title ? "enabled" : styleProfile ? "available" : "missing"
 
@@ -188,6 +193,8 @@ export async function loadBookAnalysisLibraryState(projectPath: string): Promise
       styleStatus,
       boundAurasCount: getBoundAurasCount(metadata.title, bindings, auraById),
       addedAuraCharacterIds: getAddedAuraCharacterIds(metadata.title, characters, auraStore.customAuras),
+      analysisManifest: analysisManifest ?? undefined,
+      evidence: Array.isArray(evidenceCollection?.snippets) ? evidenceCollection.snippets : [],
     })
   }
 

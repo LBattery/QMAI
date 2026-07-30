@@ -1,58 +1,139 @@
-import { useCallback, useEffect, useRef, useState, useMemo } from "react"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
-import remarkMath from "remark-math"
-import rehypeKatex from "rehype-katex"
-import "katex/dist/katex.min.css"
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import {
-  Bot, User, FileText, ChevronDown, ChevronRight, RefreshCw, Copy, Check,
-  Users, Lightbulb, BookOpen, HelpCircle, GitMerge, BarChart3, Layout, Globe,
+  Bot,
+  User,
+  FileText,
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
+  Copy,
+  Check,
+  Users,
+  Lightbulb,
+  BookOpen,
+  HelpCircle,
+  GitMerge,
+  BarChart3,
+  Layout,
+  Globe,
   Image as ImageIcon,
-} from "lucide-react"
-import { useWikiStore } from "@/stores/wiki-store"
-import { readFile } from "@/commands/fs"
-import { normalizePath, getFileName } from "@/lib/path-utils"
-import { refreshProjectState } from "@/lib/project-refresh"
-import { getLastQueryPages } from "@/components/chat/chat-shared"
-import { FileEditPreview } from "@/components/chat/file-edit-preview"
-import type { DisplayMessage } from "@/stores/chat-store"
+  Loader2,
+  Info,
+} from "lucide-react";
+import { useWikiStore } from "@/stores/wiki-store";
+import { readFile } from "@/commands/fs";
+import { normalizePath, getFileName } from "@/lib/path-utils";
+import { refreshProjectState } from "@/lib/project-refresh";
+import { getLastQueryPages } from "@/components/chat/chat-shared";
+import { FileEditPreview } from "@/components/chat/file-edit-preview";
+import { AgentToolCallMessage } from "@/components/chat/agent-tool-call-message";
+import type { ToolCallRecord } from "@/components/chat/agent-tool-call-message";
+import { AgentStageStream } from "@/components/chat/agent-stage-stream";
+import { ReferenceChip } from "@/components/reference/ReferenceChip";
+import type { DisplayMessage } from "@/stores/chat-store";
+import { ContextTracePanel } from "@/components/chat/context-trace-panel";
+import { ContextHubDetails } from "@/components/common/context-hub-details";
 
-import { convertLatexToUnicode } from "@/lib/latex-to-unicode"
-import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
-import { findRawSourceForImage, imageUrlToAbsolute } from "@/lib/raw-source-resolver"
-import { detectLanguage } from "@/lib/detect-language"
-import { getHtmlLang, getTextDirection } from "@/lib/language-metadata"
-import { MermaidDiagram, unwrapMermaidPre } from "@/components/mermaid-diagram"
-import { canContinueUnfinishedDeepChapter } from "./chat-resume"
-import { getCopyableAssistantContent } from "@/lib/chat-copy-content"
+import { convertLatexToUnicode } from "@/lib/latex-to-unicode";
+import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver";
+import {
+  findRawSourceForImage,
+  imageUrlToAbsolute,
+} from "@/lib/raw-source-resolver";
+import { detectLanguage } from "@/lib/detect-language";
+import { getHtmlLang, getTextDirection } from "@/lib/language-metadata";
+import { MermaidDiagram, unwrapMermaidPre } from "@/components/mermaid-diagram";
+import { highlightCode } from "@/lib/streaming-code-highlight";
+import { separateThinking } from "@/lib/separate-thinking";
+import { StreamingMarkdown } from "@/components/common/streaming-markdown";
+import { StreamingSpinner } from "@/components/common/streaming-spinner";
+import { canContinueUnfinishedDeepChapter } from "./chat-resume";
+import { getCopyableAssistantContent } from "@/lib/chat-copy-content";
 
 interface ChatMessageProps {
-  message: DisplayMessage
-  isLastAssistant?: boolean
-  onRegenerate?: () => void
-  novelMode?: boolean
-  projectPath?: string | null
-  onSaveAsChapter?: (content: string) => void
-  onContinueNextChapter?: () => void
-  onContinueUnfinished?: () => void
-  onSaveAsDraft?: (content: string) => void
-  onDiscardDraft?: () => void
-  saveStatus?: string
-  isSaving?: boolean
+  message: DisplayMessage;
+  isLastAssistant?: boolean;
+  onRegenerate?: () => void;
+  novelMode?: boolean;
+  projectPath?: string | null;
+  onSaveAsChapter?: (content: string) => void;
+  onContinueNextChapter?: () => void;
+  onContinueUnfinished?: () => void;
+  onSaveAsDraft?: (content: string) => void;
+  onDiscardDraft?: () => void;
+  saveStatus?: string;
+  isSaving?: boolean;
+  onConfirmToolSave?: (call: ToolCallRecord & { preview?: string }) => void;
+  onRejectTool?: (call: ToolCallRecord & { preview?: string }) => void;
+  onRebuildRetrievalIndex?: () => Promise<{
+    success: boolean;
+    chapterCount?: number;
+    error?: string;
+  }>;
+  retrievalIndexHasIndex?: boolean;
+  isRebuildingRetrievalIndex?: boolean;
+  lastRebuildRetrievalResult?: {
+    success: boolean;
+    chapterCount?: number;
+    error?: string;
+  } | null;
 }
 
-export function ChatMessage({ message, isLastAssistant, onRegenerate, novelMode, projectPath, onSaveAsChapter, onContinueNextChapter, onContinueUnfinished, saveStatus, isSaving }: ChatMessageProps) {
-  const isUser = message.role === "user"
-  const isSystem = message.role === "system"
-  const isAssistant = message.role === "assistant"
-  const [hovered, setHovered] = useState(false)
+export function ChatMessage({
+  message,
+  isLastAssistant,
+  onRegenerate,
+  novelMode,
+  projectPath,
+  onSaveAsChapter,
+  onContinueNextChapter,
+  onContinueUnfinished,
+  saveStatus,
+  isSaving,
+  onConfirmToolSave,
+  onRejectTool,
+  onRebuildRetrievalIndex,
+  retrievalIndexHasIndex,
+  isRebuildingRetrievalIndex,
+  lastRebuildRetrievalResult,
+}: ChatMessageProps) {
+  const isUser = message.role === "user";
+  const isSystem = message.role === "system";
+  const isAssistant = message.role === "assistant";
+  const [hovered, setHovered] = useState(false);
+  const [contextTraceExpanded, setContextTraceExpanded] = useState(false);
   const canResumeUnfinished = Boolean(
-    novelMode && isLastAssistant && onContinueUnfinished && canContinueUnfinishedDeepChapter(message.content),
-  )
+    novelMode &&
+    isLastAssistant &&
+    onContinueUnfinished &&
+    canContinueUnfinishedDeepChapter(message.content),
+  );
+  const hasContextTrace = Boolean(
+    message.contextHubSnapshot ||
+    (message.contextTrace &&
+      (message.contextTrace.toolCalls.length > 0 ||
+        message.contextTrace.contextInfo)),
+  );
+
+  // 仅对最后一条流式助手消息提取 thinking，避免历史消息重复提取
+  const isLastStreamingAssistant = isLastAssistant && isAssistant;
+  const { thinking: extractedThinking } = useMemo(
+    () =>
+      isLastStreamingAssistant
+        ? separateThinking(message.content)
+        : { thinking: null, answer: message.content },
+    [message.content, isLastStreamingAssistant],
+  );
+  const thinkingStreaming = isLastStreamingAssistant && !!message.isAgentRunning;
 
   return (
     <div
-      className={`flex gap-2 ${isUser ? "flex-row-reverse" : "flex-row"}`}
+      className={`flex w-full min-w-0 gap-2 ${isUser ? "flex-row-reverse" : "flex-row"}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -67,25 +148,64 @@ export function ChatMessage({ message, isLastAssistant, onRegenerate, novelMode,
       >
         {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
       </div>
-      <div className="max-w-[80%] flex flex-col gap-1.5">
+      <div className={`${isUser ? "w-fit max-w-full lg:max-w-[50vw]" : "min-w-0 flex-1 max-w-full"} flex flex-col gap-1.5`}>
         <div
-          className={`rounded-lg px-3 py-2 text-sm ${
+          className={`w-full min-w-0 rounded-lg px-3 py-2 text-sm ${
             isUser
               ? "bg-primary text-primary-foreground"
               : message.discarded
                 ? "bg-muted/50 text-muted-foreground/50"
-                : "bg-muted text-foreground"
+                : "border bg-background text-foreground"
           }`}
         >
           {message.discarded ? (
             <span className="italic text-xs opacity-60">已废弃</span>
           ) : isUser ? (
-            <p dir="auto" className="whitespace-pre-wrap break-words">{message.content}</p>
+            <>
+              <p dir="auto" className="whitespace-pre-wrap break-words">
+                {message.content}
+              </p>
+              {message.attachedReferences &&
+                message.attachedReferences.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {message.attachedReferences.map((token) => (
+                      <ReferenceChip key={token.id} token={token} readonly />
+                    ))}
+                  </div>
+                )}
+            </>
           ) : (
-            <AgentAwareContent content={message.content} projectPath={projectPath} />
+            <>
+              {message.agentStages && message.agentStages.length > 0 ? (
+                <AgentStageStream stages={message.agentStages} />
+              ) : null}
+              {message.agentToolCalls && message.agentToolCalls.length > 0 ? (
+                <AgentToolCallMessage
+                  toolCalls={message.agentToolCalls}
+                  contextTrace={message.contextTrace}
+                  thinkingContent={extractedThinking ?? undefined}
+                  thinkingStreaming={thinkingStreaming}
+                  onConfirmSave={onConfirmToolSave}
+                  onReject={onRejectTool}
+                />
+              ) : null}
+              {message.isAgentRunning && !message.content ? (
+                <AgentThinkingIndicator />
+              ) : (
+                <AgentAwareContent
+                  content={message.content}
+                  projectPath={projectPath}
+                />
+              )}
+            </>
           )}
         </div>
-        {isAssistant && !message.discarded && <CitedReferencesPanel content={message.content} savedReferences={message.references} />}
+        {isAssistant && !message.discarded && (
+          <CitedReferencesPanel
+            content={message.content}
+            savedReferences={message.references}
+          />
+        )}
         {isAssistant && !message.discarded && (
           <div className="flex items-center gap-1 flex-wrap">
             {canResumeUnfinished && (
@@ -137,25 +257,64 @@ export function ChatMessage({ message, isLastAssistant, onRegenerate, novelMode,
                 <RefreshCw className="h-3 w-3" /> 重新生成
               </button>
             )}
+            {hasContextTrace && (
+              <button
+                type="button"
+                onClick={() => setContextTraceExpanded(!contextTraceExpanded)}
+                className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                title="查看生成详情"
+              >
+                <Info className="h-3 w-3" />
+                {contextTraceExpanded ? "收起详情" : "查看生成详情"}
+                {contextTraceExpanded ? (
+                  <ChevronDown className="h-3 w-3" />
+                ) : (
+                  <ChevronRight className="h-3 w-3" />
+                )}
+              </button>
+            )}
           </div>
         )}
-        {saveStatus && (
+        {isAssistant &&
+          !message.discarded &&
+          contextTraceExpanded &&
+          (message.contextTrace || message.contextHubSnapshot) && (
+            <div className="mt-1">
+              {message.contextTrace ? (
+                <ContextTracePanel
+                  trace={message.contextTrace}
+                  contextHubSnapshot={message.contextHubSnapshot}
+                  projectPath={projectPath}
+                  onRebuildRetrievalIndex={onRebuildRetrievalIndex}
+                  retrievalIndexHasIndex={retrievalIndexHasIndex}
+                  isRebuildingRetrievalIndex={isRebuildingRetrievalIndex}
+                  lastRebuildResult={lastRebuildRetrievalResult}
+                />
+              ) : message.contextHubSnapshot ? (
+                <ContextHubDetails
+                  reference={message.contextHubSnapshot}
+                  projectPath={projectPath}
+                />
+              ) : null}
+            </div>
+          )}
+        {isLastAssistant && saveStatus && (
           <p className="mt-1 text-xs text-muted-foreground">{saveStatus}</p>
         )}
       </div>
     </div>
-  )
+  );
 }
 
 function CopyButton({ content }: { content: string }) {
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
-    const clean = getCopyableAssistantContent(content)
-    await navigator.clipboard.writeText(clean)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }, [content])
+    const clean = getCopyableAssistantContent(content);
+    await navigator.clipboard.writeText(clean);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [content]);
 
   return (
     <button
@@ -167,15 +326,18 @@ function CopyButton({ content }: { content: string }) {
       {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
       {copied ? "已复制" : "复制"}
     </button>
-  )
+  );
 }
 
 interface CitedPage {
-  title: string
-  path: string
+  title: string;
+  path: string;
 }
 
-const REF_TYPE_CONFIG: Record<string, { icon: typeof FileText; color: string }> = {
+const REF_TYPE_CONFIG: Record<
+  string,
+  { icon: typeof FileText; color: string }
+> = {
   entity: { icon: Users, color: "text-blue-500" },
   concept: { icon: Lightbulb, color: "text-purple-500" },
   source: { icon: BookOpen, color: "text-orange-500" },
@@ -184,18 +346,18 @@ const REF_TYPE_CONFIG: Record<string, { icon: typeof FileText; color: string }> 
   comparison: { icon: BarChart3, color: "text-teal-500" },
   overview: { icon: Layout, color: "text-yellow-500" },
   clip: { icon: Globe, color: "text-blue-400" },
-}
+};
 
 function getRefType(path: string): string {
-  if (path.includes("/entities/")) return "entity"
-  if (path.includes("/concepts/")) return "concept"
-  if (path.includes("/sources/")) return "source"
-  if (path.includes("/queries/")) return "query"
-  if (path.includes("/synthesis/")) return "synthesis"
-  if (path.includes("/comparisons/")) return "comparison"
-  if (path.includes("overview")) return "overview"
-  if (path.includes("raw/sources/")) return "clip"
-  return "source"
+  if (path.includes("/entities/")) return "entity";
+  if (path.includes("/concepts/")) return "concept";
+  if (path.includes("/sources/")) return "source";
+  if (path.includes("/queries/")) return "query";
+  if (path.includes("/synthesis/")) return "synthesis";
+  if (path.includes("/comparisons/")) return "comparison";
+  if (path.includes("overview")) return "overview";
+  if (path.includes("raw/sources/")) return "clip";
+  return "source";
 }
 
 /**
@@ -209,21 +371,29 @@ function getRefType(path: string): string {
  * Group 1 captures the URL (everything inside `(...)` of the
  * markdown image syntax, no whitespace).
  */
-const CITED_IMAGE_RE = /!\[[^\]]*\]\(([^)\s]+)\)/g
+const CITED_IMAGE_RE = /!\[[^\]]*\]\(([^)\s]+)\)/g;
 
 interface CitedImageInfo {
-  count: number
+  count: number;
   /** First image URL on the page — used as the scroll target when
    *  the badge button opens the raw source. Null when count===0. */
-  firstUrl: string | null
+  firstUrl: string | null;
 }
 
-function CitedReferencesPanel({ content, savedReferences }: { content: string; savedReferences?: CitedPage[] }) {
-  const project = useWikiStore((s) => s.project)
-  const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
-  const setFileContent = useWikiStore((s) => s.setFileContent)
-  const setPendingScrollImageSrc = useWikiStore((s) => s.setPendingScrollImageSrc)
-  const [expanded, setExpanded] = useState(false)
+function CitedReferencesPanel({
+  content,
+  savedReferences,
+}: {
+  content: string;
+  savedReferences?: CitedPage[];
+}) {
+  const project = useWikiStore((s) => s.project);
+  const setSelectedFile = useWikiStore((s) => s.setSelectedFile);
+  const setFileContent = useWikiStore((s) => s.setFileContent);
+  const setPendingScrollImageSrc = useWikiStore(
+    (s) => s.setPendingScrollImageSrc,
+  );
+  const [expanded, setExpanded] = useState(false);
   /**
    * Per-cited-page image info: count + first image URL. We can't
    * hang this off `CitedPage` directly because `extractCitedPages`
@@ -232,28 +402,32 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
    * Same path → same info, so a tiny in-component map keyed by
    * path is plenty.
    */
-  const [imageInfos, setImageInfos] = useState<Record<string, CitedImageInfo>>({})
+  const [imageInfos, setImageInfos] = useState<Record<string, CitedImageInfo>>(
+    {},
+  );
 
   // Use saved references first (persisted with message), fall back to dynamic extraction
   const citedPages = useMemo(() => {
-    if (savedReferences && savedReferences.length > 0) return savedReferences
-    return extractCitedPages(content)
-  }, [content, savedReferences])
+    if (savedReferences && savedReferences.length > 0) return savedReferences;
+    return extractCitedPages(content);
+  }, [content, savedReferences]);
 
   // Async-fetch each cited page's content once and extract image
   // info: count + first URL. Done in parallel; failures are
   // silently treated as { count: 0, firstUrl: null } (page may
   // not exist on disk yet, e.g. a citation the LLM hallucinated).
   useEffect(() => {
-    if (!project || citedPages.length === 0) return
-    const pp = normalizePath(project.path)
-    let cancelled = false
+    if (!project || citedPages.length === 0) return;
+    const pp = normalizePath(project.path);
+    let cancelled = false;
     Promise.all(
       citedPages.map(async (page) => {
         // Try the path verbatim first, then the same fallback set
         // the click-handler uses below — keeps "is the file on
         // disk" check consistent across the panel.
-        const id = getFileName(page.path.replace(/^wiki\//, "").replace(/\.md$/, ""))
+        const id = getFileName(
+          page.path.replace(/^wiki\//, "").replace(/\.md$/, ""),
+        );
         const candidates = [
           `${pp}/${page.path}`,
           `${pp}/wiki/entities/${id}.md`,
@@ -263,36 +437,36 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
           `${pp}/wiki/synthesis/${id}.md`,
           `${pp}/wiki/comparisons/${id}.md`,
           `${pp}/wiki/${id}.md`,
-        ]
+        ];
         for (const candidate of candidates) {
           try {
-            const text = await readFile(candidate)
+            const text = await readFile(candidate);
             // Reset stateful regex.lastIndex by `new RegExp(...)` —
             // module-level `g` regexes carry state across calls
             // and would skip matches on the second invocation.
-            const re = new RegExp(CITED_IMAGE_RE.source, CITED_IMAGE_RE.flags)
-            const matches = [...text.matchAll(re)]
+            const re = new RegExp(CITED_IMAGE_RE.source, CITED_IMAGE_RE.flags);
+            const matches = [...text.matchAll(re)];
             const info: CitedImageInfo = {
               count: matches.length,
               firstUrl: matches.length > 0 ? matches[0][1] : null,
-            }
-            return [page.path, info] as const
+            };
+            return [page.path, info] as const;
           } catch {
             // try next candidate
           }
         }
-        return [page.path, { count: 0, firstUrl: null }] as const
+        return [page.path, { count: 0, firstUrl: null }] as const;
       }),
     ).then((entries) => {
-      if (cancelled) return
-      const next: Record<string, CitedImageInfo> = {}
-      for (const [path, info] of entries) next[path] = info
-      setImageInfos(next)
-    })
+      if (cancelled) return;
+      const next: Record<string, CitedImageInfo> = {};
+      for (const [path, info] of entries) next[path] = info;
+      setImageInfos(next);
+    });
     return () => {
-      cancelled = true
-    }
-  }, [project, citedPages])
+      cancelled = true;
+    };
+  }, [project, citedPages]);
 
   /**
    * Open the raw source file for a page's first image and stage a
@@ -304,41 +478,43 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
    */
   const handleJumpToImageSource = useCallback(
     async (firstUrl: string, fallbackPath: string) => {
-      if (!project) return
-      const pp = normalizePath(project.path)
-      const rawPath = await findRawSourceForImage(firstUrl, pp)
+      if (!project) return;
+      const pp = normalizePath(project.path);
+      const rawPath = await findRawSourceForImage(firstUrl, pp);
       if (rawPath) {
         try {
-          const content = await readFile(rawPath)
-          setPendingScrollImageSrc(imageUrlToAbsolute(firstUrl, pp))
-          setSelectedFile(rawPath)
-          setFileContent(content)
-          console.log(`[refs:image-jump] ${firstUrl} → raw source ${rawPath}`)
-          return
+          const content = await readFile(rawPath);
+          setPendingScrollImageSrc(imageUrlToAbsolute(firstUrl, pp));
+          setSelectedFile(rawPath);
+          setFileContent(content);
+          console.log(`[refs:image-jump] ${firstUrl} → raw source ${rawPath}`);
+          return;
         } catch (err) {
-          console.warn(`[refs:image-jump] failed to read ${rawPath}:`, err)
+          console.warn(`[refs:image-jump] failed to read ${rawPath}:`, err);
         }
       }
       // Fallback: open the wiki summary itself with same scroll
       // target — at least the safety-net section will scroll into
       // view there.
       try {
-        const content = await readFile(`${pp}/${fallbackPath}`)
-        setPendingScrollImageSrc(firstUrl)
-        setSelectedFile(`${pp}/${fallbackPath}`)
-        setFileContent(content)
+        const content = await readFile(`${pp}/${fallbackPath}`);
+        setPendingScrollImageSrc(firstUrl);
+        setSelectedFile(`${pp}/${fallbackPath}`);
+        setFileContent(content);
       } catch (err) {
-        console.warn(`[refs:image-jump] fallback also failed:`, err)
+        console.warn(`[refs:image-jump] fallback also failed:`, err);
       }
     },
     [project, setPendingScrollImageSrc, setSelectedFile, setFileContent],
-  )
+  );
 
-  if (citedPages.length === 0) return null
+  if (citedPages.length === 0) return null;
 
-  const MAX_COLLAPSED = 3
-  const visiblePages = expanded ? citedPages : citedPages.slice(0, MAX_COLLAPSED)
-  const hasMore = citedPages.length > MAX_COLLAPSED
+  const MAX_COLLAPSED = 3;
+  const visiblePages = expanded
+    ? citedPages
+    : citedPages.slice(0, MAX_COLLAPSED);
+  const hasMore = citedPages.length > MAX_COLLAPSED;
 
   return (
     <div className="rounded-md border border-border/60 bg-muted/30 text-xs mb-1">
@@ -349,23 +525,26 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
       >
         <FileText className="h-3 w-3 shrink-0" />
         <span className="font-medium">引用资料（{citedPages.length}）</span>
-        {hasMore && (
-          expanded
-            ? <ChevronDown className="h-3 w-3 ml-auto" />
-            : <ChevronRight className="h-3 w-3 ml-auto" />
-        )}
+        {hasMore &&
+          (expanded ? (
+            <ChevronDown className="h-3 w-3 ml-auto" />
+          ) : (
+            <ChevronRight className="h-3 w-3 ml-auto" />
+          ))}
       </button>
       <div className="px-2 pb-1.5">
         {visiblePages.map((page, i) => {
-          const refType = getRefType(page.path)
-          const config = REF_TYPE_CONFIG[refType] ?? REF_TYPE_CONFIG.source
-          const Icon = config.icon
-          const info = imageInfos[page.path]
-          const hasImages = (info?.count ?? 0) > 0
+          const refType = getRefType(page.path);
+          const config = REF_TYPE_CONFIG[refType] ?? REF_TYPE_CONFIG.source;
+          const Icon = config.icon;
+          const info = imageInfos[page.path];
+          const hasImages = (info?.count ?? 0) > 0;
           const openCitedPage = async () => {
-            if (!project) return
-            const pp = normalizePath(project.path)
-            const id = getFileName(page.path.replace(/^wiki\//, "").replace(/\.md$/, ""))
+            if (!project) return;
+            const pp = normalizePath(project.path);
+            const id = getFileName(
+              page.path.replace(/^wiki\//, "").replace(/\.md$/, ""),
+            );
             const candidates = [
               `${pp}/${page.path}`,
               `${pp}/wiki/entities/${id}.md`,
@@ -375,18 +554,18 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
               `${pp}/wiki/synthesis/${id}.md`,
               `${pp}/wiki/comparisons/${id}.md`,
               `${pp}/wiki/${id}.md`,
-            ]
+            ];
             for (const candidate of candidates) {
               try {
-                await readFile(candidate)
-                setSelectedFile(candidate)
-                return
+                await readFile(candidate);
+                setSelectedFile(candidate);
+                return;
               } catch {
                 // try next
               }
             }
-            setSelectedFile(`${pp}/${page.path}`)
-          }
+            setSelectedFile(`${pp}/${page.path}`);
+          };
           return (
             // Outer is a div, NOT a button — we have two click
             // targets inside (image badge + main row) and nesting
@@ -398,7 +577,9 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
               className="flex w-full items-center gap-1.5 rounded text-left"
               title={page.path}
             >
-              <span className="text-[10px] text-muted-foreground/60 w-4 shrink-0 text-right">[{i + 1}]</span>
+              <span className="text-[10px] text-muted-foreground/60 w-4 shrink-0 text-right">
+                [{i + 1}]
+              </span>
               {/*
                * Image badge — clickable, separately from the page
                * row. Click → resolve the FIRST image's raw source
@@ -415,7 +596,9 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
               {hasImages && info?.firstUrl && (
                 <button
                   type="button"
-                  onClick={() => handleJumpToImageSource(info.firstUrl!, page.path)}
+                  onClick={() =>
+                    handleJumpToImageSource(info.firstUrl!, page.path)
+                  }
                   className="flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-blue-600 hover:bg-blue-100/40 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors"
                   title={`打开第一张图片所在原始文档（本页共 ${info.count} 张图片）`}
                 >
@@ -429,10 +612,12 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
                 className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-accent/50 transition-colors"
               >
                 <Icon className={`h-3 w-3 shrink-0 ${config.color}`} />
-                <span className="truncate text-foreground/80">{page.title}</span>
+                <span className="truncate text-foreground/80">
+                  {page.title}
+                </span>
               </button>
             </div>
-          )
+          );
         })}
         {hasMore && !expanded && (
           <button
@@ -445,136 +630,174 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
         )}
       </div>
     </div>
-  )
+  );
 }
-
 
 /**
  * Extract cited wiki pages from the hidden <!-- cited: 1, 3, 5 --> comment.
  * Maps page numbers back to the pages that were sent to the LLM.
  */
 function extractCitedPages(text: string): CitedPage[] {
-  const lastQueryPages = getLastQueryPages()
-  const citedMatch = text.match(/<!--\s*cited:\s*(.+?)\s*-->/)
+  const lastQueryPages = getLastQueryPages();
+  const citedMatch = text.match(/<!--\s*cited:\s*(.+?)\s*-->/);
   if (citedMatch && lastQueryPages.length > 0) {
     const numbers = citedMatch[1]
       .split(",")
       .map((s) => parseInt(s.trim(), 10))
-      .filter((n) => !isNaN(n) && n >= 1 && n <= lastQueryPages.length)
+      .filter((n) => !isNaN(n) && n >= 1 && n <= lastQueryPages.length);
 
-    const pages = numbers.map((n) => lastQueryPages[n - 1])
-    if (pages.length > 0) return pages
+    const pages = numbers.map((n) => lastQueryPages[n - 1]);
+    if (pages.length > 0) return pages;
   }
 
   // Fallback: if LLM used [1], [2] notation in text, try to match those
   if (lastQueryPages.length > 0) {
-    const numberRefs = text.match(/\[(\d+)\]/g)
+    const numberRefs = text.match(/\[(\d+)\]/g);
     if (numberRefs) {
-      const numbers = [...new Set(numberRefs.map((r) => parseInt(r.slice(1, -1), 10)))]
-        .filter((n) => n >= 1 && n <= lastQueryPages.length)
+      const numbers = [
+        ...new Set(numberRefs.map((r) => parseInt(r.slice(1, -1), 10))),
+      ].filter((n) => n >= 1 && n <= lastQueryPages.length);
       if (numbers.length > 0) {
-        return numbers.map((n) => lastQueryPages[n - 1])
+        return numbers.map((n) => lastQueryPages[n - 1]);
       }
     }
   }
 
   // Fallback for persisted messages: extract [[wikilinks]] from the text
   // Try to resolve each wikilink to a real file path by checking common wiki subdirectories
-  const wikilinks = text.match(/\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]/g)
+  const wikilinks = text.match(/\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]/g);
   if (wikilinks) {
-    const seen = new Set<string>()
-    const pages: CitedPage[] = []
-    const WIKI_DIRS = ["entities", "concepts", "sources", "queries", "synthesis", "comparisons"]
+    const seen = new Set<string>();
+    const pages: CitedPage[] = [];
+    const WIKI_DIRS = [
+      "entities",
+      "concepts",
+      "sources",
+      "queries",
+      "synthesis",
+      "comparisons",
+    ];
 
     for (const link of wikilinks) {
-      const nameMatch = link.match(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/)
+      const nameMatch = link.match(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/);
       if (nameMatch) {
-        const id = nameMatch[1].trim()
-        const display = nameMatch[2]?.trim() || id
+        const id = nameMatch[1].trim();
+        const display = nameMatch[2]?.trim() || id;
 
         // Skip if id contains path separators (already a path like queries/xxx)
-        if (seen.has(id)) continue
-        seen.add(id)
+        if (seen.has(id)) continue;
+        seen.add(id);
 
         // Try to find the file in known wiki subdirectories
-        let resolvedPath = ""
+        let resolvedPath = "";
         if (id.includes("/")) {
           // Already has directory like "queries/my-query"
-          resolvedPath = `wiki/${id}.md`
+          resolvedPath = `wiki/${id}.md`;
         } else {
           // Search in common directories
           for (const dir of WIKI_DIRS) {
-            resolvedPath = `wiki/${dir}/${id}.md`
+            resolvedPath = `wiki/${dir}/${id}.md`;
             // We can't do async file checking here, so try all known patterns
             // The click handler will try multiple paths
-            break // Use first candidate, click handler resolves the rest
+            break; // Use first candidate, click handler resolves the rest
           }
-          if (!resolvedPath) resolvedPath = `wiki/${id}.md`
+          if (!resolvedPath) resolvedPath = `wiki/${id}.md`;
         }
 
-        pages.push({ title: display, path: resolvedPath })
+        pages.push({ title: display, path: resolvedPath });
       }
     }
-    if (pages.length > 0) return pages
+    if (pages.length > 0) return pages;
   }
 
   // No citations found
-  return []
+  return [];
 }
 
 interface StreamingMessageProps {
-  content: string
+  content: string;
+  isStreaming?: boolean;
 }
 
-export function StreamingMessage({ content }: StreamingMessageProps) {
-  const { thinking, answer } = useMemo(() => separateThinking(content), [content])
-  const isThinking = thinking !== null && answer.length === 0
+export function StreamingMessage({ content, isStreaming = true }: StreamingMessageProps) {
+  const { thinking, answer } = useMemo(
+    () => separateThinking(content),
+    [content],
+  );
+  const isThinking = thinking !== null && answer.length === 0;
 
   return (
-    <div className="flex gap-2 flex-row">
+    <div className="flex w-full min-w-0 gap-2 flex-row">
       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
         <Bot className="h-4 w-4" />
       </div>
-      <div className="max-w-[80%] rounded-lg px-3 py-2 text-sm bg-muted text-foreground">
+      <div className="min-w-0 flex-1 max-w-full rounded-lg border bg-background px-3 py-2 text-sm text-foreground">
         {isThinking ? (
-          <StreamingThinkingBlock content={thinking} />
+          <StreamingWorkflowBlock content={thinking} />
         ) : (
           <>
-            {thinking && <ThinkingBlock content={thinking} />}
-            <MarkdownContent content={answer} />
-            <span className="animate-pulse">▊</span>
+            {thinking && <WorkflowBlock content={thinking} />}
+            <StreamingMarkdown
+              content={answer}
+              isStreaming={isStreaming}
+              renderCommitted={(text) => <MarkdownContent content={text} />}
+            />
           </>
         )}
       </div>
     </div>
-  )
+  );
 }
 
-function AgentAwareContent({ content, projectPath }: { content: string; projectPath?: string | null }) {
-  const [applied, setApplied] = useState(false)
-  const [results, setResults] = useState<import("@/lib/novel/agent-tools").FileEditResult[]>([])
-  const [dismissed, setDismissed] = useState(false)
+function AgentThinkingIndicator() {
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      <span>正在生成中...</span>
+    </div>
+  );
+}
 
-  const parsed = useMemo(() => {
-    const { parseAgentResponse } = require("@/lib/novel/agent-parser") as typeof import("@/lib/novel/agent-parser")
-    return parseAgentResponse(content)
-  }, [content])
+function AgentAwareContent({
+  content,
+  projectPath,
+}: {
+  content: string;
+  projectPath?: string | null;
+}) {
+  const [applied, setApplied] = useState(false);
+  const [results, setResults] = useState<
+    import("@/lib/novel/agent-tools").FileEditResult[]
+  >([]);
+  const [dismissed, setDismissed] = useState(false);
 
-  const handleApply = useCallback(async (edits: import("@/lib/novel/agent-parser").FileEditAction[]) => {
-    if (!projectPath) return []
-    const { applyFileEdits } = await import("@/lib/novel/agent-tools")
-    const editResults = await applyFileEdits(projectPath, edits)
-    setResults(editResults)
-    setApplied(true)
-    // Refresh file tree
-    await refreshProjectState(projectPath)
-    return editResults
-  }, [projectPath])
+  const [parsed, setParsed] = useState<
+    import("@/lib/novel/agent-parser").ParsedAgentResponse | null
+  >(null);
+  useEffect(() => {
+    import("@/lib/novel/agent-parser").then(({ parseAgentResponse }) => {
+      setParsed(parseAgentResponse(content));
+    });
+  }, [content]);
+
+  const handleApply = useCallback(
+    async (edits: import("@/lib/novel/agent-parser").FileEditAction[]) => {
+      if (!projectPath) return [];
+      const { applyFileEdits } = await import("@/lib/novel/agent-tools");
+      const editResults = await applyFileEdits(projectPath, edits);
+      setResults(editResults);
+      setApplied(true);
+      // Refresh file tree
+      await refreshProjectState(projectPath);
+      return editResults;
+    },
+    [projectPath],
+  );
 
   return (
     <>
-      <MarkdownContent content={parsed.textContent || content} />
-      {parsed.hasEdits && !dismissed && projectPath ? (
+      <MarkdownContent content={parsed?.textContent || content} />
+      {parsed?.hasEdits && !dismissed && projectPath ? (
         <FileEditPreview
           edits={parsed.edits}
           onApply={handleApply}
@@ -584,29 +807,32 @@ function AgentAwareContent({ content, projectPath }: { content: string; projectP
         />
       ) : null}
     </>
-  )
+  );
 }
 
 function MarkdownContent({ content }: { content: string }) {
   // Strip hidden comments
-  const cleaned = content.replace(/<!--.*?-->/gs, "").trimEnd()
+  const cleaned = content.replace(/<!--.*?-->/gs, "").trimEnd();
 
   // Project path for resolving wiki-relative image src in chat
   // replies (LLM may surface images that came in via retrieved
   // chunks, e.g. when the chat answer cites a diagram from a wiki
   // page). Same convention the file-preview uses.
-  const projectPath = useWikiStore((s) => s.project?.path ?? null)
+  const projectPath = useWikiStore((s) => s.project?.path ?? null);
 
-  // Separate thinking blocks from main content
-  const { thinking, answer } = useMemo(() => separateThinking(cleaned), [cleaned])
-  const processed = useMemo(() => processContent(answer), [answer])
-  const renderLanguage = useMemo(() => detectLanguage(answer), [answer])
-  const direction = getTextDirection(renderLanguage)
-  const htmlLang = getHtmlLang(renderLanguage)
+  // Separate thinking blocks from main content, filter LLM English thinking but keep workflow stages
+  const { thinking, answer } = useMemo(
+    () => separateThinking(cleaned),
+    [cleaned],
+  );
+  const processed = useMemo(() => processContent(answer), [answer]);
+  const renderLanguage = useMemo(() => detectLanguage(answer), [answer]);
+  const direction = getTextDirection(renderLanguage);
+  const htmlLang = getHtmlLang(renderLanguage);
 
   return (
-    <div>
-      {thinking && <ThinkingBlock content={thinking} />}
+    <div className="w-full min-w-0">
+      {thinking && <WorkflowBlock content={thinking} />}
       <div
         className="chat-markdown prose prose-sm max-w-none dark:prose-invert prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-code:text-xs prose-code:before:content-none prose-code:after:content-none"
         dir={direction}
@@ -619,18 +845,25 @@ function MarkdownContent({ content }: { content: string }) {
           components={{
             a: ({ href, children }) => {
               if (href?.startsWith("wikilink:")) {
-                const pageName = href.slice("wikilink:".length)
-                return <WikiLink pageName={pageName}>{children}</WikiLink>
+                const pageName = href.slice("wikilink:".length);
+                return <WikiLink pageName={pageName}>{children}</WikiLink>;
               }
               return (
-                <span className="text-primary underline cursor-default" title={href}>
+                <span
+                  className="text-primary underline cursor-default"
+                  title={href}
+                >
                   {children}
                 </span>
-              )
+              );
             },
             img: ({ src, alt, ...props }) => (
               <img
-                src={typeof src === "string" ? resolveMarkdownImageSrc(src, projectPath) : undefined}
+                src={
+                  typeof src === "string"
+                    ? resolveMarkdownImageSrc(src, projectPath)
+                    : undefined
+                }
                 alt={alt ?? ""}
                 className="my-2 max-w-full rounded border border-border/40"
                 loading="lazy"
@@ -639,21 +872,32 @@ function MarkdownContent({ content }: { content: string }) {
             ),
             table: ({ children, ...props }) => (
               <div className="my-2 overflow-x-auto rounded border border-border">
-                <table className="w-full border-collapse text-xs" {...props}>{children}</table>
+                <table className="w-full border-collapse text-xs" {...props}>
+                  {children}
+                </table>
               </div>
             ),
             thead: ({ children, ...props }) => (
-              <thead className="bg-muted" {...props}>{children}</thead>
+              <thead className="bg-muted" {...props}>
+                {children}
+              </thead>
             ),
             th: ({ children, ...props }) => (
-              <th className="border border-border/80 px-3 py-1.5 text-start font-semibold bg-muted" {...props}>{children}</th>
+              <th
+                className="border border-border/80 px-3 py-1.5 text-start font-semibold bg-muted"
+                {...props}
+              >
+                {children}
+              </th>
             ),
             td: ({ children, ...props }) => (
-              <td className="border border-border/60 px-3 py-1.5" {...props}>{children}</td>
+              <td className="border border-border/60 px-3 py-1.5" {...props}>
+                {children}
+              </td>
             ),
             pre: ({ children, ...props }) => {
-              const mermaid = unwrapMermaidPre(children)
-              if (mermaid) return <>{mermaid}</>
+              const mermaid = unwrapMermaidPre(children);
+              if (mermaid) return <>{mermaid}</>;
               return (
                 <pre
                   dir="ltr"
@@ -663,15 +907,30 @@ function MarkdownContent({ content }: { content: string }) {
                 >
                   {children}
                 </pre>
-              )
+              );
             },
             code: ({ className, children, ...props }) => {
-              const lang = className?.replace("language-", "")
-              const codeText = String(children).replace(/\n$/, "")
+              const lang = className?.replace("language-", "");
+              const codeText = String(children).replace(/\n$/, "");
               if (lang === "mermaid") {
-                return <MermaidDiagram code={codeText} />
+                return <MermaidDiagram code={codeText} />;
               }
-              return <code dir="ltr" className={className} {...props}>{children}</code>
+              if (lang && lang !== "text" && lang !== "plain") {
+                const highlighted = highlightCode(codeText, lang);
+                return (
+                  <code
+                    dir="ltr"
+                    className={`${className ?? ""} code-highlight`}
+                    dangerouslySetInnerHTML={{ __html: highlighted }}
+                    {...props}
+                  />
+                );
+              }
+              return (
+                <code dir="ltr" className={className} {...props}>
+                  {children}
+                </code>
+              );
             },
           }}
         >
@@ -679,86 +938,123 @@ function MarkdownContent({ content }: { content: string }) {
         </ReactMarkdown>
       </div>
     </div>
-  )
+  );
 }
 
 /**
- * Separate <think>...</think> blocks from the main answer.
- * Handles multiple think blocks and partial (unclosed) thinking during streaming.
+ * 检测一行是否是工作流阶段标题
  */
-function separateThinking(text: string): { thinking: string | null; answer: string } {
-  // Match complete <think>...</think> and <thinking>...</thinking> blocks
-  const thinkRegex = /<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi
-  const thinkParts: string[] = []
-  let answer = text
-
-  let match: RegExpExecArray | null
-  while ((match = thinkRegex.exec(text)) !== null) {
-    thinkParts.push(match[1].trim())
-  }
-  answer = answer.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "").trim()
-
-  // Handle unclosed <think> or <thinking> tag (streaming in progress)
-  const unclosedMatch = answer.match(/<think(?:ing)?>([\s\S]*)$/i)
-  if (unclosedMatch) {
-    thinkParts.push(unclosedMatch[1].trim())
-    answer = answer.replace(/<think(?:ing)?>[\s\S]*$/i, "").trim()
-  }
-
-  const thinking = thinkParts.length > 0 ? thinkParts.join("\n\n") : null
-  return { thinking, answer }
+function isWorkflowStageHeader(line: string): boolean {
+  const trimmed = line.trim();
+  // 匹配 ## 阶段X... 格式
+  if (/^##\s*阶段/.test(trimmed)) return true;
+  // 匹配 "阶段X：" 或 "阶段X:" 开头的行（即使没有##）
+  if (/^阶段\s*[\d.]+\s*[：:]/.test(trimmed)) return true;
+  return false;
 }
 
-/** Streaming thinking: show every stage so the user can inspect progress. */
-function StreamingThinkingBlock({ content }: { content: string }) {
-  // 将连续短行合并为段落，避免推理 token 逐 token 换行导致消息框过窄
-  const paragraphs = content
-    .split(/\n\s*\n/)
-    .map((p) => p.replace(/\n/g, " ").trim())
-    .filter((p) => p.length > 0)
+function countWorkflowStages(content: string): number {
+  return content.split("\n").filter((line) => isWorkflowStageHeader(line)).length
+}
+
+function getThinkingBlockMeta(content: string, streaming: boolean): { title: string; stageCount: number | null } {
+  const stageCount = countWorkflowStages(content)
+  if (stageCount > 0) {
+    return {
+      title: streaming ? "工作流进行中..." : "工作流阶段",
+      stageCount,
+    }
+  }
+  return {
+    title: streaming ? "思考中..." : "思考过程",
+    stageCount: null,
+  }
+}
+
+/** 模型 reasoning 流式输出常带大量换行；合并为连续文本，避免被误切成上百个“阶段”。 */
+function formatThinkingForDisplay(content: string): string {
+  const trimmed = content.trim()
+  if (!trimmed) return ""
+
+  if (countWorkflowStages(trimmed) > 0) {
+    return trimmed.replace(/\n{3,}/g, "\n\n")
+  }
+
+  return trimmed.replace(/\s*\n+\s*/g, "")
+}
+
+/** Streaming workflow: show stages as they come in so user can see progress. */
+function StreamingWorkflowBlock({ content }: { content: string }) {
+  const displayContent = useMemo(() => formatThinkingForDisplay(content), [content])
+  const { title } = useMemo(() => getThinkingBlockMeta(content, true), [content])
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const userScrolledUpRef = useRef(false)
+  const lastScrollTopRef = useRef(0)
+
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container) return
+    if (!userScrolledUpRef.current) {
+      container.scrollTop = container.scrollHeight
+      lastScrollTopRef.current = container.scrollTop
+    }
+  }, [displayContent])
+
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container) return
+    lastScrollTopRef.current = container.scrollTop
+    const handleScroll = () => {
+      const threshold = 40
+      const currentScrollTop = container.scrollTop
+      const atBottom = container.scrollHeight - currentScrollTop - container.clientHeight < threshold
+      if (currentScrollTop < lastScrollTopRef.current - 1) {
+        userScrolledUpRef.current = true
+      } else if (atBottom) {
+        userScrolledUpRef.current = false
+      }
+      lastScrollTopRef.current = currentScrollTop
+    }
+    container.addEventListener("scroll", handleScroll)
+    return () => container.removeEventListener("scroll", handleScroll)
+  }, [])
 
   return (
-    <div className="rounded-md border border-dashed border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20 px-2.5 py-2 min-h-[3rem]">
+    <div className="w-full min-w-0 rounded-md border border-dashed border-blue-500/30 bg-blue-50/50 dark:bg-blue-950/20 px-2.5 py-2 min-h-[3rem]">
       <div className="flex items-center gap-1.5 mb-1.5">
-        <span className="text-sm animate-pulse">💭</span>
-        <span className="text-xs font-medium text-amber-700 dark:text-amber-400">思考中...</span>
+        <span className="text-sm animate-pulse">📋</span>
+        <span className="text-xs font-medium text-blue-700 dark:text-blue-400">{title}</span>
       </div>
-      <div className="max-h-72 overflow-y-auto pr-1 text-xs text-amber-800/70 dark:text-amber-300/60 font-mono leading-relaxed whitespace-pre-wrap break-words">
-        {paragraphs.map((p, i) => (
-          <div key={`p-${i}`} className={i > 0 ? "mt-1.5" : ""}>
-            {p}
-          </div>
-        ))}
-        <span className="animate-pulse text-amber-500">▊</span>
+      <div
+        ref={scrollRef}
+        className="w-full min-w-0 max-h-72 overflow-y-auto overflow-x-hidden pr-1 text-xs text-blue-800/70 dark:text-blue-300/60 leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
+      >
+        {displayContent}
+        <span className="text-blue-500"><StreamingSpinner /></span>
       </div>
     </div>
-  )
+  );
 }
 
-/** Completed thinking: keep it fully visible; the outer chat scroll owns scrolling. */
-function ThinkingBlock({ content }: { content: string }) {
-  // 将连续短行合并为段落，避免推理 token 逐 token 换行导致消息框过窄
-  const paragraphs = content
-    .split(/\n\s*\n/)
-    .map((p) => p.replace(/\n/g, " ").trim())
-    .filter((p) => p.length > 0)
+/** Completed workflow stages: keep visible so user can review what happened. */
+function WorkflowBlock({ content }: { content: string }) {
+  const displayContent = useMemo(() => formatThinkingForDisplay(content), [content])
+  const { title, stageCount } = useMemo(() => getThinkingBlockMeta(content, false), [content])
 
   return (
-    <div className="mb-2 rounded-md border border-dashed border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20 min-h-[3rem]">
-      <div className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-        <span className="text-sm">💭</span>
-        <span className="font-medium">思考过程</span>
-        <span className="text-[10px] text-amber-600/60 dark:text-amber-500/60">{paragraphs.length} 段</span>
+    <div className="mb-2 w-full min-w-0 rounded-md border border-dashed border-blue-500/30 bg-blue-50/50 dark:bg-blue-950/20 min-h-[3rem]">
+      <div className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xs text-blue-700 dark:text-blue-400">
+        <span className="text-sm">📋</span>
+        <span className="font-medium">{title}</span>
+        {stageCount !== null && (
+          <span className="text-[10px] text-blue-600/60 dark:text-blue-500/60">{stageCount} 个阶段</span>
+        )}
       </div>
-      <div className="max-h-72 overflow-y-auto border-t border-amber-500/20 px-2.5 py-2 pr-1 text-xs text-amber-800/80 dark:text-amber-300/70 whitespace-pre-wrap break-words font-mono leading-relaxed">
-        {paragraphs.map((p, i) => (
-          <div key={`p-${i}`} className={i > 0 ? "mt-1.5" : ""}>
-            {p}
-          </div>
-        ))}
+      <div className="w-full min-w-0 max-h-72 overflow-y-auto overflow-x-hidden border-t border-blue-500/20 px-2.5 py-2 pr-1 text-xs text-blue-800/80 dark:text-blue-300/70 whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">
+        {displayContent}
       </div>
     </div>
-  )
+  );
 }
 
 /**
@@ -766,50 +1062,56 @@ function ThinkingBlock({ content }: { content: string }) {
  * - [[wikilinks]] → markdown links with wikilink: protocol
  */
 function processContent(text: string): string {
-  let result = text
+  let result = text;
 
   // Wrap bare \begin{...}...\end{...} blocks with $$ for remark-math
   result = result.replace(
     /(?<!\$\$\s*)(\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\})(?!\s*\$\$)/g,
     (_match, block: string) => `$$\n${block}\n$$`,
-  )
+  );
 
   // Only apply Unicode conversion to text outside of math delimiters
   // Split on $$...$$ and $...$ blocks, only convert non-math parts
-  const parts = result.split(/(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$)/g)
+  const parts = result.split(/(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$)/g);
   result = parts
     .map((part) => {
-      if (part.startsWith("$")) return part // preserve math
-      return convertLatexToUnicode(part)
+      if (part.startsWith("$")) return part; // preserve math
+      return convertLatexToUnicode(part);
     })
-    .join("")
+    .join("");
 
   // Fix malformed wikilinks like [[name] (missing closing bracket)
-  result = result.replace(/\[\[([^\]]+)\](?!\])/g, "[[$1]]")
+  result = result.replace(/\[\[([^\]]+)\](?!\])/g, "[[$1]]");
 
   // Convert [[wikilinks]] to markdown links
   result = result.replace(
     /\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/g,
     (_match, pageName: string, displayText?: string) => {
-      const display = displayText?.trim() || pageName.trim()
-      return `[${display}](wikilink:${pageName.trim()})`
-    }
-  )
+      const display = displayText?.trim() || pageName.trim();
+      return `[${display}](wikilink:${pageName.trim()})`;
+    },
+  );
 
-  return result
+  return result;
 }
 
-function WikiLink({ pageName, children }: { pageName: string; children: React.ReactNode }) {
-  const project = useWikiStore((s) => s.project)
-  const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
-  const setFileContent = useWikiStore((s) => s.setFileContent)
-  const setActiveView = useWikiStore((s) => s.setActiveView)
-  const [exists, setExists] = useState<boolean | null>(null)
-  const resolvedPath = useRef<string | null>(null)
+function WikiLink({
+  pageName,
+  children,
+}: {
+  pageName: string;
+  children: React.ReactNode;
+}) {
+  const project = useWikiStore((s) => s.project);
+  const setSelectedFile = useWikiStore((s) => s.setSelectedFile);
+  const setFileContent = useWikiStore((s) => s.setFileContent);
+  const setActiveView = useWikiStore((s) => s.setActiveView);
+  const [exists, setExists] = useState<boolean | null>(null);
+  const resolvedPath = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!project) return
-    const pp = normalizePath(project.path)
+    if (!project) return;
+    const pp = normalizePath(project.path);
     const candidates = [
       `${pp}/wiki/entities/${pageName}.md`,
       `${pp}/wiki/concepts/${pageName}.md`,
@@ -818,46 +1120,51 @@ function WikiLink({ pageName, children }: { pageName: string; children: React.Re
       `${pp}/wiki/comparisons/${pageName}.md`,
       `${pp}/wiki/synthesis/${pageName}.md`,
       `${pp}/wiki/${pageName}.md`,
-    ]
+    ];
 
-    let cancelled = false
+    let cancelled = false;
     async function check() {
       for (const path of candidates) {
         try {
-          await readFile(path)
+          await readFile(path);
           if (!cancelled) {
-            resolvedPath.current = path
-            setExists(true)
+            resolvedPath.current = path;
+            setExists(true);
           }
-          return
+          return;
         } catch {
           // try next
         }
       }
-      if (!cancelled) setExists(false)
+      if (!cancelled) setExists(false);
     }
-    check()
-    return () => { cancelled = true }
-  }, [project, pageName])
+    check();
+    return () => {
+      cancelled = true;
+    };
+  }, [project, pageName]);
 
   const handleClick = useCallback(async () => {
-    if (!resolvedPath.current) return
+    if (!resolvedPath.current) return;
     try {
-      const content = await readFile(resolvedPath.current)
-      setSelectedFile(resolvedPath.current)
-      setFileContent(content)
-      setActiveView("wiki")
+      const content = await readFile(resolvedPath.current);
+      setSelectedFile(resolvedPath.current);
+      setFileContent(content);
+      setActiveView("wiki");
     } catch {
       // ignore
     }
-  }, [setSelectedFile, setFileContent, setActiveView])
+  }, [setSelectedFile, setFileContent, setActiveView]);
 
   if (exists === false) {
     return (
-      <span className="inline text-muted-foreground" title={`Page not found: ${pageName}`}>
+      <span
+        className="inline text-muted-foreground"
+        title={`Page not found: ${pageName}`}
+      >
         {children}
       </span>
-    )
+    );
   }
 
   return (
@@ -870,5 +1177,5 @@ function WikiLink({ pageName, children }: { pageName: string; children: React.Re
       <FileText className="inline h-3 w-3" />
       {children}
     </button>
-  )
+  );
 }

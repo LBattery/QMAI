@@ -3,6 +3,7 @@ import type { ChatMessage } from "@/lib/llm-providers"
 import type { LlmConfig } from "@/stores/wiki-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { buildContextPack, contextPackToPrompt, type ContextPack } from "./context-engine"
+import { CHAPTER_BODY_EXCERPT_MAX_CHARS } from "./chapter-excerpts"
 import { resolveNovelModel } from "./model-resolver"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import type { NovelReviewResult } from "./review-adapter"
@@ -101,8 +102,9 @@ export function buildDimensionReviewPrompt(
   pack: ContextPack,
   chapterContent: string,
   dimension: SixReviewDimensionDefinition,
+  maxContextSize?: number,
 ): string {
-  return `${contextPackToPrompt(pack)}
+  return `${contextPackToPrompt(pack, undefined, { maxContextSize })}
 
 六维独立审查维度：${dimension.label}
 审查目标：${dimension.objective}
@@ -136,7 +138,7 @@ ${dimension.checks.map((check) => `- ${check}`).join("\n")}
 }
 
 章节正文：
-${chapterContent.slice(0, 8000)}`
+${chapterContent.slice(0, CHAPTER_BODY_EXCERPT_MAX_CHARS)}`
 }
 
 export async function reviewChapterDimension({
@@ -153,7 +155,12 @@ export async function reviewChapterDimension({
   callbacks?: DimensionReviewCallbacks
 }): Promise<DimensionReviewResult> {
   callbacks.onThinking?.(dimension.key, formatDimensionThinking(dimension, "正在读取上下文..."))
-  const analysisPrompt = buildDimensionReviewPrompt(contextPack, chapterContent, dimension)
+  const analysisPrompt = buildDimensionReviewPrompt(
+    contextPack,
+    chapterContent,
+    dimension,
+    llmConfig.maxContextSize,
+  )
   const analysis = await runDimensionStage(
     llmConfig,
     dimension,
@@ -187,12 +194,13 @@ export async function runSixDimensionReview({
   dimensionKeys?: SixReviewDimensionKey[]
   callbacks?: SixDimensionReviewCallbacks
 }): Promise<Partial<Record<SixReviewDimensionKey, DimensionReviewResult>>> {
+  const state = useWikiStore.getState()
   const llmConfig = resolveNovelModel(
-    useWikiStore.getState().llmConfig,
-    useWikiStore.getState().novelConfig,
+    state.llmConfig,
+    state.novelConfig,
     "review",
   )
-  if (!hasUsableLlm(llmConfig) || !useWikiStore.getState().novelMode) return {}
+  if (!hasUsableLlm(llmConfig, state.providerConfigs) || !state.novelMode) return {}
 
   const contextPack = await buildContextPack(
     projectPath,

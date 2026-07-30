@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useMemo, useState, type ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { Info } from "lucide-react"
 import { Label } from "@/components/ui/label"
@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useWikiStore } from "@/stores/wiki-store"
-import { saveNovelMode, saveNovelConfig } from "@/lib/project-store"
+import { saveNovelConfig, saveDefaultLlmModel } from "@/lib/project-store"
+import { getFirstAvailableModelKey, hasAvailableModels } from "@/lib/llm-model-keys"
 
 import { testNovelModel, type TestableNovelModelTask } from "@/lib/novel/novel-model-test"
 import { ChatModelSelector } from "@/components/chat/chat-model-selector"
@@ -18,29 +19,112 @@ interface Props {
   setDraft: DraftSetter
 }
 
+const MODEL_PICKER_BLOCK_CLASS = "space-y-3 rounded-lg border border-border/60 p-4"
+
+interface NovelModelPickerBlockProps {
+  title: string
+  hintKey?: string
+  footnote?: string
+  followChecked: boolean
+  onFollowChange: (checked: boolean) => void
+  modelValue: string
+  onModelChange: (model: string) => void
+  renderHint?: (hintKey: string) => ReactNode
+  testState?: { loading: boolean; message: string; success: boolean }
+  onTest?: () => void
+  testLoadingLabel: string
+  testLabel: string
+  followLabel: string
+}
+
+function NovelModelPickerBlock({
+  title,
+  hintKey,
+  footnote,
+  followChecked,
+  onFollowChange,
+  modelValue,
+  onModelChange,
+  renderHint,
+  testState,
+  onTest,
+  testLoadingLabel,
+  testLabel,
+  followLabel,
+}: NovelModelPickerBlockProps) {
+  return (
+    <div className={MODEL_PICKER_BLOCK_CLASS}>
+      <div className="flex items-center gap-1.5">
+        <Label>{title}</Label>
+        {hintKey && renderHint?.(hintKey)}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex shrink-0 items-center gap-2">
+          <input
+            type="checkbox"
+            checked={followChecked}
+            onChange={(e) => onFollowChange(e.target.checked)}
+            className="h-4 w-4"
+          />
+          <span className="text-sm">{followLabel}</span>
+        </label>
+        <ChatModelSelector
+          value={modelValue}
+          onChange={onModelChange}
+          disabled={followChecked}
+        />
+        {onTest ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={testState?.loading}
+            onClick={onTest}
+          >
+            {testState?.loading ? testLoadingLabel : testLabel}
+          </Button>
+        ) : null}
+      </div>
+      {footnote ? (
+        <p className="text-xs leading-5 text-muted-foreground/80">{footnote}</p>
+      ) : null}
+      {testState?.message ? (
+        <p className={`text-xs ${testState.success ? "text-emerald-600" : "text-destructive"}`}>
+          {testState.message}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 export function NovelSection({ draft, setDraft }: Props) {
   const { t } = useTranslation()
-  const novelMode = useWikiStore((s) => s.novelMode)
-  const setNovelMode = useWikiStore((s) => s.setNovelMode)
   const setNovelConfigStore = useWikiStore((s) => s.setNovelConfig)
   const llmConfig = useWikiStore((s) => s.llmConfig)
+  const aiChatModel = useWikiStore((s) => s.aiChatModel)
+  const providerConfigs = useWikiStore((s) => s.providerConfigs)
   const project = useWikiStore((s) => s.project)
+  const defaultLlmModel = draft.novelConfig.defaultLlmModel
+  const isWorkflowModelFollowingChat = !defaultLlmModel.trim()
+  const displayWorkflowDefaultModel = isWorkflowModelFollowingChat ? "" : defaultLlmModel
+
+  const modelsAvailable = useMemo(
+    () => hasAvailableModels(providerConfigs),
+    [providerConfigs],
+  )
+
   const [testStates, setTestStates] = useState<Record<TestableNovelModelTask, {
     loading: boolean
     message: string
     success: boolean
   } | undefined>>({
     writing: undefined,
+    workflow: undefined,
     review: undefined,
     summary: undefined,
     extract: undefined,
+    deAi: undefined,
   })
-
-  const handleNovelModeToggle = async () => {
-    const newMode = !novelMode
-    setNovelMode(newMode)
-    await saveNovelMode(newMode, project?.id, project?.path)
-  }
 
   const updateNovelConfig = async (patch: Partial<NovelConfig>) => {
     const newConfig = { ...draft.novelConfig, ...patch }
@@ -49,14 +133,16 @@ export function NovelSection({ draft, setDraft }: Props) {
     await saveNovelConfig(newConfig, project?.id, project?.path)
   }
 
+  const updateWorkflowDefaultModel = async (model: string) => {
+    await updateNovelConfig({ defaultLlmModel: model })
+    await saveDefaultLlmModel(model)
+  }
+
   const modelItems = useMemo(() => ([
-    { task: "review", field: "reviewModel", wrapperClassName: "space-y-2" },
-    { task: "summary", field: "summaryModel", wrapperClassName: "space-y-2" },
-    {
-      task: "extract",
-      field: "extractModel",
-      wrapperClassName: "space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3",
-    },
+    { task: "review", field: "reviewModel" },
+    { task: "summary", field: "summaryModel" },
+    { task: "extract", field: "extractModel" },
+    { task: "deAi", field: "deAiModel" },
   ] as const), [])
 
   const settingTooltip = (key: string) => (
@@ -120,7 +206,7 @@ export function NovelSection({ draft, setDraft }: Props) {
       <div className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold">
-          {t("settings.sections.novel.title", { defaultValue: "小说模式" })}
+          {t("settings.sections.novel.title", { defaultValue: "小说设置" })}
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
           {t("settings.sections.novel.description", {
@@ -131,33 +217,34 @@ export function NovelSection({ draft, setDraft }: Props) {
       </div>
 
       <div className="space-y-2">
-        <Label>{t("novel.mode.label")}</Label>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleNovelModeToggle}
-            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-              novelMode ? "bg-primary" : "bg-input"
-            }`}
-          >
-            <span
-              className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
-                novelMode ? "translate-x-5" : "translate-x-0"
-              }`}
-            />
-          </button>
-          <span className="text-sm">
-            {novelMode ? t("novel.mode.enable") : t("novel.mode.disable")}
-          </span>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {t("novel.mode.description")}
-        </p>
-      </div>
-
-      <div className="space-y-2">
         <Label>{t("novel.settings.title")}</Label>
         <div className="grid gap-4 rounded-lg border p-4">
+          {modelsAvailable && (
+            <NovelModelPickerBlock
+              title={t("novel.settings.defaultLlmModel")}
+              hintKey="defaultLlmModelHint"
+              footnote={t("novel.settings.defaultLlmModelScopeNote")}
+              followChecked={isWorkflowModelFollowingChat}
+              onFollowChange={(checked) => {
+                if (checked) {
+                  void updateWorkflowDefaultModel("")
+                } else {
+                  void updateWorkflowDefaultModel(
+                    aiChatModel.trim() || getFirstAvailableModelKey(providerConfigs),
+                  )
+                }
+              }}
+              modelValue={displayWorkflowDefaultModel}
+              onModelChange={(model) => void updateWorkflowDefaultModel(model)}
+              renderHint={settingTooltip}
+              testState={testStates.workflow}
+              onTest={() => runModelTest("workflow")}
+              followLabel={t("novel.settings.followChatModel")}
+              testLoadingLabel={t("novel.settings.testingModel")}
+              testLabel={t("novel.settings.testModel")}
+            />
+          )}
+
           <div className="space-y-2">
             <div className="flex items-center gap-1.5">
               <Label>{t("novel.settings.recentSummaryWindow")}</Label>
@@ -173,6 +260,23 @@ export function NovelSection({ draft, setDraft }: Props) {
               })}
               className="w-24"
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="de-ai-batch-concurrency-setting">批量去 AI 味并发作品数</Label>
+            <Input
+              id="de-ai-batch-concurrency-setting"
+              aria-label="批量去 AI 味并发作品数"
+              type="number"
+              min={1}
+              max={5}
+              value={draft.novelConfig.deAiBatchConcurrency}
+              onChange={(e) => updateNovelConfig({
+                deAiBatchConcurrency: Math.max(1, Math.min(5, Math.floor(Number(e.target.value) || 3))),
+              })}
+              className="w-24"
+            />
+            <p className="text-xs text-muted-foreground">默认同时处理 3 个作品，可设置 1–5；超出后按添加顺序排队。</p>
           </div>
 
           <div className="space-y-2">
@@ -214,17 +318,49 @@ export function NovelSection({ draft, setDraft }: Props) {
 
           <div className="space-y-2">
             <div className="flex items-center gap-1.5">
+              <Label>{t("novel.settings.chatHistoryLength")}</Label>
+              {settingTooltip("chatHistoryLengthHint")}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[2, 4, 6, 8, 10, 20].map((n) => {
+                const active = draft.maxHistoryMessages === n
+                return (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setDraft("maxHistoryMessages", n)}
+                    className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                      active
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border hover:bg-accent"
+                    }`}
+                  >
+                    {n}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("novel.settings.chatHistoryLengthCurrent", {
+                count: draft.maxHistoryMessages,
+                turns: draft.maxHistoryMessages / 2,
+              })}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
               <Label>{t("novel.settings.chapterTargetChars")}</Label>
               {settingTooltip("chapterTargetCharsHint")}
             </div>
             <Input
               type="number"
-              min={2000}
-              max={6000}
+              min={500}
+              max={20000}
               step={100}
               value={draft.novelConfig.chapterTargetChars}
               onChange={(e) => updateNovelConfig({
-                chapterTargetChars: Math.max(2000, Math.min(6000, Number(e.target.value) || 3000)),
+                chapterTargetChars: Math.max(500, Math.min(20000, Number(e.target.value) || 3000)),
               })}
               className="w-32"
             />
@@ -400,6 +536,13 @@ export function NovelSection({ draft, setDraft }: Props) {
             </>
           )}
 
+          <div className="space-y-1 border-t border-border/60 pt-4">
+            <Label>{t("novel.settings.taskModelsTitle")}</Label>
+            <p className="text-xs leading-5 text-muted-foreground">
+              {t("novel.settings.taskModelsHint")}
+            </p>
+          </div>
+
           {modelItems.map((item) => {
             const state = testStates[item.task]
             const modelValue = draft.novelConfig[item.field] || ""
@@ -407,54 +550,33 @@ export function NovelSection({ draft, setDraft }: Props) {
             const displayValue = isFollowingChat ? "" : modelValue
 
             return (
-              <div key={item.task} className={item.wrapperClassName}>
-                <div className="flex items-center gap-1.5">
-                  <Label>{t(`novel.settings.${item.field}`)}</Label>
-                  {settingTooltip(`${item.field}Hint`)}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => updateNovelConfig({
-                        [item.field]: "",
-                      } as Partial<NovelConfig>)}
-                      className={`rounded-md border px-3 py-1.5 text-xs transition-colors ${
-                        isFollowingChat
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : "border-border hover:bg-accent"
-                      }`}
-                    >
-                      {t("novel.settings.followChatModel")}
-                    </button>
-                    <ChatModelSelector
-                      value={displayValue}
-                      onChange={(model) => updateNovelConfig({
-                        [item.field]: model,
-                      } as Partial<NovelConfig>)}
-                    />
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={state?.loading}
-                    onClick={() => runModelTest(item.task)}
-                  >
-                    {state?.loading ? t("novel.settings.testingModel") : t("novel.settings.testModel")}
-                  </Button>
-                </div>
-                {item.task === "extract" ? (
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    {t("novel.settings.extractModelHint")}
-                  </p>
-                ) : null}
-                {state?.message ? (
-                  <p className={`text-xs ${state.success ? "text-emerald-600" : "text-destructive"}`}>
-                    {state.message}
-                  </p>
-                ) : null}
-              </div>
+              <NovelModelPickerBlock
+                key={item.task}
+                title={t(`novel.settings.${item.field}`)}
+                hintKey={`${item.field}Hint`}
+                followChecked={isFollowingChat}
+                onFollowChange={(checked) => {
+                  if (checked) {
+                    updateNovelConfig({
+                      [item.field]: "",
+                    } as Partial<NovelConfig>)
+                  } else {
+                    updateNovelConfig({
+                      [item.field]: aiChatModel || " ",
+                    } as Partial<NovelConfig>)
+                  }
+                }}
+                modelValue={displayValue}
+                onModelChange={(model) => updateNovelConfig({
+                  [item.field]: model,
+                } as Partial<NovelConfig>)}
+                renderHint={settingTooltip}
+                testState={state}
+                onTest={() => runModelTest(item.task)}
+                followLabel={t("novel.settings.followDefaultModel")}
+                testLoadingLabel={t("novel.settings.testingModel")}
+                testLabel={t("novel.settings.testModel")}
+              />
             )
           })}
         </div>

@@ -1,69 +1,84 @@
-import { Suspense, lazy } from "react"
-import { useWikiStore } from "@/stores/wiki-store"
-import { WritingWorkspace } from "./writing-workspace"
-import { SearchView } from "@/components/search/search-view"
+import { Suspense, lazy } from "react";
+import { useWikiStore } from "@/stores/wiki-store";
+import { WritingWorkspace } from "./writing-workspace";
 
-const ChatPanel = lazy(async () => {
-  const mod = await import("@/components/chat/chat-panel")
-  return { default: mod.ChatPanel }
-})
+const SearchView = lazy(async () => {
+  const mod = await import("@/components/search/search-view");
+  return { default: mod.SearchView };
+});
+
+const UnifiedSkillLibraryView = lazy(async () => {
+  const mod = await import("@/components/skill-library/unified-skill-library-view");
+  return { default: mod.UnifiedSkillLibraryView };
+});
+
+const AIChatTabContainer = lazy(async () => {
+  const mod = await import("@/components/chat/ai-chat-tab-container");
+  return { default: mod.AIChatTabContainer };
+});
 
 const SettingsView = lazy(async () => {
-  const mod = await import("@/components/settings/settings-view")
-  return { default: mod.SettingsView }
-})
+  const mod = await import("@/components/settings/settings-view");
+  return { default: mod.SettingsView };
+});
 
 const SourcesView = lazy(async () => {
-  const mod = await import("@/components/sources/sources-view")
-  return { default: mod.SourcesView }
-})
+  const mod = await import("@/components/sources/sources-view");
+  return { default: mod.SourcesView };
+});
 
 const LintView = lazy(async () => {
-  const mod = await import("@/components/lint/lint-view")
-  return { default: mod.LintView }
-})
+  const mod = await import("@/components/lint/lint-view");
+  return { default: mod.LintView };
+});
 
 const MemoryCenterView = lazy(async () => {
-  const mod = await import("@/components/novel/memory-center-view")
-  return { default: mod.MemoryCenterView }
-})
+  const mod = await import("@/components/novel/memory-center-view");
+  return { default: mod.MemoryCenterView };
+});
 
 const GraphView = lazy(async () => {
-  const mod = await import("@/components/graph/graph-view")
-  return { default: mod.GraphView }
-})
+  const mod = await import("@/components/graph/graph-view");
+  return { default: mod.GraphView };
+});
 
 const SoulView = lazy(async () => {
-  const mod = await import("@/components/novel/soul-view")
-  return { default: mod.SoulView }
-})
+  const mod = await import("@/components/novel/soul-view");
+  return { default: mod.SoulView };
+});
 
 const ReviewCenterView = lazy(async () => {
-  const mod = await import("@/components/review/review-center-view")
-  return { default: mod.ReviewCenterView }
-})
+  const mod = await import("@/components/review/review-center-view");
+  return { default: mod.ReviewCenterView };
+});
 
 const BookAnalysisView = lazy(async () => {
-  const mod = await import("@/components/novel/book-analysis-view")
-  return { default: mod.BookAnalysisView }
-})
+  const mod = await import("@/components/novel/book-analysis-view");
+  return { default: mod.BookAnalysisView };
+});
+
+const StorySimulationView = lazy(async () => {
+  const mod =
+    await import("@/components/novel/story-simulation/story-simulation-view");
+  return { default: mod.StorySimulationView };
+});
 
 function LoadingView() {
   return (
     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-      Loading...
+      加载中...
     </div>
-  )
+  );
 }
 
 export function ContentArea() {
-  const activeView = useWikiStore((s) => s.activeView)
-  const novelMode = useWikiStore((s) => s.novelMode)
-  const showWritingWorkspace = activeView === "wiki" || activeView === "trash"
+  const activeView = useWikiStore((s) => s.activeView);
+  const novelMode = useWikiStore((s) => s.novelMode);
+  const showWritingWorkspace = activeView === "wiki" || activeView === "trash";
 
-  let content = null
+  let content = null;
   if (showWritingWorkspace) {
-    content = <WritingWorkspace />
+    content = <WritingWorkspace />;
   } else {
     switch (activeView) {
       case "settings":
@@ -71,62 +86,81 @@ export function ContentArea() {
           <Suspense fallback={<LoadingView />}>
             <SettingsView />
           </Suspense>
-        )
-        break
+        );
+        break;
       case "sources":
         content = (
           <Suspense fallback={<LoadingView />}>
             <SourcesView />
           </Suspense>
-        )
-        break
+        );
+        break;
       case "search":
-        content = <SearchView />
-        break
+        content = (
+          <Suspense fallback={<LoadingView />}>
+            <SearchView />
+          </Suspense>
+        );
+        break;
       case "soul":
         content = (
           <Suspense fallback={<LoadingView />}>
             <SoulView />
           </Suspense>
-        )
-        break
+        );
+        break;
+      case "skillLibrary":
+      case "writingSkillLibrary":
+        content = (
+          <Suspense fallback={<LoadingView />}>
+            <UnifiedSkillLibraryView />
+          </Suspense>
+        );
+        break;
       case "lint":
         content = (
           <Suspense fallback={<LoadingView />}>
             {novelMode ? <MemoryCenterView /> : <LintView />}
           </Suspense>
-        )
-        break
+        );
+        break;
       case "graph":
         content = (
           <Suspense fallback={<LoadingView />}>
             <GraphView />
           </Suspense>
-        )
-        break
+        );
+        break;
       case "reviewCenter":
         content = (
           <Suspense fallback={<LoadingView />}>
             <ReviewCenterView />
           </Suspense>
-        )
-        break
+        );
+        break;
       case "bookAnalysis":
         content = (
           <Suspense fallback={<LoadingView />}>
             <BookAnalysisView />
           </Suspense>
-        )
-        break
+        );
+        break;
+      case "storySimulation":
+        content = (
+          <Suspense fallback={<LoadingView />}>
+            <StorySimulationView />
+          </Suspense>
+        );
+        break;
       default:
         content = (
           <Suspense fallback={<LoadingView />}>
-            <ChatPanel />
+            <AIChatTabContainer />
           </Suspense>
-        )
-        break
+        );
+        break;
     }
   }
 
-  return <div className="h-full">{content}</div>
+  return <div className="h-full">{content}</div>;
 }

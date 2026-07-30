@@ -17,6 +17,8 @@ export interface WritingStylePreset {
   name: string
   sourceBook: string
   profile: BookStyleProfile
+  sourceBookId?: string
+  evidenceIds?: string[]
   createdAt: number
   updatedAt: number
 }
@@ -65,14 +67,27 @@ export async function saveWritingStyleStore(projectPath: string, store: WritingS
  */
 export async function upsertWritingStylePreset(
   projectPath: string,
-  input: { name: string; sourceBook: string; profile: BookStyleProfile },
+  input: {
+    name: string
+    sourceBook: string
+    profile: BookStyleProfile
+    sourceBookId?: string
+    evidenceIds?: string[]
+  },
 ): Promise<WritingStylePreset> {
   const store = await loadWritingStyleStore(projectPath)
   const now = Date.now()
   const existingIndex = store.styles.findIndex((s) => s.sourceBook === input.sourceBook)
   let preset: WritingStylePreset
   if (existingIndex >= 0) {
-    preset = { ...store.styles[existingIndex], name: input.name, profile: input.profile, updatedAt: now }
+    preset = {
+      ...store.styles[existingIndex],
+      name: input.name,
+      profile: input.profile,
+      sourceBookId: input.sourceBookId,
+      evidenceIds: input.evidenceIds,
+      updatedAt: now,
+    }
     store.styles[existingIndex] = preset
   } else {
     preset = {
@@ -80,6 +95,8 @@ export async function upsertWritingStylePreset(
       name: input.name,
       sourceBook: input.sourceBook,
       profile: input.profile,
+      sourceBookId: input.sourceBookId,
+      evidenceIds: input.evidenceIds,
       createdAt: now,
       updatedAt: now,
     }
@@ -135,10 +152,20 @@ export async function buildWritingStyleContext(
     clip(preset.profile.constitution, constitutionCharLimit),
   ]
 
-  if (includeSamples && preset.profile.samples.length > 0) {
+  let samples = preset.profile.samples
+  if (preset.sourceBookId && preset.evidenceIds?.length) {
+    const { loadEvidence } = await import("./book-analysis/analysis-evidence-store")
+    const collection = await loadEvidence(`${normalizePath(projectPath)}/book-analysis/${preset.sourceBookId}`)
+    const selectedIds = new Set(preset.evidenceIds)
+    samples = collection.snippets
+      .filter((item) => item.skill === "style" && item.enabled && selectedIds.has(item.id))
+      .map((item) => item.text)
+  }
+
+  if (includeSamples && samples.length > 0) {
     const sampleLines: string[] = []
     let used = 0
-    for (const sample of preset.profile.samples) {
+    for (const sample of samples) {
       const text = sample.trim()
       if (!text) continue
       if (used + text.length > samplesCharLimit) break

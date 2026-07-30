@@ -6,15 +6,22 @@ import {
   Loader2,
   AlertTriangle,
   CheckCircle2,
+  ListChecks,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { exportBackup } from "@/lib/backup/export"
-import { importBackup } from "@/lib/backup/import"
+import { importBackup, readBackupManifest, selectBackupFile } from "@/lib/backup/import"
+import { loadRegistry } from "@/lib/project-identity"
+import { BackupExportDialog } from "./backup-export-dialog"
 import type {
+  BackupExportOptions,
   ExportResult,
   ImportResult,
   ImportStrategy,
   BackupProgressPayload,
+  ProjectBackupInfo,
+  ProjectManifestEntry,
+  ProjectRestoreInfo,
 } from "@/lib/backup/types"
 
 export function DataManagementSection() {
@@ -25,17 +32,49 @@ export function DataManagementSection() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
   const [importStrategy, setImportStrategy] = useState<ImportStrategy>("full")
   const [progress, setProgress] = useState<BackupProgressPayload | null>(null)
+  const [showProjectSelect, setShowProjectSelect] = useState(false)
+  const [showExportSelect, setShowExportSelect] = useState(false)
+  const [isLoadingExportOptions, setIsLoadingExportOptions] = useState(false)
+  const [exportProjects, setExportProjects] = useState<ProjectBackupInfo[]>([])
+  const [manifestProjects, setManifestProjects] = useState<ProjectManifestEntry[]>([])
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set())
+  const [pendingZipPath, setPendingZipPath] = useState<string>("")
 
   const handleProgress = useCallback((payload: BackupProgressPayload) => {
     setProgress(payload)
   }, [])
 
-  async function handleExport() {
+  async function openExportDialog() {
+    setExportResult(null)
+    setIsLoadingExportOptions(true)
+    try {
+      const registry = await loadRegistry()
+      setExportProjects(Object.values(registry).map((project) => ({
+        id: project.id,
+        name: project.name,
+        path: project.path,
+      })))
+      setShowExportSelect(true)
+    } catch (err) {
+      setExportResult({
+        success: false,
+        warnings: [],
+        fileCount: 0,
+        totalSize: 0,
+        error: `读取项目列表失败：${String(err)}`,
+      })
+    } finally {
+      setIsLoadingExportOptions(false)
+    }
+  }
+
+  async function handleExport(options: BackupExportOptions) {
+    setShowExportSelect(false)
     setIsExporting(true)
     setExportResult(null)
     setProgress(null)
     try {
-      const result = await exportBackup(handleProgress)
+      const result = await exportBackup(options, handleProgress)
       setExportResult(result)
     } catch (err) {
       setExportResult({
@@ -52,6 +91,41 @@ export function DataManagementSection() {
   }
 
   async function handleImport() {
+    if (importStrategy === "selective") {
+      // 选择性导入：先选文件，再读 manifest，再弹项目选择
+      const zipPath = await selectBackupFile()
+      if (!zipPath) return
+
+      try {
+        const manifest = await readBackupManifest(zipPath)
+        if (manifest.projects.length === 0) {
+          setImportResult({
+            success: false,
+            appState: null,
+            localStorageData: null,
+            projects: [],
+            warnings: [],
+            error: "该备份不包含可恢复的项目数据",
+          })
+          return
+        }
+        setManifestProjects(manifest.projects)
+        setSelectedProjectIds(new Set(manifest.projects.map((p) => p.id)))
+        setPendingZipPath(zipPath)
+        setShowProjectSelect(true)
+      } catch {
+        setImportResult({
+          success: false,
+          appState: null,
+          localStorageData: null,
+          projects: [],
+          warnings: [],
+          error: "读取备份文件失败，文件可能已损坏",
+        })
+      }
+      return
+    }
+
     setIsImporting(true)
     setImportResult(null)
     setProgress(null)
@@ -73,7 +147,55 @@ export function DataManagementSection() {
     }
   }
 
-  const isBusy = isExporting || isImporting
+  async function handleSelectiveImport() {
+    setShowProjectSelect(false)
+    setIsImporting(true)
+    setImportResult(null)
+    setProgress(null)
+
+    const selectedProjects: ProjectRestoreInfo[] = manifestProjects
+      .filter((p) => selectedProjectIds.has(p.id))
+      .map((p) => ({ id: p.id, targetPath: p.path }))
+
+    try {
+      const result = await importBackup("selective", selectedProjects, handleProgress, pendingZipPath)
+      setImportResult(result)
+    } catch (err) {
+      setImportResult({
+        success: false,
+        appState: null,
+        localStorageData: null,
+        projects: [],
+        warnings: [],
+        error: String(err),
+      })
+    } finally {
+      setIsImporting(false)
+      setProgress((p) => (p && p.stage === "done" ? p : null))
+    }
+  }
+
+  function toggleProject(id: string) {
+    setSelectedProjectIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  function selectAllProjects() {
+    setSelectedProjectIds(new Set(manifestProjects.map((p) => p.id)))
+  }
+
+  function deselectAllProjects() {
+    setSelectedProjectIds(new Set())
+  }
+
+  const isBusy = isExporting || isImporting || isLoadingExportOptions
 
   return (
     <div className="space-y-6">
@@ -90,7 +212,18 @@ export function DataManagementSection() {
 
       {progress && isBusy && (
         <div className="rounded-lg border p-4 space-y-2">
-          <p className="text-sm font-medium">{progress.message}</p>
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">{progress.message}</p>
+            <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded">
+              {progress.stage === "preparing" && "准备中"}
+              {progress.stage === "collecting" && "收集中"}
+              {progress.stage === "packing" && "打包中"}
+              {progress.stage === "restoring" && "恢复中"}
+              {progress.stage === "writing" && "写入中"}
+              {progress.stage === "done" && "完成"}
+              {!["preparing","collecting","packing","restoring","writing","done"].includes(progress.stage) && progress.stage}
+            </span>
+          </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
             <div
               className="h-full bg-primary transition-all duration-300"
@@ -114,14 +247,16 @@ export function DataManagementSection() {
         </div>
         <p className="text-sm text-muted-foreground">
           {t("settings.sections.dataManagement.exportDescription", {
-            defaultValue: "将所有数据打包为一个 zip 文件，用于重装系统前备份。包含：全局配置、所有项目数据、UI偏好。",
+            defaultValue: "将选中的内容打包为 ZIP 文件，可选择全局配置、项目和数据类别。",
           })}
         </p>
-        <Button onClick={handleExport} disabled={isBusy}>
-          {isExporting ? (
+        <Button onClick={() => void openExportDialog()} disabled={isBusy}>
+          {isExporting || isLoadingExportOptions ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              {t("settings.sections.dataManagement.exporting", { defaultValue: "导出中..." })}
+              {t("settings.sections.dataManagement.exporting", {
+                defaultValue: isLoadingExportOptions ? "正在读取项目..." : "导出中...",
+              })}
             </>
           ) : (
             <>
@@ -172,7 +307,7 @@ export function DataManagementSection() {
         </div>
         <p className="text-sm text-muted-foreground">
           {t("settings.sections.dataManagement.importDescription", {
-            defaultValue: "从 zip 备份文件恢复数据。导入后需要重启软件以使配置生效。",
+            defaultValue: "从 zip 备份文件恢复数据。项目数据会立即刷新，全局配置更改可能需要重启软件生效。",
           })}
         </p>
 
@@ -182,9 +317,9 @@ export function DataManagementSection() {
           </label>
           <div className="space-y-1">
             {([
-              { value: "full" as const, label: "完全覆盖（清除当前所有数据）" },
+              { value: "full" as const, label: "恢复备份中包含的全部内容（V1 会覆盖全局配置）" },
+              { value: "selective" as const, label: "选择性导入（仅恢复选中的项目）" },
               { value: "global-only" as const, label: "仅导入全局配置（模型、UI偏好）" },
-              { value: "selective" as const, label: "选择性导入项目" },
             ]).map((opt) => (
               <label key={opt.value} className="flex items-center gap-2 text-sm cursor-pointer">
                 <input
@@ -216,13 +351,13 @@ export function DataManagementSection() {
         </Button>
 
         {importResult && (
-          <div className="text-sm space-y-1">
+          <div className="text-sm space-y-2">
             {importResult.success ? (
               <div className="flex items-start gap-2 text-green-600">
                 <CheckCircle2 className="h-4 w-4 mt-0.5 flex-shrink-0" />
                 <div>
-                  <p>{t("settings.sections.dataManagement.importSuccess", { defaultValue: "导入成功，请重启软件以使配置生效" })}</p>
-                  {importResult.projects.length > 0 && (
+                  <p>{t("settings.sections.dataManagement.importSuccess", { defaultValue: "导入成功，项目数据已自动刷新，部分全局配置可能需要重启生效" })}</p>
+                  {importResult.projects?.length > 0 && (
                     <p className="text-muted-foreground">
                       {t("settings.sections.dataManagement.restoredProjects", {
                         defaultValue: "已恢复 {{count}} 个项目",
@@ -238,17 +373,29 @@ export function DataManagementSection() {
                 <p>{importResult.error}</p>
               </div>
             )}
-            {importResult.warnings.length > 0 && (
-              <div className="text-yellow-600 text-xs space-y-1">
-                {importResult.warnings.map((w, i) => (
-                  <p key={i}>⚠ {w}</p>
+            {/* 项目恢复详情列表 */}
+            {importResult.projects?.length > 0 && (
+              <div className="border rounded-lg divide-y text-xs">
+                {importResult.projects.map((p) => (
+                  <div key={p.id} className="flex items-center gap-2 px-3 py-2">
+                    {p.success ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-500" />
+                    ) : (
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-red-500" />
+                    )}
+                    <span className="font-medium truncate">{p.name}</span>
+                    <span className="text-muted-foreground truncate flex-1">{p.path}</span>
+                    {!p.success && p.error && (
+                      <span className="text-red-500 shrink-0">{p.error}</span>
+                    )}
+                  </div>
                 ))}
               </div>
             )}
-            {importResult.projects.some((p) => !p.success) && (
-              <div className="text-red-600 text-xs space-y-1">
-                {importResult.projects.filter((p) => !p.success).map((p, i) => (
-                  <p key={i}>✗ {p.id}: {p.error}</p>
+            {importResult.warnings?.length > 0 && (
+              <div className="text-yellow-600 text-xs space-y-1">
+                {importResult.warnings.map((w, i) => (
+                  <p key={i}>⚠ {w}</p>
                 ))}
               </div>
             )}
@@ -256,12 +403,77 @@ export function DataManagementSection() {
         )}
       </div>
 
+      {/* 选择性导入项目选择弹窗 */}
+      {showProjectSelect && manifestProjects.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="mx-4 w-full max-w-lg rounded-lg border bg-background p-6 shadow-lg">
+            <div className="flex items-center gap-2 mb-4">
+              <ListChecks className="h-5 w-5 text-primary" />
+              <h3 className="text-lg font-semibold">选择要恢复的项目</h3>
+            </div>
+            <p className="text-sm text-muted-foreground mb-4">
+              请勾选需要恢复的项目，未勾选的项目将不会被导入。
+            </p>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex gap-2">
+                <Button variant="ghost" size="sm" onClick={selectAllProjects} className="text-xs h-7 px-2">
+                  全选
+                </Button>
+                <Button variant="ghost" size="sm" onClick={deselectAllProjects} className="text-xs h-7 px-2">
+                  取消全选
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                已选择 {selectedProjectIds.size} / {manifestProjects.length} 个项目
+              </p>
+            </div>
+            <div className="max-h-64 space-y-2 overflow-y-auto border rounded-lg p-3">
+              {manifestProjects.map((p) => (
+                <label key={p.id} className="flex items-center gap-3 text-sm cursor-pointer hover:bg-muted rounded px-2 py-1.5">
+                  <input
+                    type="checkbox"
+                    checked={selectedProjectIds.has(p.id)}
+                    onChange={() => toggleProject(p.id)}
+                    className="cursor-pointer"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium truncate">{p.name}</p>
+                    <p className="text-xs text-muted-foreground truncate">{p.path}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-xs text-muted-foreground">
+                已选择 {selectedProjectIds.size} / {manifestProjects.length} 个项目
+              </p>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => setShowProjectSelect(false)}>
+                  取消
+                </Button>
+                <Button onClick={handleSelectiveImport} disabled={selectedProjectIds.size === 0}>
+                  开始恢复
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <BackupExportDialog
+        open={showExportSelect}
+        projects={exportProjects}
+        exporting={isExporting}
+        onOpenChange={setShowExportSelect}
+        onConfirm={(options) => void handleExport(options)}
+      />
+
       <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-800 dark:border-yellow-900 dark:bg-yellow-950 dark:text-yellow-200">
         <div className="flex items-start gap-2">
           <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
           <p>
             {t("settings.sections.dataManagement.securityWarning", {
-              defaultValue: "备份文件包含 API 密钥等敏感信息，请妥善保管，不要分享给他人。",
+              defaultValue: "只有勾选 API Key 和其他凭据时，备份才包含敏感信息；包含凭据的 ZIP 未加密，请勿分享。",
             })}
           </p>
         </div>

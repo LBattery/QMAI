@@ -1,8 +1,17 @@
 import { getStore } from "@/lib/web-store"
 import type { WikiProject } from "@/types/wiki"
-import type { LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, ClipServerConfig, ScheduledImportConfig, SourceWatchConfig, NovelConfig, RerankConfig } from "@/stores/wiki-store"
+import type { LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, ScheduledImportConfig, SourceWatchConfig, NovelConfig, RerankConfig } from "@/stores/wiki-store"
 import { DEFAULT_NOVEL_CONFIG, DEFAULT_RERANK_CONFIG } from "@/stores/wiki-store"
+import type { McpConfig } from "@/lib/mcp/config"
+import { normalizeMcpConfig } from "@/lib/mcp/config"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
+import { normalizeUiFontFamily, type UiFontFamily } from "@/lib/font-settings"
+import {
+  VISUAL_STYLE_STORAGE_VERSION,
+  normalizeVisualStyle,
+  resolveStoredVisualStyle,
+  type VisualStyle,
+} from "@/lib/visual-style-settings"
 import { normalizePath } from "@/lib/path-utils"
 import { readFile, writeFile, fileExists } from "@/commands/fs"
 
@@ -39,6 +48,9 @@ export async function addToRecentProjects(
 
 const LLM_CONFIG_KEY = "llmConfig"
 const AI_CHAT_MODEL_KEY = "aiChatModel"
+const AI_OUTLINE_MODEL_KEY = "aiOutlineModel"
+let aiOutlineModelSaveRevision = 0
+let latestAiOutlineModel = ""
 const DEFAULT_LLM_MODEL_KEY = "defaultLlmModel"
 const PROVIDER_CONFIGS_KEY = "providerConfigs"
 const ACTIVE_PRESET_KEY = "activePresetId"
@@ -61,6 +73,24 @@ export async function saveAiChatModel(model: string): Promise<void> {
 export async function loadAiChatModel(): Promise<string | null> {
   const store = await getStore()
   return (await store.get<string>(AI_CHAT_MODEL_KEY)) ?? null
+}
+
+export async function saveAiOutlineModel(model: string): Promise<void> {
+  const writeRevision = ++aiOutlineModelSaveRevision
+  latestAiOutlineModel = model
+  const store = await getStore()
+  await store.set(AI_OUTLINE_MODEL_KEY, model)
+
+  let persistedRevision = writeRevision
+  while (persistedRevision !== aiOutlineModelSaveRevision) {
+    persistedRevision = aiOutlineModelSaveRevision
+    await store.set(AI_OUTLINE_MODEL_KEY, latestAiOutlineModel)
+  }
+}
+
+export async function loadAiOutlineModel(): Promise<string | null> {
+  const store = await getStore()
+  return (await store.get<string>(AI_OUTLINE_MODEL_KEY)) ?? null
 }
 
 export async function saveDefaultLlmModel(model: string): Promise<void> {
@@ -103,6 +133,19 @@ export async function saveSearchApiConfig(config: SearchApiConfig): Promise<void
 export async function loadSearchApiConfig(): Promise<SearchApiConfig | null> {
   const store = await getStore()
   return (await store.get<SearchApiConfig>(SEARCH_API_KEY)) ?? null
+}
+
+const MCP_CONFIG_KEY = "mcpConfig"
+
+export async function saveMcpConfig(config: McpConfig): Promise<void> {
+  const store = await getStore()
+  await store.set(MCP_CONFIG_KEY, normalizeMcpConfig(config))
+  await store.save()
+}
+
+export async function loadMcpConfig(): Promise<McpConfig> {
+  const store = await getStore()
+  return normalizeMcpConfig(await store.get<McpConfig>(MCP_CONFIG_KEY))
 }
 
 const EMBEDDING_KEY = "embeddingConfig"
@@ -152,36 +195,6 @@ export async function saveProxyConfig(config: ProxyConfig): Promise<void> {
 export async function loadProxyConfig(): Promise<ProxyConfig | null> {
   const store = await getStore()
   return (await store.get<ProxyConfig>(PROXY_CONFIG_KEY)) ?? null
-}
-
-const CLIP_SERVER_CONFIG_KEY = "clipServerConfig"
-
-export const DEFAULT_CLIP_SERVER_CONFIG: ClipServerConfig = {
-  enabled: true,
-  port: 19827,
-}
-
-export function normalizeClipServerConfig(config: Partial<ClipServerConfig> | null | undefined): ClipServerConfig {
-  const rawPort = Number(config?.port ?? DEFAULT_CLIP_SERVER_CONFIG.port)
-  const port = Number.isFinite(rawPort)
-    ? Math.max(1024, Math.min(65535, Math.round(rawPort)))
-    : DEFAULT_CLIP_SERVER_CONFIG.port
-  return {
-    enabled: config?.enabled ?? DEFAULT_CLIP_SERVER_CONFIG.enabled,
-    port,
-  }
-}
-
-export async function saveClipServerConfig(config: ClipServerConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(CLIP_SERVER_CONFIG_KEY, normalizeClipServerConfig(config))
-  await store.save()
-}
-
-export async function loadClipServerConfig(): Promise<ClipServerConfig> {
-  const store = await getStore()
-  const config = await store.get<ClipServerConfig>(CLIP_SERVER_CONFIG_KEY)
-  return normalizeClipServerConfig(config)
 }
 
 const SCHEDULED_IMPORT_KEY_PREFIX = "scheduledImportConfig:"
@@ -512,14 +525,28 @@ export async function saveNovelConfig(config: NovelConfig, projectId?: string, p
   }
 }
 
+async function maybeMigrateLegacyDefaultLlmModel(
+  config: NovelConfig,
+  projectId?: string,
+  projectPath?: string,
+): Promise<NovelConfig> {
+  if (config.defaultLlmModel.trim()) return config
+  const legacyGlobal = await loadDefaultLlmModel()
+  if (!legacyGlobal?.trim()) return config
+  const migrated = { ...config, defaultLlmModel: legacyGlobal.trim() }
+  await saveNovelConfig(migrated, projectId, projectPath)
+  return migrated
+}
+
 export async function loadNovelConfig(projectId?: string, projectPath?: string): Promise<NovelConfig | null> {
   if (projectPath) {
     try {
       const filePath = novelConfigFilePath(projectPath)
       if (await fileExists(filePath)) {
         const raw = await readFile(filePath)
-        const config = JSON.parse(raw)
-        return normalizeNovelConfig(config)
+        const config = normalizeNovelConfig(JSON.parse(raw))
+        if (!config) return null
+        return maybeMigrateLegacyDefaultLlmModel(config, projectId, projectPath)
       }
     } catch {
       // fall through to global store
@@ -543,7 +570,8 @@ export async function loadNovelConfig(projectId?: string, projectPath?: string):
       // non-critical migration
     }
   }
-  return config
+  if (!config) return null
+  return maybeMigrateLegacyDefaultLlmModel(config, projectId, projectPath)
 }
 
 const RERANK_CONFIG_KEY = "rerankConfig"
@@ -607,16 +635,74 @@ export async function loadRerankConfig(projectId?: string, projectPath?: string)
 }
 
 const THEME_KEY = "theme"
+const VISUAL_STYLE_KEY = "visualStyle"
+const VISUAL_STYLE_VERSION_KEY = "visualStyleVersion"
 
-export async function saveTheme(theme: "light" | "dark" | "deep-blue" | "system"): Promise<void> {
+export async function saveTheme(theme: "light" | "dark" | "system"): Promise<void> {
   const store = await getStore()
   await store.set(THEME_KEY, theme)
 }
 
-export async function loadTheme(): Promise<"light" | "dark" | "deep-blue" | "system" | null> {
+export async function loadTheme(): Promise<"light" | "dark" | "system" | null> {
   const store = await getStore()
-  const savedTheme = await store.get<"light" | "dark" | "deep-blue" | "system">(THEME_KEY)
+  const savedTheme = await store.get<"light" | "dark" | "system">(THEME_KEY)
   return savedTheme ?? null
+}
+
+export async function saveVisualStyle(style: VisualStyle): Promise<void> {
+  const store = await getStore()
+  await store.set(VISUAL_STYLE_KEY, normalizeVisualStyle(style))
+  await store.set(VISUAL_STYLE_VERSION_KEY, VISUAL_STYLE_STORAGE_VERSION)
+  await store.save()
+}
+
+export async function loadVisualStyle(): Promise<VisualStyle | null> {
+  const store = await getStore()
+  const saved = await store.get<string>(VISUAL_STYLE_KEY)
+  if (!saved) return null
+  const savedVersion = await store.get<string>(VISUAL_STYLE_VERSION_KEY)
+  const normalized = normalizeVisualStyle(saved)
+  const resolved = resolveStoredVisualStyle(saved, savedVersion)
+  if (saved !== resolved || resolved !== normalized || savedVersion !== VISUAL_STYLE_STORAGE_VERSION) {
+    await store.set(VISUAL_STYLE_KEY, resolved)
+    await store.set(VISUAL_STYLE_VERSION_KEY, VISUAL_STYLE_STORAGE_VERSION)
+    await store.save()
+  }
+  return resolved
+}
+
+const UI_FONT_SIZE_SCALE_KEY = "uiFontSizeScale"
+const UI_FONT_FAMILY_KEY = "uiFontFamily"
+const MAX_HISTORY_MESSAGES_KEY = "maxHistoryMessages"
+
+export async function saveUiFontSizeScale(scale: number, _projectId?: string, _projectPath?: string): Promise<void> {
+  const store = await getStore()
+  await store.set(UI_FONT_SIZE_SCALE_KEY, scale)
+  await store.save()
+}
+
+export async function saveUiFontFamily(fontFamily: UiFontFamily): Promise<void> {
+  const store = await getStore()
+  await store.set(UI_FONT_FAMILY_KEY, normalizeUiFontFamily(fontFamily))
+  await store.save()
+}
+
+export async function loadUiFontFamily(): Promise<UiFontFamily | null> {
+  const store = await getStore()
+  const saved = await store.get<string>(UI_FONT_FAMILY_KEY)
+  return saved ? normalizeUiFontFamily(saved) : null
+}
+
+export async function saveMaxHistoryMessages(max: number, _projectId?: string, _projectPath?: string): Promise<void> {
+  const store = await getStore()
+  await store.set(MAX_HISTORY_MESSAGES_KEY, max)
+  await store.save()
+}
+
+export async function loadMaxHistoryMessages(_projectId?: string, _projectPath?: string): Promise<number | null> {
+  const store = await getStore()
+  const val = await store.get<number>(MAX_HISTORY_MESSAGES_KEY)
+  return val ?? null
 }
 
 function normalizeNovelConfig(
@@ -634,13 +720,17 @@ function normalizeNovelConfig(
     deepPreviousChaptersAnalysis: config.deepPreviousChaptersAnalysis ?? DEFAULT_NOVEL_CONFIG.deepPreviousChaptersAnalysis,
     deepChapterReview: config.deepChapterReview ?? DEFAULT_NOVEL_CONFIG.deepChapterReview,
     reviewReasoningEffort: config.reviewReasoningEffort ?? DEFAULT_NOVEL_CONFIG.reviewReasoningEffort,
+    defaultLlmModel: config.defaultLlmModel ?? DEFAULT_NOVEL_CONFIG.defaultLlmModel,
     writingModel: config.writingModel ?? DEFAULT_NOVEL_CONFIG.writingModel,
     reviewModel: config.reviewModel ?? DEFAULT_NOVEL_CONFIG.reviewModel,
     summaryModel: config.summaryModel ?? DEFAULT_NOVEL_CONFIG.summaryModel,
     extractModel: config.extractModel ?? DEFAULT_NOVEL_CONFIG.extractModel,
+    deAiModel: config.deAiModel ?? DEFAULT_NOVEL_CONFIG.deAiModel,
+    deAiBatchConcurrency: Math.max(1, Math.min(5, Math.floor(config.deAiBatchConcurrency ?? DEFAULT_NOVEL_CONFIG.deAiBatchConcurrency))),
     communitySummaryEnabled: config.communitySummaryEnabled ?? DEFAULT_NOVEL_CONFIG.communitySummaryEnabled,
     communitySummaryInterval: Math.max(1, Math.min(50, config.communitySummaryInterval ?? DEFAULT_NOVEL_CONFIG.communitySummaryInterval)),
     communitySummaryAsync: config.communitySummaryAsync ?? DEFAULT_NOVEL_CONFIG.communitySummaryAsync,
+    autoGenerateChapterTitle: config.autoGenerateChapterTitle ?? DEFAULT_NOVEL_CONFIG.autoGenerateChapterTitle,
   }
 }
 
@@ -659,4 +749,17 @@ function normalizeRerankConfig(
     apiMode: config.apiMode ?? DEFAULT_RERANK_CONFIG.apiMode,
     maxCandidates: Math.max(3, Math.min(30, config.maxCandidates ?? DEFAULT_RERANK_CONFIG.maxCandidates)),
   }
+}
+
+const LAST_READ_CHAPTER_KEY = "lastReadChapter"
+
+export async function saveLastReadChapter(chapterPath: string): Promise<void> {
+  const store = await getStore()
+  await store.set(LAST_READ_CHAPTER_KEY, chapterPath)
+}
+
+export async function loadLastReadChapter(): Promise<string | null> {
+  const store = await getStore()
+  const path = await store.get<string>(LAST_READ_CHAPTER_KEY)
+  return path ?? null
 }

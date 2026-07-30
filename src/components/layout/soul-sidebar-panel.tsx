@@ -1,4 +1,4 @@
-import { useTranslation } from "react-i18next"
+﻿import { useTranslation } from "react-i18next"
 import { useWikiStore } from "@/stores/wiki-store"
 import { Sparkles, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -105,7 +105,7 @@ export function SoulSidebarPanel() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2">
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {selectedSoulTab === "project" ? (
           <>
             <button
@@ -117,17 +117,6 @@ export function SoulSidebarPanel() {
             >
               <div className="font-medium">{t("novel.soul.projectSoulItem")}</div>
               <div className="mt-1 text-xs opacity-80">{t("novel.soul.projectSoulDesc")}</div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setSelectedSoulId("de-ai-skill")}
-              className={`mb-1 w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                selectedSoulId === "de-ai-skill" ? "qm-selected" : "text-muted-foreground qm-hover"
-              }`}
-            >
-              <div className="font-medium">去AI味Skill</div>
-              <div className="mt-1 text-xs opacity-80">自定义去AI味规则，应用到全局</div>
             </button>
 
             <div className="mt-3 rounded-md border bg-muted/20 p-3">

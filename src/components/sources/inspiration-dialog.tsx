@@ -60,6 +60,7 @@ function formatSnapshotMemory(snapshot: ChapterSnapshot, fallbackTitle: string):
     `## 第${snapshot.chapterNumber}章：${snapshot.chapterTitle ?? fallbackTitle}`,
     snapshot.summary ? `### 摘要\n${snapshot.summary}` : "",
     list("关键事件", snapshot.events),
+    list("角色外貌、衣着和当前状态", snapshot.characterAppearanceAndStatus),
     list("人物状态变化", snapshot.characterStateChanges),
     list("角色认知变化", snapshot.knowledgeChanges),
     list("伏笔变化", snapshot.foreshadowingChanges),

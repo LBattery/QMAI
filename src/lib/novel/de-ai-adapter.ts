@@ -30,6 +30,10 @@ export function buildDeAiSystemPrompt(customSkill?: string): string {
   return buildQmQuaiSystemPrompt(customSkill)
 }
 
+export function buildDeAiSkillSystemPrompt(skillContent: string | null | undefined): string {
+  return buildQmQuaiSystemPrompt(skillContent || undefined)
+}
+
 export function buildQmQuaiRewriteMessages(content: string, customSkill?: string): ChatMessage[] {
   if (!content.trim()) throw new Error("去AI味内容为空，无法处理")
   return [

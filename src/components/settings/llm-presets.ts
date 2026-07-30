@@ -20,6 +20,7 @@ export type Provider =
   | "minimax"
   | "claude-code"
   | "codex-cli"
+  | "cursor-cli"
 
 export interface LlmPreset {
   /** Stable id used as the dropdown value. */
@@ -122,6 +123,27 @@ const RAW_LLM_PRESETS: LlmPreset[] = [
     suggestedContextSize: 200000,
   },
   {
+    id: "cursor-cli",
+    label: "Cursor CLI (local)",
+    hint: "Local `agent` via cursor-api-proxy — no official API key needed",
+    provider: "cursor-cli",
+    baseUrl: "http://127.0.0.1:8765/v1",
+    defaultModel: "composer-2-fast",
+    apiMode: "chat_completions",
+    // Picks aligned with cursor-api-proxy docs/cursor-models-picks.md.
+    suggestedModels: [
+      "auto",
+      "composer-2-fast",
+      "claude-opus-4-7-medium-fast",
+      "claude-opus-4-7-high",
+      "gpt-5.3-codex-high",
+      "gpt-5.3-codex-xhigh",
+      "gpt-5.5-medium",
+      "claude-opus-4-7-thinking-max",
+    ],
+    suggestedContextSize: 200000,
+  },
+  {
     id: "openai",
     label: "OpenAI (GPT)",
     hint: "Official OpenAI API",
@@ -190,6 +212,35 @@ const RAW_LLM_PRESETS: LlmPreset[] = [
       "deepseek-reasoner",
     ],
     suggestedContextSize: 64000,
+  },
+  {
+    id: "atlascloud",
+    label: "Atlas Cloud",
+    hint: "api.atlascloud.ai",
+    provider: "custom",
+    baseUrl: "https://api.atlascloud.ai/v1",
+    defaultModel: "deepseek-ai/deepseek-v4-pro",
+    apiMode: "chat_completions",
+    // Atlas Cloud is a full-modal inference platform exposing many model
+    // families (DeepSeek, Qwen, GLM, Kimi, MiniMax, Claude, GPT, Gemini…)
+    // behind a single OpenAI-compatible /v1/chat/completions endpoint, so
+    // it reuses the generic chat-completions wire like the other hosted
+    // gateways above. `deepseek-v4-pro` is a reasoning model — leave the
+    // context window generous. Full catalog is large and rotates; this is
+    // a practical subset and users can type any other id into the input.
+    suggestedModels: [
+      "deepseek-ai/deepseek-v4-pro",
+      "deepseek-ai/deepseek-v4-flash",
+      "deepseek-ai/deepseek-v3.2",
+      "Qwen/Qwen3-Next-80B-A3B-Instruct",
+      "moonshotai/kimi-k2.6",
+      "zai-org/glm-5",
+      "minimaxai/minimax-m2.7",
+      "anthropic/claude-sonnet-4.6",
+      "openai/gpt-5.5",
+      "google/gemini-3.5-flash",
+    ],
+    suggestedContextSize: 128000,
   },
   {
     id: "groq",

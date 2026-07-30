@@ -8,15 +8,28 @@ src-tauri/target/
 *.tsbuildinfo
 .env
 .env.*
+*.zip
+*.7z
+*.rar
 
 # === 依赖 ===
 node_modules/
+
+# === 日志文件 ===
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# === 更新日志（仅本地）===
+/GenxinLOG/
 
 # === 测试文件 ===
 tests/
 src/test-helpers/*
 !src/test-helpers/
 !src/test-helpers/load-test-env.ts
+!src/test-helpers/fs-temp.ts
 **/*.test.ts
 **/*.test.tsx
 !src/lib/chat-copy-content.test.ts
@@ -26,6 +39,12 @@ src/test-helpers/*
 !src/lib/web-fs.spec.ts
 !src/lib/graph-relevance.spec.ts
 !src/lib/chat-request-budget.test.ts
+!src/lib/context-budget.test.ts
+!src/lib/ingest.prompt.test.ts
+!src/components/layout/chat-layout.test.ts
+!src/i18n/i18n-parity.test.ts
+!src/lib/hardcoded-ui-chinese-i18n.test.ts
+!src/lib/project-store.integration.test.ts
 
 # === 根目录文档（仅本地保留）===
 /docs/
@@ -35,11 +54,28 @@ src/test-helpers/*
 /soul.md
 /ter
 /_fix_encoding.py
+CLAUDE.md
+de-ai-skill.md
 
-# === 中文命名文档 ===
+# === 中文命名文档/临时文件 ===
 提示词.md
 项目完成度分析报告.md
 soul文档软件更新分析.md
+jueseyizhixing分支说明.md
+xinjiangongzuohuihua.md
+diff_chapter.txt
+qmai-backup-*.zip
+QMaiWrite_*.zip
+
+# === 第三方工具/临时目录 ===
+.reasonix/
+reasonix.toml
+QMdelete/
+tokenyouhua/
+De-AI-Prompt-Enhancer-Writer-Booster-SKILL-main/
+De-AI-Prompt-Enhancer-Writer-Booster-SKILL-main.zip
+.claude/
+.codegraph/
 
 # === IDE / 工具临时文件 ===
 .worktrees/
@@ -49,6 +85,15 @@ soul文档软件更新分析.md
 .codex-temp/
 .codex-*.log
 .trae/
+.vscode/
+/.zed/
 
 # === 杂项 ===
 /1.txt
+/nul
+/xiufuzonghebug-分支说明.md
+/zed-design-standard.html
+
+# === 开发调试产物（勿提交根目录）===
+/test-mocks-*-report.json
+typecheck-output.txt

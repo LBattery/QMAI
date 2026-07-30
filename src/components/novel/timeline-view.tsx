@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+﻿import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Clock, Loader2 } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
@@ -35,7 +35,7 @@ export function TimelineView() {
           <h2 className="text-sm font-semibold">{t("novel.timeline.title")}</h2>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />

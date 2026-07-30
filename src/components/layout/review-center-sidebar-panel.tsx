@@ -1,4 +1,4 @@
-import { useTranslation } from "react-i18next"
+﻿import { useTranslation } from "react-i18next"
 import { useWikiStore } from "@/stores/wiki-store"
 import { ClipboardCheck, Sparkles, Users } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
@@ -106,7 +106,7 @@ export function ReviewCenterSidebarPanel() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2 py-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
         <div className="mb-3">
           <div className="px-1 mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">
             {t("reviewCenter.chapterTarget")}

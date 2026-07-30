@@ -1,4 +1,4 @@
-import { useTranslation } from "react-i18next"
+﻿import { useTranslation } from "react-i18next"
 import { useWikiStore } from "@/stores/wiki-store"
 import { Filter, SlidersHorizontal, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -51,7 +51,7 @@ export function GraphSidebarPanel() {
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 space-y-3">
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">图谱模式</label>
           <select

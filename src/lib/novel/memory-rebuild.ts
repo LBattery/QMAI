@@ -134,6 +134,13 @@ function buildChapterSnapshotsDocument(snapshots: ChapterSnapshot[]): string {
   for (const snapshot of snapshots) {
     lines.push(`## ${chapterLabel(snapshot.chapterNumber)}`, "")
     lines.push("### 摘要", snapshot.summary || "无", "")
+    lines.push(
+      "### 角色外貌、衣着和当前状态",
+      ...((snapshot.characterAppearanceAndStatus ?? []).length > 0
+        ? (snapshot.characterAppearanceAndStatus ?? []).map((item) => `- ${item}`)
+        : ["- 无"]),
+      "",
+    )
     lines.push("### 人物状态变化", ...(snapshot.characterStateChanges.length > 0 ? snapshot.characterStateChanges.map((item) => `- ${item}`) : ["- 无"]), "")
     lines.push("### 角色认知变化", ...(snapshot.knowledgeChanges.length > 0 ? snapshot.knowledgeChanges.map((item) => `- ${item}`) : ["- 无"]), "")
     lines.push("### 伏笔变化", ...(snapshot.foreshadowingChanges.length > 0 ? snapshot.foreshadowingChanges.map((item) => `- ${item}`) : ["- 无"]), "")

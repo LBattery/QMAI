@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from "react"
+﻿import { useState, useCallback, useEffect, useMemo } from "react"
 import { useTranslation } from "react-i18next"
 import i18n from "@/i18n"
 import type { NovelReviewResult } from "@/lib/novel/review-adapter"
@@ -288,7 +288,7 @@ export function ReviewView({
       return
     }
     const llmConfig = resolveDefaultModel(useWikiStore.getState().llmConfig)
-    if (!hasUsableLlm(llmConfig)) {
+    if (!hasUsableLlm(llmConfig, useWikiStore.getState().providerConfigs)) {
       showAiRewriteAlert("请先在设置里配置可用的 AI 模型。")
       return
     }
@@ -823,7 +823,7 @@ export function ReviewView({
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {reviewError && (
           <div className="m-3 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <AlertTriangle className="h-4 w-4 shrink-0" />

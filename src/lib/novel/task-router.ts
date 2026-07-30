@@ -18,12 +18,27 @@ export type NovelTaskIntent =
   | "timeline_query"       // 时间线查询
   | "setting_query"        // 设定查询
   | "general_chat"         // 一般对话
+  | "story_framework_generate"  // 故事框架生成
+  | "multi_agent_simulate"      // 多智能体推演
+  | "character_interview"       // 角色采访
+
+export const MODIFY_INTENTS: Set<NovelTaskIntent> = new Set([
+  "rewrite_chapter",
+  "polish_chapter",
+  "review_chapter",
+  "lint_chapter",
+])
+
+export function isModifyIntent(intent: NovelTaskIntent): boolean {
+  return MODIFY_INTENTS.has(intent)
+}
 
 export interface TaskRouteResult {
   intent: NovelTaskIntent
   confidence: number
   chapterNumber?: number
-  extractedParams: Record<string, string>
+  extractedParams: Record<string, unknown>
+  modifyFamily?: boolean
 }
 
 interface IntentPattern {
@@ -170,6 +185,33 @@ const INTENT_PATTERNS: IntentPattern[] = [
     keywords: ["设定", "世界观", "正史", "规则", "能力体系"],
     weight: 6,
   },
+  {
+    intent: "story_framework_generate",
+    patterns: [
+      /^(生成|创建|写).*(故事框架|剧情框架)/,
+      /^(故事框架|剧情框架).*(生成|创建)/,
+    ],
+    keywords: ["故事框架", "剧情框架", "生成框架"],
+    weight: 10,
+  },
+  {
+    intent: "multi_agent_simulate",
+    patterns: [
+      /^(推演|推演一下|推演剧情|推演剧情走向|多智能体推演)/,
+      /(推演剧情|推演一下|多智能体推演|剧情走向)/,
+    ],
+    keywords: ["推演剧情", "多智能体推演", "剧情走向", "推演一下", "推演剧情走向"],
+    weight: 10,
+  },
+  {
+    intent: "character_interview",
+    patterns: [
+      /^(角色采访|采访角色|问角色)/,
+      /(角色采访|采访角色|问角色)/,
+    ],
+    keywords: ["角色采访", "采访角色", "问角色"],
+    weight: 10,
+  },
 ]
 
 const CHAPTER_NUMBER_PATTERNS = [
@@ -182,7 +224,7 @@ const CHAPTER_NUMBER_PATTERNS = [
 export function routeTask(userInput: string): TaskRouteResult {
   const trimmed = userInput.trim()
   if (!trimmed) {
-    return { intent: "general_chat", confidence: 1, extractedParams: {} }
+    return { intent: "general_chat", confidence: 1, extractedParams: {}, modifyFamily: false }
   }
 
   if (isOpeningChapterRequest(trimmed)) {
@@ -233,7 +275,7 @@ export function routeTask(userInput: string): TaskRouteResult {
   }
 
   if (scores.length === 0) {
-    return { intent: "general_chat", confidence: 0.5, extractedParams }
+    return { intent: "general_chat", confidence: 0.5, extractedParams, modifyFamily: false }
   }
 
   scores.sort((a, b) => b.score - a.score)
@@ -246,6 +288,7 @@ export function routeTask(userInput: string): TaskRouteResult {
     confidence,
     chapterNumber,
     extractedParams,
+    modifyFamily: isModifyIntent(best.intent),
   }
 }
 
@@ -370,6 +413,13 @@ function parseChineseChapterNumber(text: string): number {
 /**
  * 根据任务路由结果生成对 AI 的系统提示增强
  */
+const CHAPTER_WRITING_INTENTS = new Set<NovelTaskIntent>([
+  "write_chapter",
+  "continue_chapter",
+  "rewrite_chapter",
+  "polish_chapter",
+])
+
 export function buildTaskDirective(route: TaskRouteResult): string {
   const directives: Record<NovelTaskIntent, string> = {
     write_chapter: "用户要求生成新章节。请根据上下文包中的大纲、人物状态和伏笔状态，生成完整的章节正文。注意保持人设一致，结尾留有钩子。",
@@ -386,12 +436,34 @@ export function buildTaskDirective(route: TaskRouteResult): string {
     timeline_query: "用户在查询时间线。请根据时间线数据回答当前时间进展。",
     setting_query: "用户在查询设定信息。请根据正史设定和世界观回答。",
     general_chat: "",
+    story_framework_generate: "用户要求生成故事框架。请跳转到剧情推演室进行框架生成。",
+    multi_agent_simulate: "用户要求多智能体推演。请跳转到剧情推演室进行推演。",
+    character_interview: "用户要求角色采访。请跳转到剧情推演室进行角色采访。",
   }
 
   const directive = directives[route.intent]
   if (!directive) return ""
 
-  return `\n## 任务类型识别\n意图：${intentToLabel(route.intent)}（置信度 ${Math.round(route.confidence * 100)}%）\n指令：${directive}\n`
+  const lines = [
+    "",
+    "## 任务类型识别",
+    `意图：${intentToLabel(route.intent)}（置信度 ${Math.round(route.confidence * 100)}%）`,
+    `指令：${directive}`,
+  ]
+
+  if (
+    CHAPTER_WRITING_INTENTS.has(route.intent) &&
+    typeof route.chapterNumber === "number" &&
+    route.chapterNumber > 0
+  ) {
+    lines.push(`本次写作目标：第 ${route.chapterNumber} 章。`)
+    lines.push(
+      "写正文前先 list_outlines（可传 chapterNumber），再按 type 分流并用 read_outline 读正文，确认对应该章的大纲后再写。",
+    )
+  }
+
+  lines.push("")
+  return lines.join("\n")
 }
 
 function intentToLabel(intent: NovelTaskIntent): string {
@@ -410,6 +482,9 @@ function intentToLabel(intent: NovelTaskIntent): string {
     timeline_query: "时间线查询",
     setting_query: "设定查询",
     general_chat: "一般对话",
+    story_framework_generate: "故事框架生成",
+    multi_agent_simulate: "多智能体推演",
+    character_interview: "角色采访",
   }
   return labels[intent] || "未知"
 }

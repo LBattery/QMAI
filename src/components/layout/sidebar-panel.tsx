@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import {
   BookOpenCheck,
@@ -20,14 +20,18 @@ import {
 import { KnowledgeTree, RawSourcesSection, type KnowledgeCreateRequest } from "./knowledge-tree"
 import { TrashPanel } from "./trash-panel"
 import { GraphSidebarPanel } from "./graph-sidebar-panel"
-import { SoulSidebarPanel } from "./soul-sidebar-panel"
 import { ReviewCenterSidebarPanel } from "./review-center-sidebar-panel"
-import { BookAnalysisSidebarPanel } from "./book-analysis-sidebar-panel"
+import { FrameworkList } from "@/components/novel/story-simulation/framework-list"
 
 import { useWikiStore } from "@/stores/wiki-store"
+import { useChatStore } from "@/stores/chat-store"
+import { useOutlineChatStore } from "@/stores/outline-chat-store"
+import { useOutlineGenerationStore } from "@/stores/outline-generation-store"
+import { useStorySimulationStore } from "@/stores/story-simulation-store"
+import { loadFrameworks, loadSimulationResults, deleteSimulationResult } from "@/lib/novel/story-simulation/framework-store"
+import { loadBinding } from "@/lib/novel/story-simulation/framework-binding"
+import type { StoryFramework } from "@/lib/novel/story-simulation/types"
 import { createDirectory, fileExists, listDirectory, preprocessFile, readFile, writeFile } from "@/commands/fs"
-import { countChapterBodyWords } from "@/lib/chapter-word-count"
-import { buildChapterTotalWordCountLabel } from "@/lib/chapter-display"
 import { getFileName, getFileStem, normalizePath } from "@/lib/path-utils"
 import {
   loadDismantlingLibrary,
@@ -58,11 +62,26 @@ import {
   type ChapterImportCandidate,
   type ImportedChapter,
 } from "@/lib/novel/chapter-import"
-import { isTauri } from "@/lib/platform"
-import { httpFs } from "@/lib/http-adapter"
 import { makeChapterFileName, makeDefaultChapterTitle, makeSafeFileSlug } from "@/lib/wiki-filename"
+import { buildPureOutlineMarkdown } from "@/lib/novel/outline-markdown"
 import { useImportProgressStore } from "@/stores/import-progress-store"
 import { openExternalUrl } from "@/lib/open-external-url"
+import type { ReferenceToken } from "@/lib/reference/types"
+
+const SoulSidebarPanel = lazy(async () => {
+  const mod = await import("./soul-sidebar-panel")
+  return { default: mod.SoulSidebarPanel }
+})
+
+const BookAnalysisSidebarPanel = lazy(async () => {
+  const mod = await import("./book-analysis-sidebar-panel")
+  return { default: mod.BookAnalysisSidebarPanel }
+})
+
+const UnifiedSkillLibrarySidebarPanel = lazy(async () => {
+  const mod = await import("@/components/skill-library/unified-skill-library-view")
+  return { default: mod.UnifiedSkillLibrarySidebarPanel }
+})
 
 const USAGE_GUIDE_URL = "https://tcnk9ik08e1c.feishu.cn/wiki/FWiSwYQKoifpwBk6mSRcSlB8nrh?from=from_copylink"
 
@@ -115,6 +134,16 @@ function SearchHistoryPanel() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function SidebarPanelLoading() {
+  const { t } = useTranslation()
+  return (
+    <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
+      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+      <span>{t("common.loading", { defaultValue: "加载中..." })}</span>
     </div>
   )
 }
@@ -232,32 +261,15 @@ export function DismantlingSidebarPanel() {
   async function handleImportDismantlingFiles() {
     if (!project?.path || importing) return
 
-    let candidates: Array<{ path: string; name: string }>
-
-    if (isTauri()) {
-      const { open } = await import("@tauri-apps/plugin-dialog")
-      const selected = await open({
-        multiple: true,
-        title: "导入拆文文件",
-        filters: [{ name: "文档", extensions: ["txt", "md", "mdx", "doc", "docx"] }],
-      })
-      const paths = Array.isArray(selected) ? selected : selected ? [selected] : []
-      if (paths.length === 0) return
-      candidates = paths.map((path) => ({ path: normalizePath(path), name: getFileName(path) }))
-    } else {
-      // 浏览器模式：使用 HTML file input 选择文件
-      const input = document.createElement("input")
-      input.type = "file"
-      input.multiple = true
-      input.accept = ".txt,.md,.mdx,.doc,.docx"
-      const files = await new Promise<File[] | null>((resolve) => {
-        input.onchange = () => resolve(input.files ? Array.from(input.files) : null)
-        input.click()
-      })
-      if (!files || files.length === 0) return
-      const { paths } = await httpFs.uploadFiles(files)
-      candidates = paths.map((path) => ({ path: normalizePath(path), name: getFileName(path) }))
-    }
+    const { open } = await import("@tauri-apps/plugin-dialog")
+    const selected = await open({
+      multiple: true,
+      title: "导入拆文文件",
+      filters: [{ name: "文档", extensions: ["txt", "md", "mdx", "doc", "docx"] }],
+    })
+    const paths = Array.isArray(selected) ? selected : selected ? [selected] : []
+    if (paths.length === 0) return
+    const candidates = paths.map((path) => ({ path: normalizePath(path), name: getFileName(path) }))
 
     await importDismantlingCandidates(candidates, getFileStem(candidates[0]?.name ?? "") || "拆文作品")
   }
@@ -265,35 +277,11 @@ export function DismantlingSidebarPanel() {
   async function handleImportDismantlingFolder() {
     if (!project?.path || importing) return
 
-    let candidates: ChapterImportCandidate[]
-
-    if (isTauri()) {
-      const { open } = await import("@tauri-apps/plugin-dialog")
-      const selected = await open({ directory: true, title: "导入拆文文件夹" })
-      if (!selected || Array.isArray(selected)) return
-      candidates = await collectChapterImportCandidatesFromFolder(selected)
-      await importDismantlingCandidates(candidates, getFileName(selected) || "拆文作品")
-    } else {
-      // 浏览器模式：使用 HTML file input + webkitdirectory 选择文件夹
-      const input = document.createElement("input")
-      input.type = "file"
-      input.setAttribute("webkitdirectory", "")
-      input.setAttribute("directory", "")
-      const files = await new Promise<File[] | null>((resolve) => {
-        input.onchange = () => resolve(input.files ? Array.from(input.files) : null)
-        input.click()
-      })
-      if (!files || files.length === 0) return
-      const importableFiles = files.filter((f) => {
-        const ext = f.name.split(".").pop()?.toLowerCase() ?? ""
-        return ["txt", "md", "mdx", "doc", "docx"].includes(ext)
-      })
-      if (importableFiles.length === 0) return
-      const relativePaths = importableFiles.map((f) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name)
-      const { tempDir } = await httpFs.uploadFiles(importableFiles, relativePaths)
-      candidates = await collectChapterImportCandidatesFromFolder(tempDir)
-      await importDismantlingCandidates(candidates, getFileName(tempDir) || "拆文作品")
-    }
+    const { open } = await import("@tauri-apps/plugin-dialog")
+    const selected = await open({ directory: true, title: "导入拆文文件夹" })
+    if (!selected || Array.isArray(selected)) return
+    const candidates = await collectChapterImportCandidatesFromFolder(selected)
+    await importDismantlingCandidates(candidates, getFileName(selected) || "拆文作品")
   }
 
   async function handleDeleteDismantlingProject(item: DismantlingProject) {
@@ -379,6 +367,204 @@ export function DismantlingSidebarPanel() {
 }
 
 void DismantlingSidebarPanel
+
+/** 剧情推演室侧边栏：头部标题+新建按钮 + 框架列表 */
+function StorySimulationSidebarPanel() {
+  const projectPath = useWikiStore((s) => s.project?.path)
+  const setFrameworks = useStorySimulationStore((s) => s.setFrameworks)
+  const setBinding = useStorySimulationStore((s) => s.setBinding)
+  const setCurrentFramework = useStorySimulationStore((s) => s.setCurrentFramework)
+  const setCurrentReport = useStorySimulationStore((s) => s.setCurrentReport)
+  const setCurrentDraft = useStorySimulationStore((s) => s.setCurrentDraft)
+  const setTimelineEvents = useStorySimulationStore((s) => s.setTimelineEvents)
+  const setPhase = useStorySimulationStore((s) => s.setPhase)
+  const setSavedResults = useStorySimulationStore((s) => s.setSavedResults)
+  const setSelectedResultId = useStorySimulationStore((s) => s.setSelectedResultId)
+  const currentFramework = useStorySimulationStore((s) => s.currentFramework)
+  const savedResults = useStorySimulationStore((s) => s.savedResults)
+  const selectedResultId = useStorySimulationStore((s) => s.selectedResultId)
+  const reset = useStorySimulationStore((s) => s.reset)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  // 加载指定框架的历史推演结果
+  const loadResultsForFramework = useCallback(async (frameworkId: string) => {
+    if (!projectPath) return
+    try {
+      const results = await loadSimulationResults(projectPath, frameworkId)
+      setSavedResults(results.map(r => ({
+        id: r.id,
+        frameworkId,
+        report: r.report,
+        draft: r.draft,
+        timelineEvents: r.timelineEvents,
+        agentSnapshot: r.agentSnapshot,
+        createdAt: r.report.createdAt,
+      })))
+    } catch {
+      setSavedResults([])
+    }
+  }, [projectPath, setSavedResults])
+
+  // 进入视图时加载框架列表和绑定
+  useEffect(() => {
+    if (!projectPath) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const [list, currentBinding] = await Promise.all([
+          loadFrameworks(projectPath),
+          loadBinding(projectPath),
+        ])
+        if (cancelled) return
+        setFrameworks(list)
+        setBinding(currentBinding)
+      } catch {
+        // 忽略加载错误
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [projectPath, setFrameworks, setBinding])
+
+  // 当currentFramework变化时，加载其历史结果
+  useEffect(() => {
+    if (currentFramework) {
+      void loadResultsForFramework(currentFramework.id)
+    } else {
+      setSavedResults([])
+    }
+  }, [currentFramework, loadResultsForFramework, setSavedResults])
+
+  const handleSelectFramework = (framework: StoryFramework) => {
+    setCurrentFramework(framework)
+    setCurrentReport(null)
+    setCurrentDraft(null)
+    setTimelineEvents([])
+    setSelectedResultId(null)
+    setPhase("framework-confirming")
+  }
+
+  const handleSelectResult = (resultId: string) => {
+    const result = savedResults.find(r => r.id === resultId)
+    if (result) {
+      setCurrentReport(result.report)
+      setCurrentDraft(result.draft || null)
+      setTimelineEvents(result.timelineEvents || [])
+      setSelectedResultId(resultId)
+      setPhase("report-viewing")
+    }
+  }
+
+  const handleDeleteResult = async (e: { stopPropagation: () => void }, resultId: string) => {
+    e.stopPropagation() // 防止触发选择
+    if (!projectPath || !currentFramework) return
+    if (!confirm("确定要删除这个推演结果吗？此操作不可撤销。")) return
+
+    setDeletingId(resultId)
+    try {
+      await deleteSimulationResult(projectPath, currentFramework.id, resultId)
+      // 刷新列表
+      await loadResultsForFramework(currentFramework.id)
+      // 如果删除的是当前选中的结果，清空
+      if (selectedResultId === resultId) {
+        setCurrentReport(null)
+        setCurrentDraft(null)
+        setTimelineEvents([])
+        setSelectedResultId(null)
+        setPhase("framework-confirming")
+      }
+    } catch {
+      // 删除失败忽略
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  const handleNewFramework = () => {
+    reset()
+    setPhase("configuring")
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
+        <PanelHeaderWithHelp
+          title="故事框架"
+          helpKey="storySimulation"
+          helpTitle="剧情推演室使用说明"
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 px-2 text-xs"
+          onClick={handleNewFramework}
+        >
+          <Plus className="mr-1 h-3.5 w-3.5" />
+          新建框架
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <FrameworkList
+          onSelectFramework={handleSelectFramework}
+          onNewFramework={handleNewFramework}
+        />
+      </div>
+      {/* 历史推演结果 */}
+      {currentFramework && savedResults.length > 0 && (
+        <div className="shrink-0 border-t">
+          <div className="flex items-center justify-between px-3 py-2">
+            <div className="text-xs font-semibold text-muted-foreground">
+              历史推演 ({savedResults.length})
+            </div>
+          </div>
+          <div className="max-h-48 overflow-y-auto px-2 pb-2">
+            {savedResults.map((result) => (
+              <div
+                key={result.id}
+                className={`group flex items-center gap-1 rounded px-2 py-1.5 text-xs transition-colors cursor-pointer hover:bg-accent ${
+                  selectedResultId === result.id ? "bg-accent" : ""
+                }`}
+                onClick={() => handleSelectResult(result.id)}
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1">
+                    <span className="truncate text-foreground">
+                      {new Date(result.createdAt).toLocaleString("zh-CN", {
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                    {result.draft && (
+                      <span className="shrink-0 rounded bg-primary/10 px-1 text-[10px] text-primary">
+                        草稿
+                      </span>
+                    )}
+                  </div>
+                  <span className="block truncate text-[11px] text-muted-foreground">
+                    {result.report.recommendation?.slice(0, 25) || "查看推演结果"}...
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                  onClick={(e) => void handleDeleteResult(e, result.id)}
+                  disabled={deletingId === result.id}
+                  title="删除此结果"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function inferModeFromPath(path: string): "knowledge" | "files" {
   const normalized = normalizePath(path)
@@ -512,7 +698,11 @@ export function SidebarPanel() {
   const setSelectedMemoryCenterEntry = useWikiStore((s) => s.setSelectedMemoryCenterEntry)
   const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
   const setFileTree = useWikiStore((s) => s.setFileTree)
-  const dataVersion = useWikiStore((s) => s.dataVersion)
+  const setChatExpanded = useWikiStore((s) => s.setChatExpanded)
+  const setActiveView = useWikiStore((s) => s.setActiveView)
+  const enqueueChatReferenceTokens = useChatStore((s) => s.enqueueReferenceTokens)
+  const enqueueOutlineReferenceTokens = useOutlineChatStore((s) => s.enqueueReferenceTokens)
+  const setOutlineChatOpen = useOutlineGenerationStore((s) => s.setPanelOpen)
   const [mode, setMode] = useState<"knowledge" | "files">("knowledge")
   const [refreshKey, setRefreshKey] = useState(0)
   const [pendingCreate, setPendingCreate] = useState<KnowledgeCreateRequest | null>(null)
@@ -522,7 +712,6 @@ export function SidebarPanel() {
   const [memoryData, setMemoryData] = useState<MemoryCenterData | null>(null)
   const [memoryLoading, setMemoryLoading] = useState(false)
   const [memoryError, setMemoryError] = useState<string | null>(null)
-  const [sidebarTotalWordCount, setSidebarTotalWordCount] = useState<number | null>(null)
   const [outlineImporting, setOutlineImporting] = useState(false)
   const [outlineImportMenuOpen, setOutlineImportMenuOpen] = useState(false)
   const outlineImportMenuRef = useRef<HTMLDivElement | null>(null)
@@ -559,37 +748,6 @@ export function SidebarPanel() {
   }, [activeView, selectedFile])
 
   const isChapter = mode === "knowledge"
-
-  useEffect(() => {
-    if (!project || !isChapter) {
-      setSidebarTotalWordCount(null)
-      return
-    }
-
-    let cancelled = false
-
-    const loadSidebarTotalWordCount = async () => {
-      try {
-        const chapterNodes = await listDirectory(`${normalizePath(project.path)}/wiki/chapters`)
-        const files = flattenMdFiles(chapterNodes)
-        const contents = await Promise.all(files.map((file) => readFile(file.path).catch(() => "")))
-        const total = contents.reduce((sum, markdown) => sum + countChapterBodyWords(markdown), 0)
-        if (!cancelled) {
-          setSidebarTotalWordCount(total)
-        }
-      } catch {
-        if (!cancelled) {
-          setSidebarTotalWordCount(null)
-        }
-      }
-    }
-
-    void loadSidebarTotalWordCount()
-
-    return () => {
-      cancelled = true
-    }
-  }, [dataVersion, isChapter, project])
 
   useEffect(() => {
     if (!pendingCreate?.kind) return
@@ -740,50 +898,17 @@ export function SidebarPanel() {
   }
 
   async function extractImportedOutlineMemories(projectPath: string, importedPaths: string[]) {
-    outlineImportCancelledRef.current = false
-    const taskId = useImportProgressStore.getState().startTask({
-      projectPath,
-      kind: "outline",
-      total: importedPaths.length,
-      currentTitle: getFileName(importedPaths[0] ?? ""),
-      message: "正在提取 AI 大纲记忆",
-    })
-    activeImportTaskIdRef.current = taskId
-
-    let completed = 0
-    let failed = 0
-    for (const outlinePath of importedPaths) {
-      if (outlineImportCancelledRef.current) {
-        useImportProgressStore.getState().finishTask(taskId, "cancelled", {
-          completed,
-          currentTitle: "",
-          message: `已取消大纲记忆提取，已完成 ${completed}/${importedPaths.length} 个大纲。`,
-        })
-        activeImportTaskIdRef.current = null
-        return
-      }
-
-      useImportProgressStore.getState().updateTask(taskId, {
-        completed,
-        total: importedPaths.length,
-        currentTitle: getFileName(outlinePath),
+    const { runOutlineIngestPaths } = await import("@/lib/novel/outline-generation")
+    try {
+      await runOutlineIngestPaths(projectPath, importedPaths, {
+        onProgressTaskStarted: (taskId) => {
+          activeImportTaskIdRef.current = taskId
+        },
       })
-      const { createOutlineIngestTask, runOutlineIngestTask } = await import("@/lib/novel/outline-generation")
-      const outlineTaskId = createOutlineIngestTask(projectPath, outlinePath)
-      await runOutlineIngestTask(outlineTaskId)
-      completed += 1
+    } finally {
+      activeImportTaskIdRef.current = null
+      await refreshTree(projectPath, importedPaths[0])
     }
-
-    useImportProgressStore.getState().finishTask(taskId, failed > 0 ? "error" : "done", {
-      completed,
-      total: importedPaths.length,
-      currentTitle: "",
-      message: failed > 0
-        ? `大纲记忆提取完成：成功 ${completed - failed} 个，失败 ${failed} 个。`
-        : `大纲记忆提取完成：成功 ${completed} 个大纲。`,
-    })
-    activeImportTaskIdRef.current = null
-    await refreshTree(projectPath, importedPaths[0])
   }
 
   async function finishChapterImport(projectPath: string, importedChapters: ImportedChapter[], extractMemory: boolean) {
@@ -800,31 +925,14 @@ export function SidebarPanel() {
   async function handleImportChapterFiles() {
     if (!project || chapterImporting) return
 
-    let sourcePaths: string[]
-
-    if (isTauri()) {
-      const { open } = await import("@tauri-apps/plugin-dialog")
-      const selected = await open({
-        multiple: true,
-        title: "导入章节文件",
-        filters: [{ name: "章节文档", extensions: [...CHAPTER_IMPORT_EXTENSIONS] }],
-      })
-      if (!selected || (Array.isArray(selected) && selected.length === 0)) return
-      sourcePaths = Array.isArray(selected) ? selected : [selected]
-    } else {
-      // 浏览器模式：使用 HTML file input 选择文件
-      const input = document.createElement("input")
-      input.type = "file"
-      input.multiple = true
-      input.accept = CHAPTER_IMPORT_EXTENSIONS.map((ext) => `.${ext}`).join(",")
-      const files = await new Promise<File[] | null>((resolve) => {
-        input.onchange = () => resolve(input.files ? Array.from(input.files) : null)
-        input.click()
-      })
-      if (!files || files.length === 0) return
-      const { paths } = await httpFs.uploadFiles(files)
-      sourcePaths = paths
-    }
+    const { open } = await import("@tauri-apps/plugin-dialog")
+    const selected = await open({
+      multiple: true,
+      title: "导入章节文件",
+      filters: [{ name: "章节文档", extensions: [...CHAPTER_IMPORT_EXTENSIONS] }],
+    })
+    if (!selected || (Array.isArray(selected) && selected.length === 0)) return
+    const sourcePaths = Array.isArray(selected) ? selected : [selected]
 
     const memoryDecision = await confirmChapterMemoryExtraction(sourcePaths.length)
     if (memoryDecision === "cancel") return
@@ -849,44 +957,14 @@ export function SidebarPanel() {
   async function handleImportChapterFolder() {
     if (!project || chapterImporting) return
 
-    let candidates: ChapterImportCandidate[]
-
-    if (isTauri()) {
-      const { open } = await import("@tauri-apps/plugin-dialog")
-      const selected = await open({
-        directory: true,
-        title: "导入章节文件夹",
-      })
-      const selectedFolder = Array.isArray(selected) ? selected[0] : selected
-      if (!selectedFolder || typeof selectedFolder !== "string") return
-      candidates = await collectChapterImportCandidatesFromFolder(selectedFolder)
-    } else {
-      // 浏览器模式：使用 HTML file input + webkitdirectory 选择文件夹
-      const input = document.createElement("input")
-      input.type = "file"
-      input.setAttribute("webkitdirectory", "")
-      input.setAttribute("directory", "")
-      const files = await new Promise<File[] | null>((resolve) => {
-        input.onchange = () => resolve(input.files ? Array.from(input.files) : null)
-        input.click()
-      })
-      if (!files || files.length === 0) return
-      // 过滤可导入的文件扩展名
-      const importableFiles = files.filter((f) => {
-        const ext = f.name.split(".").pop()?.toLowerCase() ?? ""
-        return CHAPTER_IMPORT_EXTENSIONS.includes(ext as typeof CHAPTER_IMPORT_EXTENSIONS[number])
-      })
-      if (importableFiles.length === 0) {
-        window.alert("没有找到可导入的章节文档。")
-        setChapterImportMenuOpen(false)
-        return
-      }
-      // 上传文件到服务器临时目录，保留相对路径
-      const relativePaths = importableFiles.map((f) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name)
-      const { tempDir } = await httpFs.uploadFiles(importableFiles, relativePaths)
-      // 用临时目录路径收集候选
-      candidates = await collectChapterImportCandidatesFromFolder(tempDir)
-    }
+    const { open } = await import("@tauri-apps/plugin-dialog")
+    const selected = await open({
+      directory: true,
+      title: "导入章节文件夹",
+    })
+    const selectedFolder = Array.isArray(selected) ? selected[0] : selected
+    if (!selectedFolder || typeof selectedFolder !== "string") return
+    const candidates = await collectChapterImportCandidatesFromFolder(selectedFolder)
 
     if (candidates.length === 0) {
       window.alert("没有找到可导入的章节文档。")
@@ -917,36 +995,19 @@ export function SidebarPanel() {
   async function handleImportOutlineFiles() {
     if (!project || outlineImporting) return
 
-    let sourcePaths: string[]
-
-    if (isTauri()) {
-      const { open } = await import("@tauri-apps/plugin-dialog")
-      const selected = await open({
-        multiple: true,
-        title: t("novel.outlineImport.importFilesTitle", { defaultValue: "导入大纲文件" }),
-        filters: [
-          {
-            name: t("novel.outlineImport.documentFilter", { defaultValue: "文档" }),
-            extensions: [...OUTLINE_IMPORT_EXTENSIONS],
-          },
-        ],
-      })
-      if (!selected || (Array.isArray(selected) && selected.length === 0)) return
-      sourcePaths = Array.isArray(selected) ? selected : [selected]
-    } else {
-      // 浏览器模式：使用 HTML file input 选择文件
-      const input = document.createElement("input")
-      input.type = "file"
-      input.multiple = true
-      input.accept = OUTLINE_IMPORT_EXTENSIONS.map((ext) => `.${ext}`).join(",")
-      const files = await new Promise<File[] | null>((resolve) => {
-        input.onchange = () => resolve(input.files ? Array.from(input.files) : null)
-        input.click()
-      })
-      if (!files || files.length === 0) return
-      const { paths } = await httpFs.uploadFiles(files)
-      sourcePaths = paths
-    }
+    const { open } = await import("@tauri-apps/plugin-dialog")
+    const selected = await open({
+      multiple: true,
+      title: t("novel.outlineImport.importFilesTitle", { defaultValue: "导入大纲文件" }),
+      filters: [
+        {
+          name: t("novel.outlineImport.documentFilter", { defaultValue: "文档" }),
+          extensions: [...OUTLINE_IMPORT_EXTENSIONS],
+        },
+      ],
+    })
+    if (!selected || (Array.isArray(selected) && selected.length === 0)) return
+    const sourcePaths = Array.isArray(selected) ? selected : [selected]
 
     setOutlineImporting(true)
     try {
@@ -973,43 +1034,13 @@ export function SidebarPanel() {
   async function handleImportOutlineFolder() {
     if (!project || outlineImporting) return
 
-    let candidates: Array<{ path: string; name: string; targetFolders: string[] }>
-
-    if (isTauri()) {
-      const { open } = await import("@tauri-apps/plugin-dialog")
-      const selected = await open({
-        directory: true,
-        title: t("novel.outlineImport.importFolderTitle", { defaultValue: "导入大纲文件夹" }),
-      })
-      if (!selected || typeof selected !== "string") return
-      candidates = await collectOutlineImportCandidatesFromFolder(selected)
-    } else {
-      // 浏览器模式：使用 HTML file input + webkitdirectory 选择文件夹
-      const input = document.createElement("input")
-      input.type = "file"
-      input.setAttribute("webkitdirectory", "")
-      input.setAttribute("directory", "")
-      const files = await new Promise<File[] | null>((resolve) => {
-        input.onchange = () => resolve(input.files ? Array.from(input.files) : null)
-        input.click()
-      })
-      if (!files || files.length === 0) return
-      // 过滤可导入的文件扩展名
-      const importableFiles = files.filter((f) => {
-        const ext = f.name.split(".").pop()?.toLowerCase() ?? ""
-        return OUTLINE_IMPORT_EXTENSIONS.includes(ext as typeof OUTLINE_IMPORT_EXTENSIONS[number])
-      })
-      if (importableFiles.length === 0) {
-        window.alert(t("novel.outlineImport.emptyResult", { defaultValue: "没有找到可导入的大纲文档。" }))
-        setOutlineImportMenuOpen(false)
-        return
-      }
-      // 上传文件到服务器临时目录，保留相对路径
-      const relativePaths = importableFiles.map((f) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name)
-      const { tempDir } = await httpFs.uploadFiles(importableFiles, relativePaths)
-      // 用临时目录路径收集候选
-      candidates = await collectOutlineImportCandidatesFromFolder(tempDir)
-    }
+    const { open } = await import("@tauri-apps/plugin-dialog")
+    const selected = await open({
+      directory: true,
+      title: t("novel.outlineImport.importFolderTitle", { defaultValue: "导入大纲文件夹" }),
+    })
+    if (!selected || typeof selected !== "string") return
+    const candidates = await collectOutlineImportCandidatesFromFolder(selected)
 
     if (candidates.length === 0) {
       window.alert(t("novel.outlineImport.emptyResult", { defaultValue: "没有找到可导入的大纲文档。" }))
@@ -1101,15 +1132,7 @@ export function SidebarPanel() {
         await createDirectory(outlinesRoot).catch(() => {})
         await createDirectory(targetDir).catch(() => {})
         const filePath = await getUniqueWikiPagePath(targetDir, `${makeSafeFileSlug(title)}.md`)
-        const content = [
-          "---",
-          "type: outline",
-          `title: "${title.replace(/"/g, '\\"')}"`,
-          "---",
-          "",
-          `# ${title}`,
-          "",
-        ].join("\n")
+        const content = buildPureOutlineMarkdown(title, "")
         await writeFile(filePath, content)
         setPendingPages((prev) => [
           { path: filePath, title, type: "outline", tags: [] },
@@ -1142,6 +1165,17 @@ export function SidebarPanel() {
     setPendingCreate(request)
     setInputTitle("")
   }
+
+  const handleSendChapterToChat = useCallback((token: ReferenceToken) => {
+    enqueueChatReferenceTokens([token])
+    setChatExpanded(true)
+  }, [enqueueChatReferenceTokens, setChatExpanded])
+
+  const handleSendOutlineToOutlineChat = useCallback((token: ReferenceToken) => {
+    enqueueOutlineReferenceTokens([token])
+    setOutlineChatOpen(true)
+    setActiveView("sources")
+  }, [enqueueOutlineReferenceTokens, setActiveView, setOutlineChatOpen])
 
   const inputPlaceholder = pendingCreate?.kind === "outline"
     ? t("sidebar.newOutlinePrompt")
@@ -1194,12 +1228,28 @@ export function SidebarPanel() {
     }
   }, [activeView, loadMemoryCenter, novelMode, project?.path])
 
+  if (activeView === "storySimulation") {
+    return <StorySimulationSidebarPanel />
+  }
+
   if (activeView === "graph") {
     return <GraphSidebarPanel />
   }
 
   if (activeView === "soul") {
-    return <SoulSidebarPanel />
+    return (
+      <Suspense fallback={<SidebarPanelLoading />}>
+        <SoulSidebarPanel />
+      </Suspense>
+    )
+  }
+
+  if (activeView === "skillLibrary" || activeView === "writingSkillLibrary") {
+    return (
+      <Suspense fallback={<SidebarPanelLoading />}>
+        <UnifiedSkillLibrarySidebarPanel />
+      </Suspense>
+    )
   }
 
   if (activeView === "reviewCenter") {
@@ -1207,7 +1257,11 @@ export function SidebarPanel() {
   }
 
   if (activeView === "bookAnalysis") {
-    return <BookAnalysisSidebarPanel />
+    return (
+      <Suspense fallback={<SidebarPanelLoading />}>
+        <BookAnalysisSidebarPanel />
+      </Suspense>
+    )
   }
 
   if (activeView === "search") {
@@ -1305,20 +1359,15 @@ export function SidebarPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b px-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-sm font-semibold">
+          <div className="flex min-w-0 items-center gap-1.5 text-sm font-semibold">
             <PanelHeaderWithHelp
               title={isChapter ? t("sidebar.knowledge") : t("sidebar.files")}
               helpKey={isChapter ? "chapter" : "outline"}
               helpTitle={isChapter ? "章节功能使用说明" : "大纲功能使用说明"}
             />
           </div>
-          {isChapter && sidebarTotalWordCount !== null ? (
-            <div className="mt-0.5 text-xs text-muted-foreground">
-              {buildChapterTotalWordCountLabel(sidebarTotalWordCount)}
-            </div>
-          ) : null}
         </div>
         <div className="flex items-center gap-1">
           {isChapter ? (
@@ -1405,7 +1454,7 @@ export function SidebarPanel() {
       </div>
 
       {pendingCreate && (
-        <div className="flex items-center gap-1 border-b px-2 py-1">
+        <div className="flex flex-col gap-2 border-b px-2 py-2">
           <input
             type="text"
             value={inputTitle}
@@ -1418,27 +1467,30 @@ export function SidebarPanel() {
               }
             }}
             placeholder={inputPlaceholder}
-            className="flex-1 rounded-md border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-ring"
+            className="w-full rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-ring"
             autoFocus
             disabled={creating}
           />
-          <button
-            type="button"
-            onClick={() => void handleCreateFromInput()}
-            disabled={!inputTitle.trim() || creating}
-            className="rounded-md bg-primary px-2 py-1 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {creating ? "..." : "创建"}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              cancelPendingCreate()
-            }}
-            className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            取消
-          </button>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                cancelPendingCreate()
+              }}
+              disabled={creating}
+              className="rounded-md border px-3 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleCreateFromInput()}
+              disabled={!inputTitle.trim() || creating}
+              className="rounded-md bg-primary px-3 py-1 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {creating ? "..." : "创建"}
+            </button>
+          </div>
         </div>
       )}
 
@@ -1449,6 +1501,8 @@ export function SidebarPanel() {
           pendingPages={pendingPages.filter((page) => page.type === (isChapter ? "chapter" : "outline"))}
           onRemovePendingPage={handleRemovePendingPage}
           onRequestCreate={beginCreate}
+          onSendToChat={isChapter ? handleSendChapterToChat : undefined}
+          onSendToOutline={!isChapter ? handleSendOutlineToOutlineChat : undefined}
         />
       </div>
       <div className="border-t px-3 py-2">

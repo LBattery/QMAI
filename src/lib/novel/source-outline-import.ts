@@ -1,6 +1,7 @@
 import { createDirectory, fileExists, readFile, writeFile } from "@/commands/fs"
 import { getFileName, getRelativePath, normalizePath } from "@/lib/path-utils"
 import { makeSafeFileSlug } from "@/lib/wiki-filename"
+import { buildPureOutlineMarkdown } from "./outline-markdown"
 
 export type SourceOutlineImportTarget =
   | "story-outline"
@@ -9,6 +10,9 @@ export type SourceOutlineImportTarget =
   | "locations"
   | "organizations"
   | "power-system"
+  | "golden-finger"
+  | "background-setting"
+  | "geography-setting"
   | "foreshadowing-plan"
 
 interface SourceOutlineImportConfig {
@@ -25,7 +29,10 @@ export const SOURCE_OUTLINE_IMPORT_TARGETS: SourceOutlineImportConfig[] = [
   { id: "character-briefs", title: "人物小传", folderName: "人物小传", category: "characters" },
   { id: "locations", title: "地点设定", folderName: "地点设定", category: "locations" },
   { id: "organizations", title: "势力设定", folderName: "势力设定", category: "organizations" },
-  { id: "power-system", title: "能力体系", folderName: "能力体系", category: "power-system" },
+  { id: "power-system", title: "力量体系", folderName: "力量体系", category: "power-system" },
+  { id: "golden-finger", title: "金手指设定", folderName: "金手指设定", category: "golden-finger" },
+  { id: "background-setting", title: "背景设定", folderName: "背景设定", category: "background-setting" },
+  { id: "geography-setting", title: "地理设定", folderName: "地理设定", category: "geography-setting" },
   { id: "foreshadowing-plan", title: "伏笔计划", folderName: "伏笔计划", category: "foreshadowing" },
 ]
 
@@ -33,10 +40,6 @@ function getTargetConfig(target: SourceOutlineImportTarget): SourceOutlineImport
   const config = SOURCE_OUTLINE_IMPORT_TARGETS.find((item) => item.id === target)
   if (!config) throw new Error(`Unknown outline import target: ${target}`)
   return config
-}
-
-function yamlEscape(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
 }
 
 function stripExtension(fileName: string): string {
@@ -71,25 +74,10 @@ function buildSourceSection(sourcePath: string, relativeSourcePath: string, sour
 }
 
 function buildOutlinePage(
-  config: SourceOutlineImportConfig,
   pageTitle: string,
-  relativeSourcePath: string,
   section: string,
 ): string {
-  const frontmatter = [
-    "---",
-    "type: outline",
-    `title: "${yamlEscape(pageTitle)}"`,
-    ...(config.outlineType ? [`outline_type: ${config.outlineType}`] : []),
-    `outline_category: ${config.category}`,
-    `outline_folder: "${yamlEscape(config.folderName)}"`,
-    `sources: ["${yamlEscape(relativeSourcePath)}"]`,
-    "---",
-    "",
-    `# ${pageTitle}`,
-    "",
-  ]
-  return `${frontmatter.join("\n")}${section}`
+  return buildPureOutlineMarkdown(pageTitle, section)
 }
 
 export async function addSourceToOutlineCategory(
@@ -111,6 +99,6 @@ export async function addSourceToOutlineCategory(
 
   await createDirectory(outlinesDir)
   await createDirectory(targetDir)
-  await writeFile(outlinePath, buildOutlinePage(config, pageTitle, relativeSourcePath, section))
+  await writeFile(outlinePath, buildOutlinePage(pageTitle, section))
   return outlinePath
 }

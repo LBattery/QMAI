@@ -1,6 +1,23 @@
 import type { LlmConfig } from "@/stores/wiki-store"
 import { readFile } from "@/commands/fs"
 import { searchWiki } from "@/lib/search"
+import { computeContextBudget } from "@/lib/context-budget"
+
+/** 前情正文占分析模型窗口的比例；其余留给分析指令与模型输出。 */
+const PREVIOUS_BODY_WINDOW_FRAC = 0.5
+/** 单章正文最低保留字符数，避免窗口很小时被裁到无信息量。 */
+const PREVIOUS_PER_CHAPTER_FLOOR = 800
+
+/** 章节正文超预算时保留首尾、省略中段，避免尾部（结尾/最新状态）被整段丢弃。 */
+function clampChapterBody(body: string, maxChars: number): string {
+  const normalized = body.trim()
+  if (normalized.length <= maxChars) return normalized
+  const marker = "\n\n[中间内容已省略，保留首尾]\n\n"
+  const available = Math.max(200, maxChars - marker.length)
+  const head = Math.ceil(available * 0.6)
+  const tail = available - head
+  return `${normalized.slice(0, head).trimEnd()}${marker}${tail > 0 ? normalized.slice(-tail).trimStart() : ""}`
+}
 
 export interface PreviousChapterAnalysis {
   chapterNumber: number
@@ -19,6 +36,7 @@ export async function analyzePreviousChapters(
   currentChapterNumber: number,
   llmConfig: LlmConfig,
   analysisCount: number = 3,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (currentChapterNumber <= 1) return ""
 
@@ -26,6 +44,7 @@ export async function analyzePreviousChapters(
 
   // 读取前N章的完整内容
   for (let i = Math.max(1, currentChapterNumber - analysisCount); i < currentChapterNumber; i++) {
+    if (signal?.aborted) throw new Error("已停止生成")
     try {
       const results = await searchWiki(projectPath, `chapter_number:${i}`)
       if (results.length > 0) {
@@ -41,8 +60,21 @@ export async function analyzePreviousChapters(
 
   if (previousChapters.length === 0) return ""
 
+  // 按分析模型自身的上下文窗口分配前情正文预算，均分到各章后保留首尾。
+  // 不再无界拼接全文、依赖 llm-client 末级截断。
+  const { maxCtx } = computeContextBudget(llmConfig.maxContextSize)
+  const bodyBudget = Math.floor(maxCtx * PREVIOUS_BODY_WINDOW_FRAC)
+  const perChapterBudget = Math.max(
+    PREVIOUS_PER_CHAPTER_FLOOR,
+    Math.floor(bodyBudget / previousChapters.length),
+  )
+  const budgetedChapters = previousChapters.map((ch) => ({
+    number: ch.number,
+    content: clampChapterBody(ch.content, perChapterBudget),
+  }))
+
   // 构建分析prompt
-  const analysisPrompt = buildPreviousChaptersAnalysisPrompt(previousChapters, currentChapterNumber)
+  const analysisPrompt = buildPreviousChaptersAnalysisPrompt(budgetedChapters, currentChapterNumber)
 
   // 调用LLM分析
   const { streamChat } = await import("@/lib/llm-client")
@@ -55,9 +87,11 @@ export async function analyzePreviousChapters(
       onToken: (token) => { analysis += token },
       onDone: () => {},
       onError: () => {},
-    }
+    },
+    signal,
   )
 
+  if (signal?.aborted) throw new Error("已停止生成")
   return analysis.trim()
 }
 

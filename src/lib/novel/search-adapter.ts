@@ -4,6 +4,10 @@ import { normalizePath } from "@/lib/path-utils"
 import { rerankCandidates } from "@/lib/rerank"
 import { useWikiStore } from "@/stores/wiki-store"
 import { loadSnapshot, listSnapshots } from "./chapter-ingest"
+import {
+  buildNovelVectorSnippet,
+  selectRelevantNovelVectorResults,
+} from "./vector-relevance"
 
 export interface NovelSearchParams {
   projectPath: string
@@ -67,7 +71,9 @@ export async function novelMixedSearch(params: NovelSearchParams): Promise<Novel
   const promises: Promise<void>[] = []
 
   if (params.includeKeyword !== false) {
-    const pKeyword = runSearchBranch("keyword", searchWiki(pp, params.query)).then(items => {
+    const pKeyword = runSearchBranch("keyword", searchWiki(pp, params.query, {
+      includeVector: false,
+    })).then(items => {
       console.log("[novelMixedSearch] keyword done, got", items.length)
       results.push(...items.slice(0, topK).map((item, sourceRank) => ({
         type: "keyword" as const,
@@ -191,10 +197,11 @@ async function runVectorSearch(
   try {
     const { searchByEmbedding } = await import("@/lib/embedding")
     const vectorResults = await searchByEmbedding(pp, query, embCfg, Math.max(topK * 2, 10))
-    if (vectorResults.length === 0) return []
+    const relevantResults = selectRelevantNovelVectorResults(vectorResults, topK)
+    if (relevantResults.length === 0) return []
 
     const items: NovelSearchResult[] = []
-    for (const vr of vectorResults.slice(0, topK)) {
+    for (const vr of relevantResults) {
       try {
         const dirs = ["entities", "concepts", "sources", "synthesis", "comparison", "queries"]
         let content = ""
@@ -216,11 +223,12 @@ async function runVectorSearch(
         }
         if (foundPath && content) {
           const title = extractTitle(content, vr.id)
+          const matchedSnippet = buildNovelVectorSnippet(vr)
           items.push({
             type: "vector",
             path: foundPath,
             title,
-            snippet: content.slice(0, 300).replace(/\n/g, " "),
+            snippet: matchedSnippet || content.slice(0, 300).replace(/\n/g, " "),
             relevance: vr.score,
           })
         }

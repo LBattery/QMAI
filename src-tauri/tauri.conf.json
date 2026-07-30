@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "QMaiWrite",
-  "version": "2.2.22",
+  "version": "3.0.1",
   "identifier": "com.qingmuai.writer",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npx vite build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "闈掑箷AI鍐欎綔",
+        "title": "青幕AI写作",
         "width": 1200,
         "height": 800,
         "resizable": true,

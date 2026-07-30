@@ -1,7 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
-import { isTauri } from "@/lib/platform"
-import { serverEvents } from "@/lib/server-events"
-import { readFile, listDirectory } from "@/commands/fs"
+import { listDirectory } from "@/commands/fs"
 import {
   rescanProjectFiles,
   startProjectFileWatcher,
@@ -22,9 +20,10 @@ import {
   isIngestableSourcePath,
 } from "@/lib/source-lifecycle"
 import { isPathAllowedBySourceWatch, normalizeSourceWatchConfig } from "@/lib/source-watch-config"
+import { requestEditorDiskSyncIfSafe } from "@/lib/editor-disk-sync-session"
 
-let unlistenQueue: UnlistenFn | (() => void) | null = null
-let unlistenChanged: UnlistenFn | (() => void) | null = null
+let unlistenQueue: UnlistenFn | null = null
+let unlistenChanged: UnlistenFn | null = null
 let startSeq = 0
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let pendingRefreshPaths = new Set<string>()
@@ -41,32 +40,16 @@ export async function startProjectFileSync(
   useFileSyncStore.getState().setRunning(true)
   useFileSyncStore.getState().setLastError(null)
 
-  if (isTauri()) {
-    unlistenQueue = await listen<FileSyncPayload>("file-sync://queue-updated", (event) => {
-      if (event.payload.projectId !== useWikiStore.getState().project?.id) return
-      useFileSyncStore.getState().setTasks(event.payload.tasks)
-    })
+  unlistenQueue = await listen<FileSyncPayload>("file-sync://queue-updated", (event) => {
+    if (event.payload.projectId !== useWikiStore.getState().project?.id) return
+    useFileSyncStore.getState().setTasks(event.payload.tasks)
+  })
 
-    unlistenChanged = await listen<FileSyncPayload>("file-sync://changed", (event) => {
-      const current = useWikiStore.getState().project
-      if (!current || event.payload.projectId !== current.id) return
-      scheduleRefreshAfterFileChanges(event.payload.tasks)
-    })
-  } else {
-    serverEvents.connect()
-    unlistenQueue = serverEvents.on("file-sync://queue-updated", (event) => {
-      const payload = event.payload as FileSyncPayload
-      if (payload.projectId !== useWikiStore.getState().project?.id) return
-      useFileSyncStore.getState().setTasks(payload.tasks)
-    })
-
-    unlistenChanged = serverEvents.on("file-sync://changed", (event) => {
-      const payload = event.payload as FileSyncPayload
-      const current = useWikiStore.getState().project
-      if (!current || payload.projectId !== current.id) return
-      scheduleRefreshAfterFileChanges(payload.tasks)
-    })
-  }
+  unlistenChanged = await listen<FileSyncPayload>("file-sync://changed", (event) => {
+    const current = useWikiStore.getState().project
+    if (!current || event.payload.projectId !== current.id) return
+    scheduleRefreshAfterFileChanges(event.payload.tasks)
+  })
 
   try {
     const queue = await startProjectFileWatcher(project.id, normalizePath(project.path), activeSourceWatchConfig)
@@ -161,7 +144,6 @@ async function processFileChangeBatch(
 
 async function refreshAfterFileChanges(project: WikiProject, relativePaths: string[]): Promise<void> {
   const pp = normalizePath(project.path)
-  const store = useWikiStore.getState()
   try {
     const tree = await listDirectory(pp)
     useWikiStore.getState().setFileTree(tree)
@@ -169,21 +151,17 @@ async function refreshAfterFileChanges(project: WikiProject, relativePaths: stri
     console.warn("[file-sync] failed to refresh file tree:", err)
   }
 
-  store.bumpDataVersion()
+  useWikiStore.getState().bumpDataVersion()
 
-  const selected = store.selectedFile ? normalizePath(store.selectedFile) : null
+  const selected = useWikiStore.getState().selectedFile
+    ? normalizePath(useWikiStore.getState().selectedFile!)
+    : null
   if (!selected) return
 
   const selectedRel = selected.startsWith(`${pp}/`) ? selected.slice(pp.length + 1) : selected
   if (!relativePaths.includes(selectedRel)) return
 
-  try {
-    const content = await readFile(selected)
-    useWikiStore.getState().setFileContent(content)
-  } catch {
-    useWikiStore.getState().setSelectedFile(null)
-    useWikiStore.getState().setFileContent("")
-  }
+  await requestEditorDiskSyncIfSafe(selected)
 }
 
 async function enqueueRawSourceChanges(project: WikiProject, tasks: FileChangeTask[]): Promise<void> {

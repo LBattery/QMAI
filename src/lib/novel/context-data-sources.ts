@@ -8,12 +8,18 @@ import { searchWiki } from "@/lib/search"
 import { parseFrontmatter } from "@/lib/frontmatter"
 import { parseChapterMeta } from "./chapter-meta"
 import { listSnapshots, loadSnapshot, type ChapterSnapshot } from "./chapter-ingest"
-import { loadRevisionFeedbackForContext } from "./revision-feedback"
+import { loadRevisionFeedbackForContext, createEmptyRevisionFeedback } from "./revision-feedback"
 import { loadCognitionState, cognitionToContextText } from "./character-cognition"
 import { getChapterVolumes } from "./volume"
 import { readSoulDoc } from "./soul-doc"
 import { buildWritingStyleContext } from "./writing-style-store"
+import { buildSectionBriefing } from "./section-briefing"
 import type { DataSource, ContextLoadContext } from "./context-data-source"
+import { loadFrameworks } from "./story-simulation/framework-store"
+import { loadBinding, buildBindingContext } from "./story-simulation/framework-binding"
+import { RetrievalStore } from "./retrieval"
+import { writeFileAtomic, fileExists, listDirectory, createDirectory } from "@/commands/fs"
+import type { DataSourceCategory } from "./classification"
 
 // 导入现有的辅助函数
 import {
@@ -28,6 +34,32 @@ import {
 const RECENT_CHAPTER_CONTENT_MAX_CHARS = 6000
 const RECENT_CHAPTER_CONTENT_HEAD_CHARS = 2200
 const RECENT_CHAPTER_CONTENT_TAIL_CHARS = 3200
+
+const DATA_SOURCE_CATEGORY_MAP: Record<string, DataSourceCategory[]> = {
+  sectionBriefing: ["character_states", "foreshadowing", "settings"],
+  outline: ["outline"],
+  chapterOutline: ["outline"],
+  volumeContext: ["outline", "settings"],
+  snapshots: ["recent_summaries", "chapter_content", "character_states", "foreshadowing", "timeline"],
+  retrieval: ["recent_summaries", "character_states", "foreshadowing", "timeline"],
+  recentChapterContents: ["chapter_content"],
+  fallbackRecentSummaries: ["recent_summaries"],
+  fallbackPreviousEnding: ["chapter_content"],
+  fallbackCharacterStates: ["character_states"],
+  fallbackForeshadowingStates: ["foreshadowing"],
+  fallbackTimeline: ["timeline"],
+  relatedSettings: ["settings"],
+  canonRules: ["settings"],
+  writingStyle: ["settings"],
+  bookAnalysisReferences: ["memory", "plot_tools", "settings", "character_states"],
+  searchResults: ["memory", "plot_tools"],
+  graphSearchResults: ["graph"],
+  revisionFeedback: ["revision"],
+  cognitionText: ["character_states"],
+  soulDoc: ["soul"],
+  characterAuras: ["character_states", "soul"],
+  storyFrameworkBinding: ["settings", "outline"],
+}
 
 function selectRecentChapterNumbersForContent(chapterNumber: number | undefined, count: number): number[] {
   if (!chapterNumber || chapterNumber <= 1) return []
@@ -109,7 +141,6 @@ export const snapshotDataSource: DataSource<{
   previousChapterEnding: string
   characterStates: string
   characterAppearance: string
-  femaleCharacterEvents: string
   foreshadowingSignals: string[]
   timeline: string
 }> = {
@@ -125,7 +156,6 @@ export const snapshotDataSource: DataSource<{
         previousChapterEnding: "",
         characterStates: "",
         characterAppearance: "",
-        femaleCharacterEvents: "",
         foreshadowingSignals: [],
         timeline: "",
       }
@@ -156,12 +186,7 @@ export const snapshotDataSource: DataSource<{
     )
     const characterAppearance = joinNonEmpty(
       validLookback
-        .flatMap((snapshot) => snapshot.characterAppearanceAndStatus.map((change) => `第${snapshot.chapterNumber}章：${change}`)),
-      "\n",
-    )
-    const femaleCharacterEvents = joinNonEmpty(
-      validLookback
-        .flatMap((snapshot) => snapshot.femaleCharacterSexualEvents.map((event) => `第${snapshot.chapterNumber}章：${event}`)),
+        .flatMap((snapshot) => (snapshot.characterAppearanceAndStatus ?? []).map((item) => `第${snapshot.chapterNumber}章：${item}`)),
       "\n",
     )
     const foreshadowingSignals = validLookback.flatMap((snapshot) => snapshot.foreshadowingChanges)
@@ -176,7 +201,6 @@ export const snapshotDataSource: DataSource<{
       previousChapterEnding: previousSnapshot?.endingHook || "",
       characterStates,
       characterAppearance,
-      femaleCharacterEvents,
       foreshadowingSignals,
       timeline,
     }
@@ -355,11 +379,23 @@ export const writingStyleDataSource: DataSource<string> = {
   name: "writingStyle",
   priority: 12,
   async load(context: ContextLoadContext): Promise<string> {
+    // 优先级1: 已启用的拆书作品文风预设
     try {
       const enabledStyle = await buildWritingStyleContext(context.projectPath)
       if (enabledStyle.trim()) return enabledStyle
     } catch {}
 
+    // 优先级2: 独立文风设定文件（wiki/写作风格.md 或 wiki/writing-style.md）
+    try {
+      const pp = context.projectPath
+      const stylePaths = [`${pp}/wiki/写作风格.md`, `${pp}/wiki/writing-style.md`]
+      for (const stylePath of stylePaths) {
+        const content = await readFile(stylePath)
+        if (content.trim()) return content.slice(0, 1000)
+      }
+    } catch {}
+
+    // 优先级3: 从 wiki 搜索风格相关页面
     try {
       const results = await searchWiki(context.projectPath, "style 风格 writing 写作")
       if (results.length > 0) {
@@ -368,6 +404,15 @@ export const writingStyleDataSource: DataSource<string> = {
       }
     } catch {}
     return ""
+  },
+}
+
+export const bookAnalysisReferencesDataSource: DataSource<string> = {
+  name: "bookAnalysisReferences",
+  priority: 19,
+  async load(context: ContextLoadContext): Promise<string> {
+    const { searchBookAnalysisContext } = await import("./book-analysis/analysis-context-index")
+    return searchBookAnalysisContext(context.projectPath, context.task)
   },
 }
 
@@ -409,7 +454,7 @@ export const revisionFeedbackDataSource: DataSource<any> = {
   name: "revisionFeedback",
   priority: 15,
   async load(context: ContextLoadContext): Promise<any> {
-    if (!context.chapterNumber) return []
+    if (!context.chapterNumber) return createEmptyRevisionFeedback()
     return await loadRevisionFeedbackForContext(
       context.projectPath,
       context.chapterNumber,
@@ -458,14 +503,159 @@ export const characterAurasDataSource: DataSource<string> = {
 }
 
 /**
+ * 本节速记数据源
+ * 根据细纲筛选角色状态、伏笔和世界观约束，priority=0（最优先）
+ */
+export const sectionBriefingDataSource: DataSource<string> = {
+  name: "sectionBriefing",
+  priority: 0,
+  async load(context: ContextLoadContext): Promise<string> {
+    if (!context.chapterNumber) return ""
+    const chapterOutlineContent = await readChapterOutlineContent(context.projectPath, context.chapterNumber)
+    if (!chapterOutlineContent.trim()) return ""
+    return buildSectionBriefing(context.projectPath, context.chapterNumber, chapterOutlineContent)
+  },
+}
+
+/**
+ * 故事框架绑定数据源
+ * 加载当前激活的框架绑定，构建注入 AI 会话的上下文文本。
+ */
+export const storyFrameworkBindingDataSource: DataSource<string> = {
+  name: "storyFrameworkBinding",
+  priority: 19,
+  async load(context: ContextLoadContext): Promise<string> {
+    try {
+      const binding = await loadBinding(context.projectPath)
+      if (!binding) return ""
+      const frameworks = await loadFrameworks(context.projectPath)
+      const framework = frameworks.find((f) => f.id === binding.frameworkId)
+      if (!framework) return ""
+      return buildBindingContext(binding, framework)
+    } catch {
+      return ""
+    }
+  },
+}
+
+/**
+ * Retrieval 索引数据源
+ * 从 retrieval.md 主索引读取最近章节摘要
+ */
+export const retrievalDataSource: DataSource<{
+  recentSummaries: string[]
+  characterStates: string
+  characterAppearance: string
+  foreshadowingSignals: string[]
+  timeline: string
+}> = {
+  name: "retrieval",
+  priority: 3,
+  async load(context: ContextLoadContext) {
+    const { projectPath, chapterNumber, config } = context
+    const store = createRetrievalStoreForDataSource(projectPath)
+    const hasIndex = await store.hasIndex()
+    
+    if (!hasIndex) {
+      return {
+        recentSummaries: [],
+        characterStates: "",
+        characterAppearance: "",
+        foreshadowingSignals: [],
+        timeline: "",
+      }
+    }
+
+    try {
+      const allEntries = await store.getAllEntries()
+      const sortedEntries = [...allEntries].sort((a, b) => a.chapterNumber - b.chapterNumber)
+      
+      const summaryCount = config.recentSummaryWindow
+      const lookbackCount = config.snapshotLookback
+      
+      const summaryEntries = chapterNumber
+        ? sortedEntries.filter((e) => e.chapterNumber < chapterNumber).slice(-summaryCount)
+        : sortedEntries.slice(-summaryCount)
+      
+      const lookbackEntries = chapterNumber
+        ? sortedEntries.filter((e) => e.chapterNumber < chapterNumber).slice(-lookbackCount)
+        : sortedEntries.slice(-lookbackCount)
+
+      const recentSummaries = summaryEntries.map(
+        (entry) => `第${entry.chapterNumber}章 ${entry.chapterTitle}：${entry.summary}`
+      )
+      
+      const characterStates = joinNonEmpty(
+        lookbackEntries
+          .filter((e) => e.characterStates)
+          .map((e) => `第${e.chapterNumber}章：${e.characterStates}`),
+        "\n",
+      )
+
+      const characterAppearance = joinNonEmpty(
+        lookbackEntries
+          .filter((entry) => entry.characterAppearance)
+          .map((entry) => `第${entry.chapterNumber}章：${entry.characterAppearance}`),
+        "\n",
+      )
+      
+      const foreshadowingSignals = lookbackEntries
+        .filter((e) => e.foreshadowingChanges)
+        .flatMap((e) => e.foreshadowingChanges.split("\n").filter(Boolean))
+      
+      const timeline = joinNonEmpty(
+        lookbackEntries
+          .filter((e) => e.timelineEvents)
+          .map((e) => `第${e.chapterNumber}章：${e.timelineEvents}`),
+        "\n",
+      )
+
+      return {
+        recentSummaries,
+        characterStates,
+        characterAppearance,
+        foreshadowingSignals,
+        timeline,
+      }
+    } catch (err) {
+      console.warn("[DataSource] retrieval load failed:", err)
+      return {
+        recentSummaries: [],
+        characterStates: "",
+        characterAppearance: "",
+        foreshadowingSignals: [],
+        timeline: "",
+      }
+    }
+  },
+}
+
+function createRetrievalStoreForDataSource(projectPath: string): RetrievalStore {
+  const fsAdapter = {
+    readFile,
+    writeFile: writeFileAtomic,
+    fileExists,
+    listDirectory: async (path: string): Promise<string[]> => {
+      const nodes = await listDirectory(path)
+      return nodes.map((n: any) => n.name)
+    },
+    createDirectory,
+    joinPath: (...parts: string[]) => parts.join("/"),
+  }
+  return new RetrievalStore(projectPath, fsAdapter as any)
+}
+
+/**
  * 获取所有数据源
  */
 export function getAllDataSources(): DataSource<any>[] {
   return [
+    sectionBriefingDataSource,
     outlineDataSource,
     chapterOutlineDataSource,
     volumeContextDataSource,
     snapshotDataSource,
+    retrievalDataSource,
     recentChapterContentsDataSource,
     fallbackRecentSummariesDataSource,
     fallbackPreviousEndingDataSource,
@@ -475,10 +665,25 @@ export function getAllDataSources(): DataSource<any>[] {
     relatedSettingsDataSource,
     canonRulesDataSource,
     writingStyleDataSource,
+    bookAnalysisReferencesDataSource,
     searchResultsDataSource,
     graphSearchResultsDataSource,
     revisionFeedbackDataSource,
     cognitionTextDataSource,
     soulDocDataSource,
+    storyFrameworkBindingDataSource,
   ]
+}
+
+export function getDataSourceNamesForCategories(categories: DataSourceCategory[]): string[] {
+  const allowed = new Set(categories)
+  return getAllDataSources()
+    .filter((source) => (DATA_SOURCE_CATEGORY_MAP[source.name] || []).some((category) => allowed.has(category)))
+    .map((source) => source.name)
+}
+
+export function getDataSourcesForCategories(categories?: DataSourceCategory[]): DataSource<any>[] {
+  if (!categories || categories.length === 0) return getAllDataSources()
+  const allowedNames = new Set(getDataSourceNamesForCategories(categories))
+  return getAllDataSources().filter((source) => allowedNames.has(source.name))
 }

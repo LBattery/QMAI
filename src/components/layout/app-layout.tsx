@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useWikiStore } from "@/stores/wiki-store"
-import { listDirectory } from "@/commands/fs"
-import { normalizePath } from "@/lib/path-utils"
+import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { IconSidebar } from "./icon-sidebar"
 import { SidebarPanel } from "./sidebar-panel"
 import { ContentArea } from "./content-area"
 import { ActivityPanel } from "./activity-panel"
-import { useOutlineGenerationStore, type OutlineGenerationTask, type OutlineGenerationState } from "@/stores/outline-generation-store"
 import { useBookAnalysisStore } from "@/stores/book-analysis-store"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { clampSidebarWidth } from "@/lib/workspace-layout"
@@ -25,9 +23,6 @@ export function AppLayout({ onSwitchProject }: AppLayoutProps) {
   const activeView = useWikiStore((s) => s.activeView)
   const setActiveView = useWikiStore((s) => s.setActiveView)
   const setActiveSettingsCategory = useWikiStore((s) => s.setActiveSettingsCategory)
-  const setFileTree = useWikiStore((s) => s.setFileTree)
-  const outlineTasks = useOutlineGenerationStore((s: OutlineGenerationState) => s.tasks)
-  const removeOutlineTask = useOutlineGenerationStore((s: OutlineGenerationState) => s.removeTask)
   const bookAnalysisTasks = useBookAnalysisStore((s) => s.tasks)
   const removeBookAnalysisTask = useBookAnalysisStore((s) => s.removeTask)
   const [leftWidth, setLeftWidth] = useState(220)
@@ -40,14 +35,6 @@ export function AppLayout({ onSwitchProject }: AppLayoutProps) {
   const [dismissedBookAnalysisTaskIds, setDismissedBookAnalysisTaskIds] = useState<Set<string>>(new Set())
   const isDraggingLeft = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
-  const latestOutlineTask = outlineTasks
-    .filter((task: OutlineGenerationTask) => (
-      task.status === "generating" ||
-      task.status === "generated" ||
-      task.status === "error"
-    ))
-    .sort((a: OutlineGenerationTask, b: OutlineGenerationTask) => b.updatedAt - a.updatedAt)[0] ?? null
-
   // 拆书分析后台任务：正在运行或刚完成
   // 运行中的任务如果被用户关闭则不显示，但完成后重新弹出
   const latestBookAnalysisTask = bookAnalysisTasks
@@ -62,13 +49,11 @@ export function AppLayout({ onSwitchProject }: AppLayoutProps) {
 
   const loadFileTree = useCallback(async () => {
     if (!project) return
-    try {
-      const tree = await listDirectory(normalizePath(project.path))
-      setFileTree(tree)
-    } catch (err) {
-      console.error("Failed to load file tree:", err)
-    }
-  }, [project, setFileTree])
+    await refreshProjectFileTree(project.path, {
+      projectId: project.id,
+      clearDisplayTreeFirst: false,
+    })
+  }, [project])
 
   useEffect(() => {
     loadFileTree()
@@ -159,70 +144,9 @@ export function AppLayout({ onSwitchProject }: AppLayoutProps) {
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      {latestOutlineTask && (
-        <div className="fixed bottom-3 right-3 z-50 w-80 rounded-lg border bg-background p-3 shadow-lg">
-          <div className="text-sm font-medium">
-            {latestOutlineTask.status === "generating"
-              ? latestOutlineTask.kind === "refine"
-                ? (latestOutlineTask.displayTitle && latestOutlineTask.displayTitle !== t("novel.outlineGenerator.refineTitle")
-                  ? t("novel.outlineGenerator.sectionGenerating", { title: latestOutlineTask.displayTitle })
-                  : t("novel.outlineGenerator.refining"))
-                : t("novel.outlineGenerator.generatingTitle")
-              : latestOutlineTask.status === "error"
-                ? t("novel.outlineGenerator.error")
-                : latestOutlineTask.kind === "refine"
-                  ? t("novel.outlineGenerator.refineTitle")
-                  : t("novel.outlineGenerator.generatedTitle")}
-          </div>
-          <div className="mt-1 text-xs text-muted-foreground">
-            {latestOutlineTask.status === "generating"
-              ? t("novel.outlineGenerator.generationMayTakeLong")
-              : latestOutlineTask.status === "error"
-                ? latestOutlineTask.message
-                : latestOutlineTask.kind === "refine"
-                  ? latestOutlineTask.message
-                  : t("novel.outlineGenerator.generatedDescription")}
-          </div>
-          <div className="mt-3 flex gap-2">
-            {latestOutlineTask.outlinePath ? (
-              <>
-                <button
-                  type="button"
-                  className="rounded-md border px-3 py-1.5 text-xs"
-                  onClick={async () => {
-                    const { openGeneratedOutline } = await import("@/lib/novel/outline-generation")
-                    await openGeneratedOutline(latestOutlineTask.id)
-                  }}
-                >
-                  {t("novel.outlineGenerator.openOutline")}
-                </button>
-                {latestOutlineTask.kind === "outline" ? (
-                  <button
-                    type="button"
-                    className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground"
-                    onClick={async () => {
-                      const { runOutlineIngestTask } = await import("@/lib/novel/outline-generation")
-                      await runOutlineIngestTask(latestOutlineTask.id)
-                    }}
-                  >
-                    {t("novel.outlineGenerator.ingestNow")}
-                  </button>
-                ) : null}
-              </>
-            ) : null}
-            <button
-              type="button"
-              className="rounded-md px-3 py-1.5 text-xs text-muted-foreground"
-              onClick={() => removeOutlineTask(latestOutlineTask.id)}
-            >
-              {t("novel.outlineGenerator.handleLater")}
-            </button>
-          </div>
-        </div>
-      )}
       {/* 拆书分析后台任务通知 */}
       {latestBookAnalysisTask && (
-        <div className={`fixed z-50 w-80 rounded-lg border bg-background p-3 shadow-lg ${latestOutlineTask ? "bottom-[calc(0.75rem+13rem)]" : "bottom-3"} right-3`}>
+        <div className="fixed bottom-3 right-3 z-50 w-80 rounded-lg border bg-background p-3 shadow-lg">
           <button
             type="button"
             onClick={() => {
@@ -328,25 +252,25 @@ export function AppLayout({ onSwitchProject }: AppLayoutProps) {
           onOpenSidebar={() => setSidebarCollapsed(false)}
           onSwitchProject={onSwitchProject}
         />
-        <div ref={containerRef} className="flex min-w-0 flex-1 overflow-hidden">
+        <div ref={containerRef} className="flex min-w-0 min-h-0 flex-1 overflow-hidden">
         {!isSettings && !sidebarCollapsed && (
           <>
             <div
               className="flex shrink-0 flex-col overflow-hidden border-r"
               style={{ width: leftWidth }}
             >
-              <div className="flex-1 overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-hidden">
                 <SidebarPanel />
               </div>
               <ActivityPanel />
             </div>
             <div
-              className="w-1.5 shrink-0 cursor-col-resize bg-border/40 transition-colors hover:bg-primary/30 active:bg-primary/40"
+              className="w-1 shrink-0 cursor-col-resize bg-border/20 transition-colors hover:bg-primary/25 active:bg-primary/30"
               onMouseDown={startDrag("left")}
             />
           </>
         )}
-        <div className="min-w-0 flex-1 overflow-hidden">
+        <div className="min-w-0 min-h-0 flex-1 overflow-hidden">
           <ErrorBoundary>
             <ContentArea />
           </ErrorBoundary>

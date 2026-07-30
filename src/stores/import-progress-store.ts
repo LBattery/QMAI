@@ -12,6 +12,8 @@ export interface ImportProgressTask {
   completed: number
   total: number
   currentTitle: string
+  activeTitles?: string[]
+  concurrency?: number
   message?: string
   error?: string
   cancelling: boolean
@@ -27,6 +29,8 @@ interface StartImportProgressTaskInput {
   currentTitle?: string
   message?: string
   abortController?: AbortController
+  activeTitles?: string[]
+  concurrency?: number
 }
 
 export interface ImportProgressState {
@@ -62,6 +66,8 @@ export const useImportProgressStore = create<ImportProgressState>((set, get) => 
           total: input.total,
           currentTitle: input.currentTitle ?? "",
           message: input.message,
+          activeTitles: input.activeTitles ?? [],
+          concurrency: input.concurrency,
           cancelling: false,
           createdAt: now,
           updatedAt: now,
@@ -82,7 +88,13 @@ export const useImportProgressStore = create<ImportProgressState>((set, get) => 
     }))
   },
   finishTask: (taskId, status, patch = {}) => {
+    const task = get().tasks.find((item) => item.id === taskId)
     get().updateTask(taskId, { ...patch, status, cancelling: false })
+    if (task?.kind === "outline" || task?.kind === "outline_generation" || task?.kind === "outline_refinement") {
+      void import("@/lib/novel/outline-generation").then(({ reconcileStaleOutlineIngestTasks }) => {
+        reconcileStaleOutlineIngestTasks(task.projectPath)
+      })
+    }
   },
   markCancelling: (taskId) => {
     get().updateTask(taskId, { cancelling: true })
@@ -91,7 +103,12 @@ export const useImportProgressStore = create<ImportProgressState>((set, get) => 
     const task = get().tasks.find((t) => t.id === taskId)
     if (!task) return
     task.abortController?.abort()
-    get().updateTask(taskId, { status: "cancelled", cancelling: false })
+    get().updateTask(taskId, { status: "cancelled", cancelling: false, activeTitles: [] })
+    if (task.kind === "outline" || task.kind === "outline_generation" || task.kind === "outline_refinement") {
+      void import("@/lib/novel/outline-generation").then(({ reconcileStaleOutlineIngestTasks }) => {
+        reconcileStaleOutlineIngestTasks(task.projectPath)
+      })
+    }
     setTimeout(() => {
       get().clearTask(taskId)
     }, 3000)

@@ -1,24 +1,16 @@
 [package]
-name = "llm-wiki"
-version = "2.2.22"
-description = "LLM Wiki - A personal knowledge base for LLM concepts"
-authors = []
+name = "qmai"
+version = "3.0.1"
+description = "QMAI - AI writing system for long-form novels"
+authors = ["Mochocyang"]
 edition = "2021"
 default-run = "qmai"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-name = "llm_wiki_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
-
 [[bin]]
 name = "qmai"
 path = "src/main.rs"
-
-[[bin]]
-name = "qmai-server"
-path = "src/bin/server.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -34,7 +26,6 @@ tauri-plugin-updater = "2"
 pdfium-render = "0.9"
 tauri-plugin-store = "2.4.2"
 tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
-tiny_http = "0.12"
 zip = "2"
 calamine = "0.34.0"
 docx-rs = "0.4.20"
@@ -69,12 +60,7 @@ md-5 = "0.10"
 notify = "8"
 walkdir = "2"
 tauri-plugin-single-instance = "2"
-axum = { version = "0.8", features = ["macros", "multipart"] }
-tower-http = { version = "0.6", features = ["cors", "fs"] }
-rust-embed = "8"
-mime_guess = "2"
-open = "5"
-async-stream = "0.3"
+keepawake = "0.6"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
@@ -82,7 +68,7 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 [profile.release]
 codegen-units = 1
 lto = true
-opt-level = "s"
+opt-level = "z"
 # Unwind (not abort) so third-party parser panics can be caught at the
 # Tauri command boundary via panic_guard and turned into errors. Slightly
 # larger binary, but prevents single-file corruption from killing the app.

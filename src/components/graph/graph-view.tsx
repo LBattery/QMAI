@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useMemo, useState, useRef } from "react"
+﻿import { useEffect, useCallback, useMemo, useState, useRef } from "react"
 import Graph from "graphology"
 import { SigmaContainer, useLoadGraph, useRegisterEvents, useSigma } from "@react-sigma/core"
 import "@react-sigma/core/lib/style.css"
@@ -1444,7 +1444,7 @@ export function GraphView() {
         {/* Graph canvas */}
         <div
           ref={graphContainerRef}
-          className="relative flex-1 min-w-0 overflow-hidden bg-slate-50 dark:bg-slate-950"
+          className="relative min-h-0 flex-1 min-w-0 overflow-hidden bg-slate-50 dark:bg-slate-950"
           onContextMenu={(e) => e.preventDefault()}
           onClick={() => setNodeMenu(null)}
         >

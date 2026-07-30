@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from "react"
+﻿import { useState, useCallback, useMemo, useEffect } from "react"
 import i18n from "@/i18n"
 import {
   Link2Off,
@@ -17,6 +17,7 @@ import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
 import { runStructuralLint, runSemanticLint, type LintResult } from "@/lib/lint"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
+import { resolveDefaultModel, resolveNovelModel } from "@/lib/novel/model-resolver"
 import { readFile, writeFile, listDirectory } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
 import { useTranslation } from "react-i18next"
@@ -34,7 +35,6 @@ export function LintView() {
   const { t } = useTranslation()
   const novelMode = useWikiStore((s) => s.novelMode)
   const project = useWikiStore((s) => s.project)
-  const llmConfig = useWikiStore((s) => s.llmConfig)
   const selectedFile = useWikiStore((s) => s.selectedFile)
   const fileContent = useWikiStore((s) => s.fileContent)
   const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
@@ -110,8 +110,13 @@ export function LintView() {
       const structural = await runStructuralLint(pp)
       let all = structural
 
-      if (runSemantic && hasUsableLlm(llmConfig)) {
-        const semantic = await runSemanticLint(pp, llmConfig, {
+      const state = useWikiStore.getState()
+      const effectiveLlmConfig = novelMode
+        ? resolveNovelModel(state.llmConfig, state.novelConfig, "lint")
+        : resolveDefaultModel(state.llmConfig)
+
+      if (runSemantic && hasUsableLlm(effectiveLlmConfig, state.providerConfigs)) {
+        const semantic = await runSemanticLint(pp, effectiveLlmConfig, {
           chapterContent: novelMode && selectedFile ? fileContent : undefined,
           chapterNumber: meta?.chapterNumber,
         })
@@ -150,7 +155,7 @@ export function LintView() {
         })
       }
     }
-  }, [project, llmConfig, running, runSemantic, fileContent, novelMode, selectedFile, t, loadHistory, setLintRun])
+  }, [project, running, runSemantic, fileContent, novelMode, selectedFile, t, loadHistory, setLintRun])
 
   async function handleOpenPage(page: string) {
     if (!project) return
@@ -323,7 +328,7 @@ export function LintView() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {error && (
           <div className="m-3 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <AlertTriangle className="h-4 w-4 shrink-0" />

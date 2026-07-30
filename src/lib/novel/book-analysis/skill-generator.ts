@@ -117,6 +117,11 @@ export async function generateCharacterSkill(
 - 分类：${character.category}
 - 描述：${character.description}
 - 性格：${character.personality}
+- 核心动机：${character.motivation || "未提取"}
+- 目标：${character.goals?.join("、") || "未提取"}
+- 恐惧与边界：${character.fears?.join("、") || "未提取"}
+- 成长弧：${character.growthArc || "未提取"}
+- 行为模式：${character.behaviorPatterns || "未提取"}
 - 说话方式：${character.speechStyle}
 - 关系：${character.relationships.map(r => `${r.target}（${r.relation}）`).join("、")}
 
@@ -137,6 +142,11 @@ export async function generateCharacterSkill(
 5. 行为模式
 6. 关系网络
 7. 使用建议（如何在写作中使用这个角色）
+8. 核心动机与目标
+9. 恐惧与行为边界
+10. 成长弧
+11. 语言与行为模式
+12. 代表性证据（只用于学习角色塑造，不照搬原作情节）
 
 请直接输出完整的 Markdown 内容，不要额外说明。`
 
@@ -198,6 +208,28 @@ ${character.personality}
 ## 说话方式
 
 ${character.speechStyle}
+
+## 核心动机与目标
+
+${character.motivation || "未提取"}
+
+${character.goals?.map((goal) => `- ${goal}`).join("\n") || "- 未提取"}
+
+## 恐惧与行为边界
+
+${character.fears?.map((fear) => `- ${fear}`).join("\n") || "- 未提取"}
+
+## 成长弧
+
+${character.growthArc || "未提取"}
+
+## 语言与行为模式
+
+${character.behaviorPatterns || "未提取"}
+
+## 代表性证据
+
+${character.representativeQuotes?.map((quote) => `- [${quote.chapterId}] ${quote.text}`).join("\n") || "- 未提取"}
 
 ## 关系网络
 

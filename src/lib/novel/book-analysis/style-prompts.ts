@@ -22,6 +22,14 @@ export const STYLE_DIMENSIONS = [
 
 export type StyleDimensionKey = typeof STYLE_DIMENSIONS[number]["key"]
 
+export interface StyleEvidenceCandidate {
+  chapterId: string
+  text: string
+  tags: string[]
+  reason: string
+  purpose: string
+}
+
 const SAMPLE_TEXT_LIMIT = 24000
 
 function truncate(value: string, limit: number): string {
@@ -61,12 +69,19 @@ export function buildStyleExtractionPrompt(sampleText: string, bookTitle: string
     `   绝不要泛泛而谈（如\u201C节奏适中\u201D\u201C描写生动\u201D），必须具体到可指导写作的程度。`,
     `2. \`constitution\`：把以上维度合成为 8~12 条**可执行的硬约束**（编号列表，写进同一个字符串，用换行分隔），用于约束 AI 之后按这种文风写作。每条约束必须具体到\u201C怎么写/不怎么写\u201D，并附带简短的理由，例如\u201C环境描写控制在2句以内，因为作者偏好用动作带出场景而非静态铺陈\u201D\u201C比喻只用日常喻体，因为作者的比喻总是接地气的而非文学化的\u201D。`,
     "3. `samples`：从上面提供的原文样本中，**原样摘抄** 4~6 段最能代表这种文风的片段（每段 80~300 字），放进字符串数组。必须是原文照抄，不要改写、不要自己编。优先选择能同时体现多个维度特征的段落。",
+    "4. `humorMechanisms`：具体说明幽默如何产生，例如反差、一本正经地补刀、误解递进；没有明显幽默时返回空数组。",
+    "5. `highEnergyMechanisms`：具体说明热血或高燃段落如何抬压、加速和兑现；没有明显特征时返回空数组。",
+    "6. `pointOfView`：明确叙事人称与限知范围。",
+    "7. `vocabularyPreferences`：列出稳定的词汇、动词和口语偏好。",
+    "8. `avoidPatterns`：列出仿写时应避免的写法。",
+    "9. `evidence`：返回 3~8 个代表片段，每项包含 chapterId、text、tags、reason、purpose。chapterId 必须来自样本标题中的章节 ID，text 必须是 80~300 字原文短片段，不得改写。",
     "",
     "硬性要求：",
     "- 只分析文风，不要分析人物性格或剧情走向。",
     "- 每个维度的描述必须包含具体的写作手法和用词习惯，不能只给笼统评价。",
     "- constitution 中的每条约束都必须是可操作的写作指令，不能是空泛的原则。",
     "- samples 必须来自提供的原文，不得虚构。",
+    "- evidence 的 tags 要标明幽默对白、热血节奏、叙事视角、词汇习惯等可检索特征。",
     "- JSON 之外不要输出任何内容。",
     "",
     `作品：${bookTitle}`,
@@ -83,6 +98,32 @@ function asString(value: unknown): string {
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.map((item) => asString(item)).filter(Boolean)
+}
+
+export function parseStyleEvidenceResult(raw: string): StyleEvidenceCandidate[] {
+  const fenceStripped = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? raw
+  const objectText = fenceStripped.match(/\{[\s\S]*\}/)?.[0]
+  if (!objectText) return []
+  try {
+    const parsed = JSON.parse(objectText) as Record<string, unknown>
+    if (!Array.isArray(parsed.evidence)) return []
+    return parsed.evidence.flatMap((item): StyleEvidenceCandidate[] => {
+      if (!item || typeof item !== "object") return []
+      const candidate = item as Record<string, unknown>
+      const chapterId = asString(candidate.chapterId)
+      const text = asString(candidate.text)
+      if (!chapterId || !text) return []
+      return [{
+        chapterId,
+        text,
+        tags: asStringArray(candidate.tags),
+        reason: asString(candidate.reason),
+        purpose: asString(candidate.purpose),
+      }]
+    }).slice(0, 8)
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -130,6 +171,11 @@ export function parseStyleProfileResult(raw: string, sampledChapterIds: string[]
     narrativeVoice: asString(parsed.narrativeVoice),
     dialogueStyle: asString(parsed.dialogueStyle),
     thematicHabits: asString(parsed.thematicHabits),
+    humorMechanisms: asStringArray(parsed.humorMechanisms),
+    highEnergyMechanisms: asStringArray(parsed.highEnergyMechanisms),
+    pointOfView: asString(parsed.pointOfView),
+    vocabularyPreferences: asStringArray(parsed.vocabularyPreferences),
+    avoidPatterns: asStringArray(parsed.avoidPatterns),
     constitution: constitution || FALLBACK_STYLE_CONSTITUTION,
     samples: asStringArray(parsed.samples).slice(0, 6),
   }

@@ -138,6 +138,15 @@ export interface ExtractedCharacter {
   description: string
   personality: string
   speechStyle: string
+  motivation?: string
+  goals?: string[]
+  fears?: string[]
+  growthArc?: string
+  behaviorPatterns?: string
+  representativeQuotes?: Array<{
+    chapterId: string
+    text: string
+  }>
   relationships: Array<{
     target: string
     relation: string
@@ -258,6 +267,12 @@ export interface BookStyleProfile {
   narrativeVoice: string
   dialogueStyle: string
   thematicHabits: string
+  humorMechanisms?: string[]
+  highEnergyMechanisms?: string[]
+  pointOfView?: string
+  vocabularyPreferences?: string[]
+  avoidPatterns?: string[]
+  evidenceIds?: string[]
   /** 5~8 条注入用"风格宪法"硬约束（由上面维度合成）。 */
   constitution: string
   /** 3~6 段代表原文片段，作为模仿锚点（few-shot）。 */
@@ -284,7 +299,8 @@ export interface BookAnalysisLibrary {
 export interface BookLibraryEntry {
   bookId: string
   sourcePath: string         // 标准化路径
-  contentHash: string        // fingerprintFileSample 结果
+  contentHash: string        // 旧版 fingerprintFileSample 采样指纹，保留以兼容已有索引
+  contentSha256?: string      // 规范化完整正文的 SHA-256；旧版索引可能不存在
   title: string
   author?: string
   totalChapters: number

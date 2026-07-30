@@ -6,6 +6,8 @@ import { buildReviewPrompt, reviewChapter } from "./review-adapter"
 
 const mocks = vi.hoisted(() => ({
   streamChatMock: vi.fn(),
+  hasUsableLlm: true,
+  novelMode: true,
   novelConfig: { reviewModel: "", reviewReasoningEffort: "high" as "low" | "medium" | "high" },
   llmConfig: {
     provider: "custom" as const,
@@ -23,8 +25,6 @@ const mocks = vi.hoisted(() => ({
     recentSummaries: ["第6章：主角得到旧钥匙。", "第7章：主角抵达村口。"],
     previousChapterEnding: "祠堂门缝里透出一线冷光。",
     characterStates: "主角谨慎，小晴仍然隐瞒她知道族谱。 ",
-    characterAppearance: "第7章：主角外套被雨打湿，小晴脸色苍白。",
-    femaleCharacterEvents: "第7章：小晴与主角短暂扶持，没有进一步亲密行为。",
     soulDoc: "项目灵魂：悬疑、克制、现实压力。",
     characterAuras: "主角表达克制，不会突然热血喊口号。",
     cognitionStates: "主角不知道族谱已经被人换过。",
@@ -55,13 +55,14 @@ vi.mock("@/stores/wiki-store", () => ({
     getState: () => ({
       llmConfig,
       novelConfig: mocks.novelConfig,
-      novelMode: true,
+      novelMode: mocks.novelMode,
+      providerConfigs: {},
     }),
   },
 }))
 
 vi.mock("@/lib/has-usable-llm", () => ({
-  hasUsableLlm: () => true,
+  hasUsableLlm: () => mocks.hasUsableLlm,
 }))
 
 vi.mock("./model-resolver", () => ({
@@ -77,8 +78,6 @@ vi.mock("./context-engine", () => ({
     `最近剧情摘要：${pack.recentSummaries.join(" / ")}`,
     `上一章结尾：${pack.previousChapterEnding}`,
     `当前人物状态：${pack.characterStates}`,
-    `角色穿着和当前状态：${pack.characterAppearance}`,
-    `女角色边缘性行为及性行为事件：${pack.femaleCharacterEvents}`,
     `角色认知状态：${pack.cognitionStates}`,
     `当前伏笔状态：${pack.foreshadowingStates}`,
     `时间线：${pack.timeline}`,
@@ -93,6 +92,8 @@ describe("review-adapter staged review", () => {
     streamChatMock.mockReset()
     llmConfig.reasoning = { mode: "auto" }
     mocks.novelConfig.reviewReasoningEffort = "high"
+    mocks.hasUsableLlm = true
+    mocks.novelMode = true
   })
 
   it("builds a staged deep review prompt with outline, memory, foreshadowing, and cognition checks", () => {
@@ -108,6 +109,24 @@ describe("review-adapter staged review", () => {
     expect(prompt).toContain("高级 thinking")
     expect(prompt).toContain("角色认知状态：主角不知道族谱已经被人换过。")
     expect(prompt).toContain("当前伏笔状态：旧钥匙、族谱缺页、门缝冷光都未回收。")
+  })
+
+  it("injects the confirmed plan blueprint as a deviation-check constraint", () => {
+    const blueprint = "维度四·场景序列编排：1. 旧屋揭示 2. 脚步声悬念收束"
+    const prompt = buildReviewPrompt(contextPack, "主角直接说出族谱被换。", false, blueprint)
+
+    expect(prompt).toContain("用户已确认的章节计划")
+    expect(prompt).toContain(blueprint)
+    expect(prompt).toContain("偏离即 error")
+    expect(prompt).toContain("是否偏离用户已确认的章节计划")
+    expect(prompt).not.toContain("章节蓝图")
+  })
+
+  it("does not inject blueprint deviation dimension when no blueprint is provided", () => {
+    const prompt = buildReviewPrompt(contextPack, "主角直接说出族谱被换。")
+
+    expect(prompt).not.toContain("用户已确认的章节计划")
+    expect(prompt).not.toContain("是否偏离用户已确认的章节计划")
   })
 
   it("runs a single merged deep review with high reasoning and publishes thinking", async () => {
@@ -250,6 +269,89 @@ describe("review-adapter staged review", () => {
 
     const results = await reviewChapter("E:/Novel", "正文", 8, { contextPack })
     expect(results).toEqual([])
+  })
+
+  it("throws malformed review output when the caller requires a successful review", async () => {
+    streamChatMock.mockImplementation(async (
+      _config: LlmConfig,
+      _messages: Array<{ role: string; content: string }>,
+      callbacks: StreamCallbacks,
+    ) => {
+      callbacks.onToken("[not-json]")
+      callbacks.onDone()
+    })
+
+    await expect(reviewChapter("E:/Novel", "正文", 8, {
+      contextPack,
+      throwOnFailure: true,
+    })).rejects.toThrow()
+  })
+
+  it("throws missing structured review output when the caller requires a successful review", async () => {
+    streamChatMock.mockImplementation(async (
+      _config: LlmConfig,
+      _messages: Array<{ role: string; content: string }>,
+      callbacks: StreamCallbacks,
+    ) => {
+      callbacks.onToken("逐维度审查完成，但没有返回最终 JSON。")
+      callbacks.onDone()
+    })
+
+    await expect(reviewChapter("E:/Novel", "正文", 8, {
+      contextPack,
+      throwOnFailure: true,
+    })).rejects.toThrow("未返回结构化 JSON")
+  })
+
+  it("throws when strict review has no usable review model", async () => {
+    mocks.hasUsableLlm = false
+
+    await expect(reviewChapter("E:/Novel", "正文", 8, {
+      contextPack,
+      throwOnFailure: true,
+    })).rejects.toThrow("未配置可用的审稿模型")
+    expect(streamChatMock).not.toHaveBeenCalled()
+  })
+
+  it("throws when strict review is requested outside novel mode", async () => {
+    mocks.novelMode = false
+
+    await expect(reviewChapter("E:/Novel", "正文", 8, {
+      contextPack,
+      throwOnFailure: true,
+    })).rejects.toThrow("当前项目未启用小说模式")
+    expect(streamChatMock).not.toHaveBeenCalled()
+  })
+
+  it("aborts sibling chunk reviews after one chunk fails", async () => {
+    let callIndex = 0
+    let siblingSignal: AbortSignal | undefined
+    streamChatMock.mockImplementation(async (
+      _config: LlmConfig,
+      _messages: Array<{ role: string; content: string }>,
+      callbacks: StreamCallbacks,
+      signal?: AbortSignal,
+    ) => {
+      callIndex += 1
+      if (callIndex === 1) {
+        callbacks.onToken("[not-json]")
+        callbacks.onDone()
+        return
+      }
+      siblingSignal = signal
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      callbacks.onToken("[]")
+      callbacks.onDone()
+    })
+
+    await expect(reviewChapter("E:/Novel", "正".repeat(13000), 8, {
+      contextPack,
+      throwOnFailure: true,
+    })).rejects.toThrow()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    expect(streamChatMock).toHaveBeenCalledTimes(2)
+    expect(siblingSignal?.aborted).toBe(true)
   })
 
   it("uses the configured review reasoning effort instead of forcing high", async () => {

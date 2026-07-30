@@ -4,9 +4,10 @@ import type { ChatMessage } from "@/lib/llm-providers"
 import { useWikiStore } from "@/stores/wiki-store"
 import { getOutputLanguage, buildLanguageReminder } from "@/lib/output-language"
 import { contextPackToPrompt, buildContextPack, type ContextPack } from "./context-engine"
-import { buildCharacterAuraContext } from "./character-aura"
+import { CHAPTER_BODY_EXCERPT_MAX_CHARS } from "./chapter-excerpts"
 import { resolveNovelModel } from "./model-resolver"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
+import { rethrowIfUserAbort } from "@/lib/user-abort"
 
 export interface NovelReviewResult {
   severity: "error" | "warning" | "info"
@@ -33,6 +34,16 @@ export interface ReviewChapterOptions extends NovelReviewCallbacks {
    * 用于返修后复审，降低 token 消耗。默认 false 走全量审查。
    */
   characterOnly?: boolean
+  /**
+   * 用户在会话层确认的章节计划。提供时，审稿会额外检查正文是否偏离计划的
+   * 场景序列、信息流、伏笔动作和结尾钩子，偏离按 error 标记。
+   */
+  planBlueprint?: string
+  /**
+   * 严格工作流需要区分“没有问题”和“审稿执行失败”。
+   * 普通手动审稿保持原有兼容行为，失败时仍返回空结果。
+   */
+  throwOnFailure?: boolean
 }
 
 /** 角色一致性相关的审查维度，用于 characterOnly 轻量审查模式 */
@@ -65,6 +76,9 @@ const REVIEW_DIMENSIONS = [
   "是否缺少章节钩子",
 ]
 
+/** 当传入用户确认的章节计划时追加的审查维度 */
+const BLUEPRINT_DEVIATION_DIMENSION = "是否偏离用户已确认的章节计划（场景序列、信息流、伏笔动作、结尾钩子）"
+
 const REVIEW_STAGES = [
   "阶段1：审查任务识别",
   "阶段2：上下文检索",
@@ -75,12 +89,12 @@ const REVIEW_STAGES = [
   "阶段7：二次复核",
 ]
 
-const REVIEW_CHUNK_SIZE = 8000
+const REVIEW_CHUNK_SIZE = CHAPTER_BODY_EXCERPT_MAX_CHARS
 const REVIEW_MAX_CHUNKS = 3
 
 /**
- * 把超长章节分段用于审查。章节 ≤ 8000 字时返回单段；
- * 超过时按 8000 字一段切分，最多 3 段（覆盖 24000 字），超出部分追加到最后一段。
+ * 把超长章节分段用于审查。章节 ≤ 12000 字时返回单段；
+ * 超过时按 12000 字一段切分，最多 3 段（覆盖 36000 字），超出部分追加到最后一段。
  */
 function splitChapterForReview(content: string): string[] {
   if (content.length <= REVIEW_CHUNK_SIZE) return [content]
@@ -95,13 +109,35 @@ function splitChapterForReview(content: string): string[] {
   return chunks
 }
 
-export function buildReviewPrompt(pack: ContextPack, chapterContent: string, characterOnly = false): string {
-  const dimensions = characterOnly ? CHARACTER_REVIEW_DIMENSIONS : REVIEW_DIMENSIONS
+export function buildReviewPrompt(
+  pack: ContextPack,
+  chapterContent: string,
+  characterOnly = false,
+  planBlueprint?: string,
+  maxContextSize?: number,
+): string {
+  const baseDimensions = characterOnly ? CHARACTER_REVIEW_DIMENSIONS : REVIEW_DIMENSIONS
+  // 当传入用户确认的计划时，追加计划偏离维度（characterOnly 模式下不追加，保持轻量）
+  const dimensions = !characterOnly && planBlueprint && planBlueprint.trim()
+    ? [...baseDimensions, BLUEPRINT_DEVIATION_DIMENSION]
+    : baseDimensions
   const modeTitle = characterOnly ? "角色一致性专项审查" : "阶段式深度审查工作流"
   const modeStages = characterOnly
     ? ["阶段1：角色提取", "阶段2：记忆库对照", "阶段3：脱离判定", "阶段4：二次复核"]
     : REVIEW_STAGES
-  return `${contextPackToPrompt(pack)}
+  const blueprintSection = planBlueprint && planBlueprint.trim()
+    ? [
+        "",
+        "用户已确认的章节计划（偏离即 error）：",
+        "正文必须遵循以下计划中的场景序列、信息流设计、伏笔动作和结尾钩子。",
+        "若正文在计划覆盖的维度上出现偏离（场景被跳过/互换、信息泄露与计划信息差矛盾、",
+        "伏笔动作未执行或执行方向相反、结尾钩子与计划设计不一致），必须标为 error，",
+        "evidence 引用正文偏离片段，relatedMemory 引用计划原文。",
+        "",
+        planBlueprint.trim(),
+      ].join("\n")
+    : ""
+  return `${contextPackToPrompt(pack, undefined, { maxContextSize })}
 
 ${modeTitle}：
 ${modeStages.map((stage) => `- ${stage}：必须使用高级 thinking，先分析证据，再给结论。`).join("\n")}
@@ -135,6 +171,8 @@ ${characterOnly ? "" : `${i18n.t("novel.reviewPrompt.specialChecksTitle")}
 `}
 
 角色命中记忆库检查（必须执行）：
+${blueprintSection}
+
 1. 角色提取：先从本章正文中提取所有出现的角色名（含别名、昵称），列出角色清单。
 2. 记忆库对照：逐个角色对照上下文中的"角色光环/灵魂"、"人物状态"、"角色认知状态"字段：
    - 标注该角色是否命中记忆库（已注入光环 / 仅有状态 / 完全缺失）。
@@ -144,7 +182,7 @@ ${characterOnly ? "" : `${i18n.t("novel.reviewPrompt.specialChecksTitle")}
 4. 输出要求：在审查 JSON 中，角色相关问题 type 使用 "character_consistency"，relatedMemory 必须引用对应的光环/状态/认知/大纲原文。
 
 ${i18n.t("novel.reviewPrompt.chapterContent")}
-${chapterContent.slice(0, 8000)}
+${chapterContent.slice(0, CHAPTER_BODY_EXCERPT_MAX_CHARS)}
 
 ${i18n.t("novel.reviewPrompt.outputFormat")}
 [
@@ -169,15 +207,22 @@ export async function reviewChapter(
   signal?: AbortSignal,
 ): Promise<NovelReviewResult[]> {
   if (signal?.aborted) throw new Error("已停止生成")
+  const state = useWikiStore.getState()
   const llmConfig = resolveNovelModel(
-    useWikiStore.getState().llmConfig,
-    useWikiStore.getState().novelConfig,
+    state.llmConfig,
+    state.novelConfig,
     "review",
   )
-  if (!hasUsableLlm(llmConfig)) return []
+  if (!hasUsableLlm(llmConfig, state.providerConfigs)) {
+    if (options.throwOnFailure) throw new Error("未配置可用的审稿模型")
+    return []
+  }
 
-  const novelMode = useWikiStore.getState().novelMode
-  if (!novelMode) return []
+  const novelMode = state.novelMode
+  if (!novelMode) {
+    if (options.throwOnFailure) throw new Error("当前项目未启用小说模式")
+    return []
+  }
 
   // 复用调用方已构建的 contextPack；没有才自行构建。
   const baseContextPack = options.contextPack ?? await buildContextPack(
@@ -191,6 +236,7 @@ export async function reviewChapter(
   // 这里把 chapterContent 加入 matchingText 重新匹配，确保审查阶段能看到初稿新角色的完整光环。
   let contextPack = baseContextPack
   try {
+    const { buildCharacterAuraContext } = await import("./character-aura")
     const draftCharacterAuras = await buildCharacterAuraContext(projectPath, baseContextPack.task, {
       matchingText: [
         baseContextPack.chapterGoal,
@@ -220,15 +266,26 @@ ${langReminder}`
   // 章节超长时分段审查，合并所有段的审查结果
   const chunks = splitChapterForReview(chapterContent)
   const stageThinking = new Map<string, string>()
+  const reviewController = new AbortController()
+  const reviewSignal = signal
+    ? combineSignals(signal, reviewController.signal)
+    : reviewController.signal
 
   try {
     // 并行审查所有分段，缩短超长章节审查时延
     const chunkResults = await Promise.all(chunks.map(async (chunk, i) => {
-      if (signal?.aborted) throw new Error("已停止生成")
+      try {
+      if (reviewSignal.aborted) throw new Error("已停止生成")
       const chunkContent = chunks.length > 1
         ? `【第${i + 1}段/共${chunks.length}段】\n${chunk}`
         : chunk
-      const userPrompt = buildReviewPrompt(contextPack, chunkContent, options.characterOnly)
+      const userPrompt = buildReviewPrompt(
+        contextPack,
+        chunkContent,
+        options.characterOnly,
+        options.planBlueprint,
+        llmConfig.maxContextSize,
+      )
       const stageTitle = chunks.length > 1
         ? (options.characterOnly ? `角色一致性审查（第${i + 1}/${chunks.length}段）` : `深度审查（第${i + 1}/${chunks.length}段）`)
         : (options.characterOnly ? "角色一致性审查" : "深度审查")
@@ -249,19 +306,25 @@ ${langReminder}`
         stageTitle,
         options,
         stageThinking,
-        signal,
+        reviewSignal,
         reviewReasoningEffort,
       )
 
       const jsonMatch = extractJsonArray(result)
       if (!jsonMatch) {
         console.warn(`[Novel Review] No JSON array found in chunk ${i + 1}:`, result.slice(0, 500))
+        if (options.throwOnFailure) {
+          throw new Error(`第 ${i + 1} 段审稿未返回结构化 JSON 结果`)
+        }
         return []
       }
 
       const parsed = JSON.parse(jsonMatch)
       if (!Array.isArray(parsed)) {
         console.warn(`[Novel Review] Parsed result is not an array in chunk ${i + 1}:`, parsed)
+        if (options.throwOnFailure) {
+          throw new Error(`第 ${i + 1} 段审稿结果不是 JSON 数组`)
+        }
         return []
       }
 
@@ -273,11 +336,19 @@ ${langReminder}`
         relatedMemory: String(item.relatedMemory || ""),
         suggestion: String(item.suggestion || ""),
       }))
+      } catch (error) {
+        reviewController.abort()
+        throw error
+      }
     }))
 
     return chunkResults.flat()
   } catch (err) {
+    rethrowIfUserAbort(err, signal)
     console.error("[Novel Review] Failed:", err)
+    if (options.throwOnFailure) {
+      throw err instanceof Error ? err : new Error(String(err))
+    }
     return []
   }
 }
@@ -324,6 +395,7 @@ async function runReviewStage(
   let result = ""
   let reasoning = ""
   const renderThinking = () => {
+    if (signal?.aborted) return
     const combined = reasoning
       ? `${reasoning}${result ? `\n\n${result}` : ""}`
       : result
@@ -331,12 +403,14 @@ async function runReviewStage(
   }
   const streamCallbacks: StreamCallbacks = {
     onToken: (token: string) => {
+      if (signal?.aborted) return
       result += token
       renderThinking()
     },
     // 审稿模型多为推理模型，分阶段分析走 reasoning 通道：捕获后用于 thinking 展示，
     // 但不计入 result，最终 JSON 只从 content（result）解析，避免分析文字污染 JSON。
     onReasoningToken: (token: string) => {
+      if (signal?.aborted) return
       reasoning += token
       renderThinking()
     },

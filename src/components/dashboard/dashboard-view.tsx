@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, type ReactNode } from "react"
+﻿import { useState, useMemo, useCallback, useEffect, type ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { useWikiStore } from "@/stores/wiki-store"
 import { resolveDefaultModel } from "@/lib/novel/model-resolver"
@@ -310,7 +310,7 @@ export function DashboardView({ headerActions }: DashboardViewProps = {}) {
       return
     }
     const llmConfig = resolveDefaultModel(useWikiStore.getState().llmConfig)
-    if (!hasUsableLlm(llmConfig)) {
+    if (!hasUsableLlm(llmConfig, useWikiStore.getState().providerConfigs)) {
       showAiRewriteAlert("请先在设置里配置可用的 AI 模型。")
       return
     }
@@ -723,7 +723,7 @@ export function DashboardView({ headerActions }: DashboardViewProps = {}) {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {noIssues ? (
           <div className="flex flex-col items-center justify-center gap-2 p-8 text-center text-sm text-muted-foreground">
             <Info className="h-8 w-8 text-muted-foreground/30" />

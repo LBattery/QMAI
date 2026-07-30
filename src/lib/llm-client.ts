@@ -4,14 +4,21 @@ import { getProviderConfig, type RequestOverrides } from "./llm-providers"
 import { getHttpFetch, isFetchNetworkError } from "./tauri-fetch"
 import { countReasoningCharsInLine, extractReasoningTextFromLine } from "./reasoning-detector"
 import { resolveRuntimeLocalCliConfig } from "./local-cli-config"
+import { ensureCursorProxyRunning, withCursorProxyEndpoint } from "./cursor-cli-proxy"
 import { trimChatMessagesToBudget } from "./chat-request-budget"
+import { mergeLlmUsageSnapshot, type LlmUsage } from "./llm-usage"
+import { applyGlobalUserMemoryToMessages } from "./user-memory/request-integration"
 
 export type { ChatMessage, RequestOverrides } from "./llm-providers"
 export { isFetchNetworkError } from "./tauri-fetch"
+export type { LlmUsage } from "./llm-usage"
 
 export interface StreamCallbacks {
   onToken: (token: string) => void
   onReasoningToken?: (token: string) => void
+  /** 工具调用流式 delta，用于累积 tool_calls */
+  onToolCallDelta?: (delta: { index: number; id?: string; name?: string; arguments?: string }) => void
+  onUsage?: (usage: LlmUsage) => void
   onDone: () => void
   onError: (error: Error) => void
 }
@@ -69,6 +76,36 @@ function waitForRetry(ms: number, signal?: AbortSignal): Promise<boolean> {
   })
 }
 
+function parseToolCallDeltaFromLine(line: string): { index: number; id?: string; name?: string; arguments?: string } | null {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith("data: ")) return null
+  const data = trimmed.slice(6).trim()
+  if (data === "[DONE]") return null
+  try {
+    const parsed = JSON.parse(data) as {
+      choices?: Array<{
+        delta?: {
+          tool_calls?: Array<{
+            index?: number
+            id?: string
+            function?: { name?: string; arguments?: string }
+          }>
+        }
+      }>
+    }
+    const toolCall = parsed.choices?.[0]?.delta?.tool_calls?.[0]
+    if (toolCall === undefined) return null
+    return {
+      index: toolCall.index ?? 0,
+      id: toolCall.id,
+      name: toolCall.function?.name,
+      arguments: toolCall.function?.arguments,
+    }
+  } catch {
+    return null
+  }
+}
+
 function parseInputLengthLimit(errorDetail: string): { inputLength: number; maxLength: number } | null {
   const match = /input length\s*([\d,]+)\s*exceeds(?:\s+the)?\s+maximum length\s*([\d,]+)/i.exec(errorDetail)
     ?? /input length\s*([\d,]+)\s*exceeds(?:\s+the)?\s+max(?:imum)?\s*([\d,]+)/i.exec(errorDetail)
@@ -98,7 +135,19 @@ export async function streamChat(
    */
   requestOverrides?: RequestOverrides,
 ): Promise<void> {
-  const runtimeConfig = await resolveRuntimeLocalCliConfig(config)
+  let runtimeConfig = await resolveRuntimeLocalCliConfig(config)
+  const preparedMessages = applyGlobalUserMemoryToMessages(messages, requestOverrides)
+  const configuredWindow = Number.isFinite(runtimeConfig.maxContextSize) && runtimeConfig.maxContextSize > 0
+    ? runtimeConfig.maxContextSize
+    : 204_800
+  const outputReserveChars = requestOverrides?.max_tokens
+    ? Math.max(0, requestOverrides.max_tokens * 4)
+    : Math.floor(configuredWindow * 0.15)
+  const requestInputBudget = Math.max(1, Math.min(
+    Math.floor(configuredWindow * 0.85),
+    configuredWindow - outputReserveChars,
+  ))
+  const budgetedMessages = trimChatMessagesToBudget(preparedMessages, requestInputBudget)
   const { onToken, onDone, onError } = callbacks
   const decoder = new TextDecoder()
 
@@ -106,11 +155,16 @@ export async function streamChat(
   // HTTP. Dispatch before getProviderConfig — that function throws for
   // this provider because it has no URL/headers.
   if (runtimeConfig.provider === "claude-code") {
-    return streamViaClaudeCodeCli(runtimeConfig, messages, callbacks, signal, requestOverrides)
+    return streamViaClaudeCodeCli(runtimeConfig, budgetedMessages, callbacks, signal, requestOverrides)
   }
 
   if (runtimeConfig.provider === "codex-cli") {
-    return streamViaCodexCli(runtimeConfig, messages, callbacks, signal, requestOverrides)
+    return streamViaCodexCli(runtimeConfig, budgetedMessages, callbacks, signal, requestOverrides)
+  }
+
+  if (runtimeConfig.provider === "cursor-cli") {
+    const endpoint = await ensureCursorProxyRunning(runtimeConfig)
+    runtimeConfig = withCursorProxyEndpoint(runtimeConfig, endpoint)
   }
 
   const providerConfig = getProviderConfig(runtimeConfig)
@@ -177,7 +231,7 @@ export async function streamChat(
       }
     }
 
-    let requestInit = buildRequestInit(messages)
+    let requestInit = buildRequestInit(budgetedMessages)
     let response: Response
     try {
       response = await sendRequest(requestInit)
@@ -224,7 +278,7 @@ export async function streamChat(
       const inputLimit = parseInputLengthLimit(errorDetail)
       if (inputLimit) {
         const retryRequestInit = buildRequestInit(
-          trimChatMessagesToBudget(messages, Math.floor(inputLimit.maxLength * 0.85)),
+          trimChatMessagesToBudget(budgetedMessages, Math.floor(inputLimit.maxLength * 0.85)),
         )
         if (retryRequestInit.body === requestInit.body) {
           onError(new Error(inputLengthLimitMessage(inputLimit)))
@@ -296,6 +350,12 @@ export async function streamChat(
 
     const reader = response.body.getReader()
     let lineBuffer = ""
+    let streamUsage: LlmUsage | undefined
+
+    const recordUsage = (line: string) => {
+      const usage = providerConfig.parseUsage(line)
+      if (usage) streamUsage = mergeLlmUsageSnapshot(streamUsage, usage)
+    }
 
     // Diagnostic counters. Some OpenAI-compatible endpoints stream
     // chain-of-thought through a `reasoning_content` (DeepSeek-R1,
@@ -328,10 +388,16 @@ export async function streamChat(
         if (done) {
           if (lineBuffer.trim()) {
             const trimmed = lineBuffer.trim()
-            reasoningCharsObserved += countReasoningCharsInLine(trimmed)
-            recordReasoning(trimmed)
-            const token = providerConfig.parseStream(trimmed)
-            if (token !== null) recordToken(token)
+            recordUsage(trimmed)
+            const toolDelta = parseToolCallDeltaFromLine(trimmed)
+            if (toolDelta) {
+              callbacks.onToolCallDelta?.(toolDelta)
+            } else {
+              reasoningCharsObserved += countReasoningCharsInLine(trimmed)
+              recordReasoning(trimmed)
+              const token = providerConfig.parseStream(trimmed)
+              if (token !== null) recordToken(token)
+            }
           }
           break
         }
@@ -342,12 +408,20 @@ export async function streamChat(
         for (const line of lines) {
           const trimmed = line.trim()
           if (!trimmed) continue
+          recordUsage(trimmed)
+          const toolDelta = parseToolCallDeltaFromLine(trimmed)
+          if (toolDelta) {
+            callbacks.onToolCallDelta?.(toolDelta)
+            continue
+          }
           reasoningCharsObserved += countReasoningCharsInLine(trimmed)
           recordReasoning(trimmed)
           const token = providerConfig.parseStream(trimmed)
           if (token !== null) recordToken(token)
         }
       }
+
+      if (streamUsage) callbacks.onUsage?.(streamUsage)
 
       // Stream ended cleanly. If the model produced thinking tokens
       // but no actual answer, surface that as a clear diagnostic
@@ -364,7 +438,7 @@ export async function streamChat(
           new Error(
             `模型只输出了 ${reasoningCharsObserved.toLocaleString()} 字符的思考内容，但没有输出正文。` +
             `这通常表示接口触发了思考 token 上限、模型没有从思考阶段切换到正式回答，或当前兼容接口的流式输出不完整。` +
-            `请缩短输入、提高 max_tokens，或在设置里切换其他模型后重试。`,
+            `请关闭模型思考、切换到非推理模型，或缩短输入后重试。`,
           ),
         )
         return
@@ -380,7 +454,7 @@ export async function streamChat(
         // Stream reader threw a network error mid-response (connection
         // dropped, server closed early, network blip). Same message
         // regardless of whether the webview is WebKit or Chromium.
-        onError(new Error("Connection lost during streaming. Try again."))
+        onError(new Error("流式响应读取中断，请检查网络、代理或接口稳定性后重试。"))
         return
       }
       onError(err instanceof Error ? err : new Error(String(err)))

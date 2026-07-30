@@ -4,14 +4,14 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  build-release:
     name: Build ${{ matrix.display_label }}
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_PROFILE_RELEASE_LTO: "false"
@@ -54,6 +54,17 @@ jobs:
               src-tauri/target/**/release/bundle/dmg/*.dmg
               release-assets/*.app.tar.gz
 
+          - label: linux-x64
+            display_label: Linux x64
+            runner: ubuntu-22.04
+            rust_targets: ""
+            tauri_args: "--bundles deb,appimage"
+            pdfium_asset: "pdfium-linux-x64.tgz"
+            pdfium_library: "libpdfium.so"
+            artifact_globs: |
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/appimage/*.AppImage
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -73,24 +84,6 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            file \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf \
-            protobuf-compiler \
-            wget \
-            xdg-utils
-
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: brew install protobuf
@@ -100,6 +93,12 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf protobuf-compiler libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Install PDFium binary
         if: matrix.pdfium_asset != ''
@@ -124,7 +123,6 @@ jobs:
         run: npm ci
 
       - name: Prepare release notes
-        if: github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
@@ -133,7 +131,6 @@ jobs:
           node scripts/release-notes.mjs "$version" --out release-assets/release-notes.txt
 
       - name: Ensure GitHub Release exists
-        if: github.event_name == 'push'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -154,7 +151,7 @@ jobs:
         run: npx tauri build ${{ matrix.tauri_args }}
 
       - name: Publish Windows updater manifest
-        if: github.event_name == 'push' && matrix.label == 'windows-x64'
+        if: matrix.label == 'windows-x64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -237,15 +234,61 @@ jobs:
           fi
           tar -C "$(dirname "$app_path")" -czf "release-assets/QMaiWrite_${version}_${system_label}.app.tar.gz" "$(basename "$app_path")"
 
-      - name: Attach macOS app tarball to release
-        if: github.event_name == 'push' && runner.os == 'macOS'
+      - name: Attach macOS assets to release
+        if: runner.os == 'macOS'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: gh release upload "${{ github.ref_name }}" release-assets/QMaiWrite_*_macOS_* --clobber
 
+      - name: Build Windows portable
+        if: matrix.label == 'windows-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = node -p "require('./package.json').version"
+          node scripts/build-portable.mjs
+          $portableExe = "release-portable/QMaiWrite.exe"
+          if (-not (Test-Path $portableExe)) {
+            throw "便携版 EXE 未生成：$portableExe"
+          }
+          $assetName = "QMaiWrite_${version}_windows_X64_portable.exe"
+          $assetPath = "release-assets/$assetName"
+          New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
+          Copy-Item $portableExe $assetPath -Force
+
+      - name: Attach Windows portable to release
+        if: matrix.label == 'windows-x64'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: gh release upload "${{ github.ref_name }}" release-assets/QMaiWrite_*_portable.exe --clobber
+
+      - name: Package Linux release assets
+        if: matrix.label == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          mkdir -p release-assets
+          deb_path="$(find src-tauri/target -path '*/release/bundle/deb/*.deb' -print -quit)"
+          if [ -n "$deb_path" ]; then
+            cp "$deb_path" "release-assets/QMaiWrite_${version}_linux_X64.deb"
+          fi
+          appimage_path="$(find src-tauri/target -path '*/release/bundle/appimage/*.AppImage' -print -quit)"
+          if [ -n "$appimage_path" ]; then
+            cp "$appimage_path" "release-assets/QMaiWrite_${version}_linux_X64.AppImage"
+          fi
+
+      - name: Attach Linux assets to release
+        if: matrix.label == 'linux-x64'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: gh release upload "${{ github.ref_name }}" release-assets/QMaiWrite_*_linux_* --clobber
+
       - name: Upload bundles as workflow artifacts
-        if: github.event_name == 'workflow_dispatch'
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: qmai-${{ matrix.label }}

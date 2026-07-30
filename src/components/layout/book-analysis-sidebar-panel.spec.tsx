@@ -10,6 +10,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import type { BookAnalysisTask } from "@/lib/novel/book-analysis/types"
 
 const mockSetSelectedLibraryBookId = vi.fn()
+const mockDeletePublishedBook = vi.fn()
+const mockWikiState = {
+  project: { id: "p1", name: "Novel", path: "/proj" } as { id: string; name: string; path: string } | null,
+  setActiveView: vi.fn(),
+}
 const mockBookAnalysisState = {
   setSelectedLibraryBookId: mockSetSelectedLibraryBookId,
   sidebarRefreshCounter: 0,
@@ -35,11 +40,10 @@ vi.mock("@/lib/novel/character-aura", () => ({
 }))
 
 vi.mock("@/stores/wiki-store", () => ({
-  useWikiStore: (selector: (state: any) => unknown) =>
-    selector({
-      project: { id: "p1", name: "Novel", path: "/proj" },
-      setActiveView: vi.fn(),
-    }),
+  useWikiStore: Object.assign(
+    (selector: (state: any) => unknown) => selector(mockWikiState),
+    { getState: () => mockWikiState },
+  ),
 }))
 
 vi.mock("@/stores/book-analysis-store", () => ({
@@ -47,8 +51,18 @@ vi.mock("@/stores/book-analysis-store", () => ({
     selector ? selector(mockBookAnalysisState) : mockBookAnalysisState,
 }))
 
+vi.mock("@/stores/book-analysis-import-store", () => ({
+  useBookAnalysisImportStore: (selector: (state: any) => unknown) =>
+    selector({ deletePublishedBook: mockDeletePublishedBook }),
+}))
+
+vi.mock("@/lib/toast", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}))
+
 import { BookAnalysisSidebarPanel } from "./book-analysis-sidebar-panel"
 import { listDirectory, readFile, deleteFile } from "@/commands/fs"
+import { toast } from "@/lib/toast"
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -75,7 +89,9 @@ function renderPanel(): { cleanup: () => void } {
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  mockWikiState.project = { id: "p1", name: "Novel", path: "/proj" }
   mockBookAnalysisState.tasks = []
+  mockDeletePublishedBook.mockResolvedValue(undefined)
   await flushAsync(20)
 })
 
@@ -144,9 +160,8 @@ describe("BookAnalysisSidebarPanel", () => {
     const { cleanup } = renderPanel()
     await flushAsync(50)
     // 点击作品行（作品内容区域的 button，不是刷新按钮）
-    const allButtons = document.querySelectorAll("button")
-    // 第一个 button 是刷新按钮，第二个是作品内容区域
-    const bookBtn = allButtons[1] as HTMLButtonElement
+    const bookBtn = Array.from(document.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("测试书")) as HTMLButtonElement
     expect(bookBtn).toBeTruthy()
     await act(async () => {
       bookBtn.click()
@@ -158,7 +173,7 @@ describe("BookAnalysisSidebarPanel", () => {
     await flushAsync(20)
   })
 
-  it("点击删除按钮不触发整行 click，并调用 deleteFile", async () => {
+  it("删除作品时调用统一清理动作并说明会清理查重记录", async () => {
     vi.mocked(listDirectory).mockImplementation(async (dir) => {
       if (dir.endsWith("book-analysis")) {
         return [{ name: "book-2", is_dir: true, path: "/proj/book-analysis/book-2" }]
@@ -182,10 +197,86 @@ describe("BookAnalysisSidebarPanel", () => {
       await new Promise((r) => setTimeout(r, 0))
     })
     await flushAsync(50)
-    expect(deleteFile).toHaveBeenCalledTimes(1)
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("导入历史和内容查重记录"))
+    expect(mockDeletePublishedBook).toHaveBeenCalledWith("book-2")
+    expect(deleteFile).not.toHaveBeenCalled()
     // 整行 click 不应触发：setSelectedLibraryBookId 不应被调
     expect(mockSetSelectedLibraryBookId).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
+    cleanup()
+    await flushAsync(20)
+  })
+
+  it.each([
+    {
+      name: "活动导入任务",
+      error: new Error("作品正在导入或重新生成，请先取消任务后再删除。"),
+      expected: "作品正在导入或重新生成，请先取消任务后再删除。",
+    },
+    {
+      name: "内部英文异常",
+      error: new Error("Failed to delete directory"),
+      expected: "删除作品失败，请稍后重试",
+    },
+  ])("删除失败（$name）时显示中文提示", async ({ error, expected }) => {
+    vi.mocked(listDirectory).mockImplementation(async (dir) => {
+      if (dir.endsWith("book-analysis")) {
+        return [{ name: "book-2", is_dir: true, path: "/proj/book-analysis/book-2" }]
+      }
+      return []
+    })
+    vi.mocked(readFile).mockResolvedValue(JSON.stringify({
+      title: "书2", totalChapters: 1, totalWords: 1,
+      sourceType: "file", createdAt: 0, updatedAt: 0,
+    }))
+    vi.spyOn(window, "confirm").mockReturnValue(true)
+    mockDeletePublishedBook.mockRejectedValueOnce(error)
+
+    const { cleanup } = renderPanel()
+    await flushAsync(50)
+    const deleteBtn = document.querySelector('[aria-label="删除作品"]') as HTMLButtonElement
+    await act(async () => {
+      deleteBtn.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    await flushAsync(50)
+
+    expect(toast.error).toHaveBeenCalledWith(expected)
+    cleanup()
+    await flushAsync(20)
+  })
+
+  it("删除等待期间切换项目时不使用旧结果刷新新项目界面", async () => {
+    vi.mocked(listDirectory).mockImplementation(async (dir) => {
+      if (dir.endsWith("book-analysis")) {
+        return [{ name: "book-2", is_dir: true, path: "/proj/book-analysis/book-2" }]
+      }
+      return []
+    })
+    vi.mocked(readFile).mockResolvedValue(JSON.stringify({
+      title: "书2", totalChapters: 1, totalWords: 1,
+      sourceType: "file", createdAt: 0, updatedAt: 0,
+    }))
+    vi.spyOn(window, "confirm").mockReturnValue(true)
+    let finishDelete!: () => void
+    mockDeletePublishedBook.mockReturnValueOnce(new Promise<void>((resolve) => {
+      finishDelete = resolve
+    }))
+
+    const { cleanup } = renderPanel()
+    await flushAsync(50)
+    const deleteBtn = document.querySelector('[aria-label="删除作品"]') as HTMLButtonElement
+    await act(async () => {
+      deleteBtn.click()
+      await Promise.resolve()
+    })
+    mockWikiState.project = { id: "p2", name: "Other", path: "/other" }
+    finishDelete()
+    await flushAsync(50)
+
+    expect(mockBookAnalysisState.triggerSidebarRefresh).not.toHaveBeenCalled()
+    expect(mockSetSelectedLibraryBookId).not.toHaveBeenCalled()
+    expect(toast.success).not.toHaveBeenCalled()
     cleanup()
     await flushAsync(20)
   })

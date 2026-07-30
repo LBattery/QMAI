@@ -1,11 +1,13 @@
 import { webServiceFs } from "@/lib/web-service-fs"
 import type { FileNode } from "@/types/wiki"
+import type { ListDirectoryOptions } from "@/commands/fs"
 
 interface WebFileSystemLike {
   readFile(path: string): Promise<string>
   writeFile(path: string, contents: string): Promise<void>
   writeFileAtomic(path: string, contents: string): Promise<void>
-  listDirectory(path: string): Promise<FileNode[]>
+  writeFileIfAbsent(path: string, contents: string): Promise<boolean>
+  listDirectory(path: string, options?: ListDirectoryOptions): Promise<FileNode[]>
   createDirectory(path: string): Promise<void>
   deleteFile(path: string): Promise<void>
   fileExists(path: string): Promise<boolean>
@@ -57,7 +59,13 @@ class HttpWebFileSystem implements WebFileSystemLike {
     return webServiceFs.writeFile(path, contents)
   }
 
-  async listDirectory(path: string): Promise<FileNode[]> {
+  async writeFileIfAbsent(path: string, contents: string): Promise<boolean> {
+    if (await this.fileExists(path)) return false
+    await this.writeFile(path, contents)
+    return true
+  }
+
+  async listDirectory(path: string, _options?: ListDirectoryOptions): Promise<FileNode[]> {
     return webServiceFs.listDirectory(path)
   }
 
@@ -157,7 +165,13 @@ class MemoryWebFileSystem implements WebFileSystemLike {
     await this.writeFile(path, contents)
   }
 
-  async listDirectory(path: string): Promise<FileNode[]> {
+  async writeFileIfAbsent(path: string, contents: string): Promise<boolean> {
+    if (await this.fileExists(path)) return false
+    await this.writeFile(path, contents)
+    return true
+  }
+
+  async listDirectory(path: string, _options?: ListDirectoryOptions): Promise<FileNode[]> {
     const root = normalizeFsPath(path)
     const directChildren = new Set<string>()
     for (const dir of this.directories) {

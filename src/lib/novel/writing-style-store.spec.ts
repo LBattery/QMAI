@@ -4,6 +4,7 @@ import type { BookStyleProfile } from "./book-analysis/types"
 const mem = new Map<string, string>()
 
 vi.mock("@/commands/fs", () => ({
+  fileExists: vi.fn(async (path: string) => mem.has(path)),
   readFile: vi.fn(async (path: string) => {
     if (!mem.has(path)) throw new Error("ENOENT")
     return mem.get(path)!
@@ -114,5 +115,31 @@ describe("writing-style-store", () => {
     const ctx = await buildWritingStyleContext(PROJECT, { constitutionCharLimit: 100 })
     expect(ctx).toContain("…")
     expect(ctx.length).toBeLessThan(800)
+  })
+
+  it("新文风只注入证据仓库中当前启用的片段", async () => {
+    const evidencePath = `${PROJECT}/book-analysis/book-1/analysis/evidence.json`
+    mem.set(evidencePath, JSON.stringify({
+      version: 1,
+      bookId: "book-1",
+      updatedAt: 1,
+      snippets: [
+        { id: "enabled", skill: "style", enabled: true, text: "幽默对白片段" },
+        { id: "disabled", skill: "style", enabled: false, text: "已禁用片段" },
+      ],
+    }))
+    const preset = await upsertWritingStylePreset(PROJECT, {
+      name: "测试文风",
+      sourceBook: "测试作品",
+      sourceBookId: "book-1",
+      evidenceIds: ["enabled", "disabled"],
+      profile: makeProfile(),
+    })
+    await setEnabledWritingStyle(PROJECT, preset.id)
+
+    const context = await buildWritingStyleContext(PROJECT)
+    expect(context).toContain("幽默对白片段")
+    expect(context).not.toContain("已禁用片段")
+    expect(context).not.toContain("原文片段一")
   })
 })

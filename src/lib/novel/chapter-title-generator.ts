@@ -1,4 +1,4 @@
-﻿import type { LlmConfig } from "@/stores/wiki-store"
+import type { LlmConfig } from "@/stores/wiki-store"
 import { streamChat, type ChatMessage } from "@/lib/llm-client"
 
 /**

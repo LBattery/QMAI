@@ -28,6 +28,18 @@ export interface DataSource<T> {
   fallback?(context: ContextLoadContext): Promise<T>
 }
 
+export interface DataSourceLoadAdapter {
+  load<T>(
+    source: DataSource<T>,
+    context: ContextLoadContext,
+    directLoad: () => Promise<T>,
+  ): Promise<T>
+}
+
+export interface DataSourceRegistryOptions {
+  loadAdapter?: DataSourceLoadAdapter
+}
+
 /**
  * 数据源加载结果
  */
@@ -43,6 +55,8 @@ interface DataSourceResult {
  */
 export class DataSourceRegistry {
   private sources: Map<string, DataSource<any>> = new Map()
+
+  constructor(private readonly options: DataSourceRegistryOptions = {}) {}
 
   /**
    * 注册数据源
@@ -66,10 +80,23 @@ export class DataSourceRegistry {
    */
   async loadAll(context: ContextLoadContext): Promise<Record<string, any>> {
     const sources = Array.from(this.sources.values())
+    return this.loadSources(sources, context)
+  }
+
+  async loadOnly(sourceNames: string[], context: ContextLoadContext): Promise<Record<string, any>> {
+    const allowed = new Set(sourceNames)
+    const sources = Array.from(this.sources.values()).filter((source) => allowed.has(source.name))
+    return this.loadSources(sources, context)
+  }
+
+  private async loadSources(sources: DataSource<any>[], context: ContextLoadContext): Promise<Record<string, any>> {
 
     const promises = sources.map(async (source): Promise<DataSourceResult> => {
       try {
-        const loadedValue = await source.load(context)
+        const directLoad = () => source.load(context)
+        const loadedValue = this.options.loadAdapter
+          ? await this.options.loadAdapter.load(source, context, directLoad)
+          : await directLoad()
         const value = loadedValue === undefined || loadedValue === null
           ? this.getDefaultValue(source.name)
           : loadedValue
@@ -116,7 +143,13 @@ export class DataSourceRegistry {
         previousChapterEnding: "",
         characterStates: "",
         characterAppearance: "",
-        femaleCharacterEvents: "",
+        foreshadowingSignals: [],
+        timeline: "",
+      },
+      retrieval: {
+        recentSummaries: [],
+        characterStates: "",
+        characterAppearance: "",
         foreshadowingSignals: [],
         timeline: "",
       },
@@ -129,12 +162,14 @@ export class DataSourceRegistry {
       relatedSettings: "",
       canonRules: "",
       writingStyle: "",
+      bookAnalysisReferences: "",
       searchResults: "",
       graphSearchResults: "",
       revisionFeedback: [],
       cognitionText: "",
       soulDoc: "",
       characterAuras: "",
+      sectionBriefing: "",
     }
     return defaults[sourceName] ?? null
   }

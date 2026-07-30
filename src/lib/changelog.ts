@@ -1,11 +1,141 @@
 export interface ChangelogEntry {
-  version: string
-  date: string
+  version: string;
+  date: string;
   highlights: {
-    en: string[]
-    zh: string[]
-  }
+    en: string[];
+    zh: string[];
+  };
 }
+
+const THREE_POINT_ZERO_ONE_CHANGELOG: ChangelogEntry = {
+  version: "3.0.1",
+  date: "2026-07-23",
+  highlights: {
+    en: [],
+    zh: [
+      "【模型选择修复】修复 AI 对话框、AI 大纲和设置中无法选择模型的问题，恢复正常使用。",
+      "【下拉框定位修复】修复模型选择下拉框位置偏移的问题，改为精准定位、自动判断上下翻转，滚动时同步更新位置。",
+      "【AI 大纲修改对比】新增共享差异工作区，支持源码对比、渲染预览、行数统计和候选稿编辑；单次选区去 AI 味与批量/章节去 AI 味审核统一接入。",
+      "【去 AI 味升级】编辑后的候选稿支持替换正文、另存草稿和批量确认写回，操作更灵活。",
+      "【大纲保存修复】修复 AI 大纲保存后内容包含格式错误（JSON 格式块）的问题，保存内容更加干净。",
+      "【大纲保存修复】修复 AI 大纲保存内容包含前置分析等不相关文本的问题。",
+      "【大纲标题优化】优化大纲标题提取，无需再次调用模型，直接从内容中智能识别并提取标题；支持章纲、卷纲、人物设定等 7 种类型自动识别。",
+      "【大纲保存优化】普通大纲保存改用文件夹确认弹窗，人物小传保留角色勾选确认流程；大纲保存统一使用纯 Markdown 格式。",
+    ],
+  },
+};
+
+const THREE_POINT_ZERO_ZERO_CHANGELOG: ChangelogEntry = {
+  version: "3.0.0",
+  date: "2026-07-22",
+  highlights: {
+    en: [
+      "【AI Chat Overhaul】Real-time streaming with typewriter effect; thinking process is now visible in real-time (no more black box); tool call chain is fully visualized showing what tools AI used and their execution status",
+      "【Plan Mode】AI generates a writing plan (chapter goals, references read, missing info, execution steps) before writing; you can confirm, modify, or skip the plan; AI can only read during planning, no premature writes",
+      "【@Reference System】Type @ in the input box to reference 7 types of content: chapters, memories, outlines, simulations, skills, chat history, and outline history; references appear as colored tags; AI automatically reads referenced content",
+      "【20+ Built-in Tools】AI now has real tool-use capability with 6 categories: read/list/search/write/action/virtual tools; write operations require user confirmation by default; 11 processing stages from task recognition to post-write review",
+      "【AI Outline Rewrite】Rebuilt as a 14-stage multi-agent workflow: intent analysis → info sufficiency check → plan → user confirm → 5 sub-agents (outline/topic/character/setting/foreshadowing) collaborate in parallel → merge → quality check → preview → classified save",
+      "【Outline Quality Loop】Auto quality check after generation: chapter outlines are verified for goals/references/boundaries/scene plans/foreshadowing/acceptance criteria/risk fallback; issues get fix suggestions with one-click repair",
+      "【Smart Save Classification】AI-generated content auto-sorts into 7 folders: outlines/volume outlines/chapter outlines/character profiles/world settings/foreshadowing/organizations; pre-save review panel lets you inspect diffs and choose which files to keep",
+      "【De-AI Upgrade】Batch parallel processing for multiple chapters (1-5 concurrent, default 3); new three-column review panel (chapter list / original / revised); breakpoint resume - task progress persists across app restarts",
+      "【Brand Identity】Complete 'Cangzhu' visual system: signature teal-green color, redesigned welcome page with brand mark, differentiated chat bubbles, refined sidebar with brand-color hover effects, reduced saturation for a premium feel",
+      "【User Memory System】AI learns and remembers your preferences across 8 categories (output style/writing/outline/workflow/interaction/format/constraints/manual) with 3 scopes (global/project/session); auto-extracted from conversations with sensitive info filtering",
+      "【Unified Export Center】Export chapters/outlines/dismantling/simulations/soul works to TXT or DOCX; Word document generation is fully self-implemented with zero external dependencies (no Word install needed); supports Chinese-numeral chapter sorting",
+      "【Story Simulation V2】Multi-agent blackboard collaboration with character perspective isolation (no god-mode knowledge); director agent evaluates plot quality across 7 dimensions (tension/pacing/character utilization/arc/info density/emotion/logic); rumor system for independent information spread",
+      "【External Tools (MCP)】Connect to external tool services to extend AI capabilities; read tools auto-execute, write tools require confirmation, delete tools are disabled by default; one-click connection test in settings",
+      "【Dismantling Library】Reworked analysis pipeline with story framework extraction and management UI; batch import with resume support; improved batch task management and character selection; auto-cleanup after library deletion",
+      "【Chapter Validation】Auto validation after chapter completion: character cognition deviation, state continuity, foreshadowing detection; deviation identification and arbitration mechanism; draft validation skill",
+      "【Other Improvements】ZIP backup with selective restore (partial import without overwriting unselected content); auto-prevent sleep during writing; resume unfinished chapters; improved character recognition supporting various AI output formats",
+    ],
+    zh: [
+      "【AI 对话重大升级】逐字流式输出+打字机效果，不再苦等；思考过程实时可见，AI 不再是黑盒；工具调用链全程可视化——看得到 AI 读了什么、搜了什么、写了什么、每步执行状态",
+      "【计划模式】写正文前 AI 先生成写作计划：本章目标、已读依据、还缺什么资料、执行步骤；你可以确认执行、修改计划或跳过；计划阶段 AI 只能读取资料，不会提前写入",
+      "【@ 引用系统】输入 @ 即可引用 7 类内容：章节正文、记忆库、大纲、剧情推演、技能库、AI 对话历史、AI 大纲历史；引用显示为彩色标签按类型区分；AI 自动读取引用内容，无需复制粘贴",
+      "【20+ 内置工具】AI 具备真正的工具调用能力，分 6 大类：读取类/列表类/搜索类/写入类/动作类/虚拟类；写入操作默认需确认防误改；11 个处理环节从任务识别到写后检查完整覆盖；支持随时取消",
+      "【AI 大纲全面重构】从单次生成升级为 14 阶段多智能体工作流：意图分析→信息检查→生成计划→用户确认→5 个子智能体（大纲/专题/角色/设定/伏笔）并行协作→结果合并→质量检查→预览→分类保存",
+      "【大纲质量检查闭环】生成后自动质检：章纲检查目标/依据/边界/场景计划/伏笔/验收标准/风险兜底是否完整；不通过给出具体问题和修复建议，支持一键按建议修复",
+      "【智能分类保存】旧版本全部存同一目录；新版本 AI 生成内容自动分类保存到 7 个文件夹：大纲/卷纲/章纲/人物小传/设定/伏笔/组织；保存前弹出审核面板，可逐个勾选、查看差异对比",
+      "【去 AI 味大升级】支持批量选择多章节并行去 AI 味（1-5 章并发，默认 3 章）；全新三栏审核面板（左侧章节列表/中间原文/右侧修改后）；断点恢复——任务进度自动保存，重启软件不丢失",
+      "【品牌视觉系统化】注入苍竹品牌视觉：青绿色主色调，欢迎页品牌化（标志+渐变标题+卡片列表），聊天面板品牌色淡底+消息气泡区分，侧栏优化+品牌色悬停，整体降饱和度提升质感",
+      "【用户记忆系统】AI 会记住你的写作偏好：8 类记忆（输出风格/写作偏好/大纲偏好/工作流/交互/格式/约束/手动），3 级作用域（全局/项目/会话）；对话中自动提取偏好，过滤敏感信息，相似记忆自动合并",
+      "【统一导出中心】支持章节/大纲/拆书库/剧情推演/灵魂作品导出为 TXT 或 Word 文档；Word 生成完全自研实现，无需安装 Word 或任何外部依赖；支持中文数字章节排序（如「第二十三章」）",
+      "【剧情推演二期升级】多智能体黑板协作——角色不开上帝视角，只知道自己该知道的信息；导演智能体从紧张感/节奏/角色利用率/角色弧光/信息密度/情感共鸣/逻辑一致性 7 个维度评估剧情；谣言系统让信息在角色间独立传播",
+      "【外部工具连接(MCP)】支持连接外部工具服务扩展 AI 能力；读取类工具自动执行、写入类工具需确认、删除类工具默认禁用；设置页提供一键测试连接状态",
+      "【拆书库重做】拆书分析流水线重做，新增剧情框架提取功能和管理界面；支持批量导入和断点继续；批量任务管理与角色选择优化；删除书库后自动清理相关状态",
+      "【章节自动校验】章节完成后自动校验：角色认知偏差、状态承接、伏笔检测；偏差识别和仲裁机制；草稿校验技能",
+      "【更多体验优化】ZIP 备份支持选择备份内容+部分导入恢复（不覆盖未选内容）；正文生成期间自动防止电脑休眠；支持未完成章节续写；角色识别规则放宽，支持「张三（男主）」等多种 AI 输出格式",
+    ],
+  },
+};
+
+const TWO_POINT_TWO_THIRTY_SEVEN_CHANGELOG: ChangelogEntry = {
+  version: "2.2.37",
+  date: "2026-07-15",
+  highlights: {
+    en: [
+      "AI Chat and AI Outline now read real provider cache usage from OpenAI, Anthropic, Gemini, and Responses API results.",
+      "Provider usage is aggregated across Agent tool rounds, retries, and parallel outline agents, then stored in the current context snapshot.",
+      "Cache hit, refresh, and failure values are now labeled as per-request cache events, while estimated Token savings are explicitly identified as context compression estimates.",
+      "Stable context cores now remain reusable whenever their final prefix bytes are unchanged, avoiding false refreshes caused only by unrelated source revisions.",
+      "The interface reports confirmed cache hits only when the provider returns cache details, and otherwise states that a stable prefix was sent for provider-side reuse.",
+    ],
+    zh: [
+      "AI 对话与 AI 大纲现已读取 OpenAI、Anthropic、Gemini 和 Responses API 返回的供应商真实缓存用量。",
+      "Agent 工具轮次、失败重试和大纲多 Agent 调用会统一累计供应商用量，并写入当前上下文快照。",
+      "命中、刷新和失败明确显示为本轮缓存事件；预计节省 Token 明确标注为上下文压缩预计减少。",
+      "稳定核心在最终前缀字节不变时继续复用，避免仅因无关资料修订而错误刷新。",
+      "只有供应商返回缓存明细时才显示确认命中；否则明确提示已发送稳定前缀，最终以供应商返回为准。",
+    ],
+  },
+};
+
+const TWO_POINT_TWO_THIRTY_SIX_CHANGELOG: ChangelogEntry = {
+  version: "2.2.36",
+  date: "2026-07-15",
+  highlights: {
+    en: [
+      "Confirmed chapter plans now participate in context retrieval and de-AI Skill selection, and resume checkpoints preserve both the plan and execution contract.",
+      "Plan and execution repairs are accepted only after meaningful content changes and a successful compliance recheck, preventing false success reports.",
+      "Strict review now reports unavailable review models as failures and cancels sibling chunk requests when one review chunk fails.",
+      "De-AI review tasks stay isolated by project and case-sensitive path, while Save as Draft uses no-overwrite file creation and cannot refresh another project's file tree.",
+      "Overlapping chat and review saves are queued so the newest cleared or updated state is not lost.",
+      "Reduced initial frontend loading by lazy-loading optional views and separating Sigma, graph, language, and editor vendor bundles.",
+    ],
+    zh: [
+      "确认计划现在会参与上下文检索和去 AI 味 Skill 选择，恢复检查点同时保留计划与执行清单。",
+      "计划返修和执行清单返修只有在正文发生有效变化且复检通过后才会采用，避免错误提示返修成功。",
+      "严格审稿会把审稿模型不可用明确报告为失败，并在任一分段失败时取消同批其他审稿请求。",
+      "去 AI 味审查任务按项目和大小写敏感路径隔离；另存草稿采用不覆盖写入，且不会把旧项目文件树写入新项目界面。",
+      "聊天与审查的并发保存改为排队执行，清空或更新后的最新状态不会再被丢弃。",
+      "搜索、技能库等可选页面改为按需加载，并拆分图谱、语言处理和编辑器依赖，降低首次加载开销。",
+    ],
+  },
+};
+
+const TWO_POINT_TWO_THIRTY_FIVE_CHANGELOG: ChangelogEntry = {
+  version: "2.2.35",
+  date: "2026-07-15",
+  highlights: {
+    en: [
+      "Added a project-level context hub shared by AI Chat and AI Outline, with reusable source caches, session summaries, automatic invalidation, and inspectable cache snapshots.",
+      "Restored the full AI chapter workflow so fast, standard, and strict modes again route through confirmed plans, execution contracts, compliance checks, execution reports, and targeted repair.",
+      "Fixed multi-chapter de-AI review so background chapter results are actually written before success is shown, and review tasks stay isolated to the current project.",
+      "De-AI regeneration now reuses the originally selected Skill instead of silently falling back to an empty Skill prompt.",
+      "Improved AI Outline auto-save, plan confirmation, scrolling, and responsive panel sizing.",
+      "Removed inaccurate millisecond duration labels from AI Chat and AI Outline execution details.",
+      "Improved update failure guidance with a direct fallback link to the official download site.",
+    ],
+    zh: [
+      "新增项目级上下文中控：AI 对话与 AI 大纲共享资料缓存和会话摘要，支持自动失效、缓存命中统计与完整快照查看。",
+      "恢复完整 AI 章节工作流：快速、标准、严格模式重新接入确认计划、执行契约、履约检查、执行报告和定向返修。",
+      "修复多章节去 AI 味审查未写盘却提示成功的问题，并将审查任务严格隔离到当前项目。",
+      "去 AI 味重新生成会继续使用首次选择的 Skill，不再退回空 Skill 提示词。",
+      "修复 AI 大纲自动保存、计划确认、滚动定位和面板宽度自适应问题。",
+      "移除 AI 对话与 AI 大纲执行详情中不准确的毫秒耗时显示。",
+      "更新检查失败时增加官网下载安装入口。",
+    ],
+  },
+};
 
 const TWO_POINT_TWO_TEN_CHANGELOG: ChangelogEntry = {
   version: "2.2.10",
@@ -18,7 +148,7 @@ const TWO_POINT_TWO_TEN_CHANGELOG: ChangelogEntry = {
       "恢复大语言/LLM 模型中的拉取模型入口：拉取后可从下拉框选择模型，点击测试模型时会测试当前选中的模型。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_TWELVE_CHANGELOG: ChangelogEntry = {
   version: "2.2.12",
@@ -27,7 +157,7 @@ const TWO_POINT_TWO_TWELVE_CHANGELOG: ChangelogEntry = {
     en: [
       "Fixed continue-next-chapter regenerating chapter 1: incidental 开篇/第一章 wording inside prompts no longer hijacks the target chapter.",
       "Continue-next-chapter now remembers the chapter just generated in this conversation, so an empty chapter library no longer resets the target back to chapter 1.",
-      "Fixed AI chapter editing failing with \"missing frontmatter, write-back stopped\": the original chapter frontmatter is reattached automatically, and fenced output or missing headings are tolerated.",
+      'Fixed AI chapter editing failing with "missing frontmatter, write-back stopped": the original chapter frontmatter is reattached automatically, and fenced output or missing headings are tolerated.',
       "Added a per-chapter target character setting: chapter drafting, expansion thresholds, and the continue-next-chapter prompt all follow the configured target.",
       "Fixed the review stage being unstoppable when the stop signal fired before the review started.",
       "Fixed contradictory outline refinement checks by uniformly testing whether the target directory already contains .md files.",
@@ -47,7 +177,7 @@ const TWO_POINT_TWO_TWELVE_CHANGELOG: ChangelogEntry = {
       "AI 会话界面重做：深度思考与普通模式互斥切换，普通模式支持正常对话与编辑章节。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_ELEVEN_CHANGELOG: ChangelogEntry = {
   version: "2.2.11",
@@ -76,30 +206,267 @@ const TWO_POINT_TWO_ELEVEN_CHANGELOG: ChangelogEntry = {
       "补充本地 CLI 配置读取、空模型回退、以及 CLI 启动参数的回归测试，避免后续再次出现“本地环境读不到”或“走不到本地代理模式”的回退。",
     ],
   },
-}
+};
 
-const TWO_POINT_TWO_TWENTY_FOUR_WEB_CHANGELOG: ChangelogEntry = {
+const TWO_POINT_TWO_THIRTY_THREE_CHANGELOG: ChangelogEntry = {
+  version: "2.2.33",
+  date: "2026-07-06",
+  highlights: {
+    en: [
+      "Optimized AI chapter plan execution with a user-facing chapter plan, hidden execution contract, and visible execution report.",
+      "Added execution recheck and targeted repair so generated chapters are validated against the plan before returning results.",
+      "Improved chapter plan confirmation and activity output so planning, execution, and verification are easier to trace.",
+      "Stabilized AI chat and related mock coverage after the plan execution workflow changes.",
+      "Added plot framework extraction for the dismantling library, centered on hook, buildup, payoff, and ending hook.",
+      "The visible Book Dismantling Library now has a Story Framework Extraction entry that lets selected chapters generate reusable plot frameworks.",
+      "Chapter outline generation can now receive the selected plot framework as a hard constraint instead of only writing a framework_id.",
+      "Dismantling runs automatically create a basic reusable plot framework when the four required beats are complete.",
+      "Outline previews now highlight the author handcraft zone even when the heading includes explanatory parentheses.",
+      "Cleaned build blockers caused by stale unused imports and variables.",
+    ],
+    zh: [
+      "优化 AI 会话章节计划执行：新增面向用户的本章策划案、隐藏执行契约和可查看的执行报告。",
+      "新增执行复核与定向修复，生成章节会按计划契约检查后再返回结果。",
+      "优化章节计划确认弹窗和执行动态展示，让计划、执行、复核过程更容易追踪。",
+      "修复计划执行优化后的 AI 会话相关 mock 测试回归，提升当前版本稳定性。",
+      "拆书库新增剧情框架提取能力，围绕「钩子、铺垫、爽点、结尾钩子」形成可复用模板。",
+      "当前可见的拆书库顶部新增「故事框架提取」入口，可选择章节生成可复用剧情框架。",
+      "基于剧情框架创建章纲时，会把完整框架内容作为硬约束交给 AI，不再只是写入 framework_id。",
+      "拆文完成后，如果四段框架完整，会自动生成基础剧情框架并写入框架库。",
+      "章纲预览支持高亮「作者手搓留白」区域，标题带括号说明时也能识别。",
+      "清理阻塞构建的过期未使用导入和变量，恢复 typecheck 验证。",
+    ],
+  },
+};
+const TWO_POINT_TWO_THIRTY_TWO_CHANGELOG: ChangelogEntry = {
+  version: "2.2.32",
+  date: "2026-07-04",
+  highlights: {
+    en: [
+      "Chapter saving is more reliable: switching chapters no longer deletes chapter-NNN drafts or writes to the wrong file; renaming to Chinese title only happens when saving as a finalized chapter.",
+      "Stale autosaves are cancelled, and old drafts are automatically cleaned up after rename.",
+      "Fixed chapter title/status edits sometimes failing to save due to frontmatter type mismatches.",
+      "Chat model and background-task model are separate: the chat box is for conversation and prose writing; review, summary, de-AI, and similar steps use the Default Model unless you pick another for that step.",
+      "De-AI can use its own model instead of always sharing the chat model.",
+      "Duplicate-entity detection: pick a model before scanning, results are cached, merged entries disappear immediately, and progress shows read/LLM/write stages.",
+      "The editor polls disk every 2 seconds so external edits show up; fixed disk sync stopping after local edits.",
+      "Cmd+F / Ctrl+F find bar in the editor with overlay highlights and navigation.",
+      "Faster startup and safer project switching: deferred non-critical hydration, normalized path comparison.",
+      "Fixed chapter title/status edits sometimes failing to save because of mismatched value types.",
+      "macOS and Linux no longer auto-check for updates; the settings page points to manual download.",
+      "Some settings take effect immediately without a Save button.",
+      "Special thanks to darknessomi for the support and contributions that made this release better!",
+    ],
+    zh: [
+      "章节保存更稳了：切换章节不再误删 chapter-NNN 草稿，也不会把内容写到错误的章节文件里。",
+      "只有点击「保存为正式章节」才会将文件名改为中文标题，切换章节时不再自动重命名。",
+      "取消过期自动保存，草稿重命名后自动清理旧草稿。",
+      "修复改章节标题或状态时偶尔保存失败的问题（frontmatter 类型不一致导致）。",
+      "聊天模型只管 AI 会话中的对话和写正文；审稿、摘要、记忆提取等后台任务默认使用「默认模型」，可在小说设置页配置。",
+      "去 AI 味可以单独选择一个模型，不必再和聊天模型绑定。",
+      "小说设置中的模型说明已改写，「跟随默认模型」和「跟随聊天模型」分开勾选，不易混淆。",
+      "重复实体检测扫描前可选择模型，结果自动缓存，合并后条目立即消失。",
+      "扫描和合并更快：并行 I/O，进度区分读盘/LLM 分析/写盘阶段。",
+      "编辑器每 2 秒轮询检测磁盘外部修改——用其他软件修改文件后自动刷新。",
+      "支持 Cmd+F（Ctrl+F）查找：查找条、overlay 高亮、上下条导航。",
+      "优化启动速度、快速切换项目不再串数据。",
+      "macOS/Linux 暂不支持自动更新，设置页提示去官网手动下载。",
+      "部分设置页无需点保存，改动即时生效。",
+      "！！！特别感谢 darknessomi 的支持与帮助，是他让软件变得更加完美！！！",
+      "",
+      "提前预告！！！最新 3.0.0 版本正在构建中！",
+      "这个版本将 AI 会话工作流模式彻底取消，换了更强大的 AGENT 架构，这个架构可以调用工具、调用 skill、调用 MCP。",
+      "在 AI 会话当中可以指定某个章节、某个记忆、某个 skill 等输入，让 AI 生成内容更加灵活。",
+      "同时在 AI 会话当中增加了快速/标准/严格三种模式，每种模式都会走不同的 AGENT 流程，对 AI 会话内容产生更加严谨。",
+      "并且 3.0.0 版本增加了自定义 skill 技能，增加了 MCP 功能，优化了剧情推演室。",
+      "剧情推演室是一个类似小说平行世界模拟的工具，你可以选中小说章节，AI 会读取小说章节中的角色内容，提取角色性格等特征，为每一个角色赋予专有 AGENT。",
+      "在剧情推演室的平行模拟世界当中，每个角色都是一个真实的人物，他们有自己的情绪、自己的视角，会按照自己的思维去推动剧情故事发展。",
+      "相当于每一个角色都在找自己的路，于是故事发生了！剧情推演便是如此而来。",
+      "最新 3.0.0 版本敬请期待。",
+    ],
+  },
+};
+
+const TWO_POINT_TWO_THIRTY_ONE_CHANGELOG: ChangelogEntry = {
+  version: "2.2.31",
+  date: "2026-06-30",
+  highlights: {
+    en: [
+      "Added de-AI skill library: independent skill management page with create/edit/delete, custom prompt templates, temperature and model settings.",
+      "Added 7 oriental aesthetic visual styles: Classic, Cangzhu Bamboo, Tianqing Celadon, Qingci Antique, Yunshan Mist, Yuebai Moonlight, Gumo Ancient Ink, each with light and dark variants.",
+      "Added sidebar nav customization: drag-to-reorder, show/hide entries, settings page configuration.",
+      "Restored font size settings with editor and interface font controls and persistence.",
+      "Fixed chapter library state persistence: switching views (graph, outline) no longer loses selected chapter content.",
+      "Optimized de-AI button display: shows only '去AI味' when no skill is enabled, '去AI味：技能名' when active.",
+      "Removed deep-blue eye-care theme (merged with dark mode to simplify options).",
+      "Fixed portable build issues, chat input interaction details, and outline chat panel functionality.",
+    ],
+    zh: [
+      "新增去AI味技能库：独立的技能管理页面，支持创建、编辑、删除技能，可配置提示词模板、温度、模型等参数。",
+      "新增 7 种东方美学视觉风格：经典原版、苍竹翠色、天青釉色、青瓷古韵、云山雾霭、月白清风、古墨书香，每种风格均含浅色和深色配色。",
+      "新增侧边栏导航自定义：支持拖拽排序、显示/隐藏功能入口，设置页面可配置。",
+      "恢复字体大小设置：支持调节编辑器和界面字体大小，设置自动持久化保存。",
+      "修复章节库状态持久化：切换视图（图谱、大纲等）后返回章节库，章节内容不再丢失。",
+      "优化去AI味按钮显示：未启用技能时仅显示「去AI味」，启用后显示「去AI味：技能名」，配置损坏时明确提示。",
+      "删除「深蓝护眼」主题（与深色模式效果重复，精简选项）。",
+      "修复便携版打包相关问题、聊天输入框若干交互细节、大纲聊天面板相关功能。",
+    ],
+  },
+};
+
+const TWO_POINT_TWO_THIRTY_CHANGELOG: ChangelogEntry = {
+  version: "2.2.30",
+  date: "2026-06-30",
+  highlights: {
+    en: [
+      "Fixed the Windows portable build opening the development localhost URL by restoring the Tauri CLI production build path.",
+      "Reduced portable package size by moving unused bundled font files out of public assets.",
+      "Kept only the actually used Geist and KaTeX font assets in the production frontend bundle.",
+      "Archived old portable executables under QMdelete so users do not accidentally open a stale build.",
+    ],
+    zh: [
+      "修复 Windows 便携版打开后访问 localhost:1420 被拒绝的问题，便携版重新改为通过 Tauri CLI 生成生产运行入口。",
+      "移出 public/fonts 中未被实际引用的大体积字体资源，避免未使用字体被 Vite 复制并嵌入便携版。",
+      "生产前端包仅保留当前实际使用的 Geist 字体和 KaTeX 小字体资源。",
+      "旧便携版 exe 已归档到 QMdelete，避免用户误打开旧包。",
+    ],
+  },
+};
+
+const TWO_POINT_TWO_TWENTY_NINE_CHANGELOG: ChangelogEntry = {
+  version: "2.2.29",
+  date: "2026-06-28",
+  highlights: {
+    en: [],
+    zh: [
+      "AI 会话与 AI 大纲输入框全面改版：改为圆角容器布局，工具栏整合到输入框内部底部，发送按钮图标改为向上箭头。",
+      "模型选择器移至输入框右侧（发送按钮左侧），视觉更统一，操作更便捷。",
+      "新建大纲输入框重新设计：改为双行布局，第一行输入框占满宽度，第二行右侧放置取消和创建按钮。",
+      "章节默认打开功能：软件启动时自动打开用户最近阅读的最后一个章节，恢复滚动位置，并自动打开 AI 会话窗口。",
+      "深度模式状态记忆：深度模式状态在软件单次运行期间持续有效，不受页面导航影响。",
+      "彻底修复 AI 大纲输入框底部溢出问题：优化容器布局和高度计算逻辑，添加 ResizeObserver 监听容器变化。",
+      "修复侧边栏任务列表高度溢出问题：提取中任务列表展开后限制最大高度 256px，超出时显示纵向滚动条。",
+      "修复输入框拖拽后高度异常变化：用户手动设置高度后保持固定，不随内容自适应。",
+      "AI 会话历史自动保存机制加固：增加关闭前保存、定期兜底保存、重试机制和并发保护。",
+      "导入 UI 全面优化：新增全选/取消全选功能，导入结果详细展示，进度分阶段展示。",
+    ],
+  },
+};
+
+const TWO_POINT_TWO_TWENTY_SEVEN_CHANGELOG: ChangelogEntry = {
+  version: "2.2.27",
+  date: "2026-06-28",
+  highlights: {
+    en: [],
+    zh: [
+      "修复维护工具「检测重复实体」模型检测逻辑：现在会正确解析 AI 会话模型和默认模型，不再误报「请先配置大模型」。",
+      "修复扫描结果展示英文的问题：重复检测和合并的 LLM 提示词改为中文，LLM 返回的重复原因描述现在显示中文。",
+      "修复队列错误信息为中文：合并任务失败时的错误提示改为中文。",
+    ],
+  },
+};
+
+const TWO_POINT_TWO_TWENTY_SIX_CHANGELOG: ChangelogEntry = {
+  version: "2.2.26",
+  date: "2026-06-28",
+  highlights: {
+    en: [],
+    zh: [
+      "修复模型选择器下拉框定位问题：下拉框不再显示在半空中，改为始终优先显示在按钮正下方；只有下方空间不足 120px 且上方空间充足时才自动翻转到上方。",
+      "下拉框高度根据可用空间动态计算（120px-400px），不再固定 400px。",
+      "提升下拉框层级，避免被对话框遮罩层遮挡。",
+      "新增下拉框细滚动条样式，与项目整体风格统一。",
+    ],
+  },
+};
+
+const TWO_POINT_TWO_TWENTY_FIVE_CHANGELOG: ChangelogEntry = {
+  version: "2.2.25",
+  date: "2026-06-28",
+  highlights: {
+    en: [],
+    zh: [
+      "新增剧情推演室（测试版）：支持故事框架生成、多智能体仿真推演、推演报告、角色采访等功能（BETA 测试版）。",
+      "大纲生成器分类体系重构：重新设计大纲生成弹窗，频道升级为男频/女频双频道体系，男频 18 个主分类、女频 18 个主分类，共约 630 个子标签；支持频道切换、主分类选择、风格标签多选、自定义标签添加与删除。",
+      "大纲生成器新增字数规模选择：支持短篇、中篇、长篇、超长篇四档目标字数选择。",
+      "大纲生成模型选择器：大纲生成对话框、细化生成对话框、AI 大纲会话面板均新增模型选择下拉框，不再回退到全局默认配置；未选择模型时明确提示用户选择。",
+      "框架节点拖拽排序：故事框架节点支持拖拽调整顺序，阶段保持不变。",
+      "草稿章节编辑：草稿章节支持直接编辑，原始内容自动备份到 rawContent。",
+      "采访继续对话：角色采访支持继续对话，恢复 Agent 状态追加到旧会话。",
+      "推演报告对比模式：多份推演结果支持对比查看，高亮差异。",
+      "历史采访查看：支持查看历史采访记录。",
+      "推演结果管理：支持多份推演结果保存、删除、草稿保存、时间线保存、框架搜索。",
+      "4 种仿真模式差异化：完成四种仿真模式的差异化配置，支持轮次配置、时间线滚动、对话导出、关系图等。",
+      "主题切换交互优化：侧边栏主题按钮从循环点击改为下拉框选择，支持直接选择「浅色模式」「深色模式」「深蓝护眼」「跟随系统」，当前主题显示勾选标记。",
+      "图标统一优化：「跟随系统」主题图标更换为 SunMoon，不再与「切换项目」按钮图标重复；「深蓝护眼」主题图标更换为眼睛图标，语义更直观。",
+      "修复 AI 会话输入框无法拉高的问题，优化边界检测，向上拖动时不会超出界面下沿，发送消息后自动恢复默认高度。",
+      "修复 AI 大纲输入框无法拉高的问题。",
+      "模型选择逻辑加固：未选择模型时明确提示用户选择，不再静默回退到默认 llmConfig 或本地环境变量；禁用的模型提供方不再参与回退。",
+      "章节号强制解析：普通对话模式下也能正确解析目标章节号，由代码强制计算章节号，不再信任 LLM 输出，避免章节号错乱。",
+      "修复审查中心出现负章节号的问题。",
+      "记忆中心优化：侧边栏章节列表改为按需加载，显示所有章节；快照展示和范围搜索优化。",
+      "修复角色光环 LLM 提取问题，记忆中心章节列表重新设计。",
+      "修复单章目标字数下限截断问题，统一为 500 - 20000 字范围。",
+      "故事框架标题旁添加帮助图标，链接到剧情推演室使用说明。",
+    ],
+  },
+};
+
+const TWO_POINT_TWO_TWENTY_FOUR_CHANGELOG: ChangelogEntry = {
   version: "2.2.24",
   date: "2026-06-26",
   highlights: {
     en: [
-      "Web branch sync: kept browser filesystem, clip, and HTTP server adapters while porting safe upstream fixes.",
-      "LLM streaming is more robust: decoder state is per request, abort listeners are cleaned up, and stuck requests keep clearer timeout behavior.",
-      "Saving AI chat output as a chapter now preserves a generated chapter title when the model returned one.",
-      "Trash deletion now tolerates stale file-tree entries whose original file has already disappeared.",
-      "Backup import refreshes the currently opened project when restored files affect it.",
-      "Added a system theme option that follows the operating system light/dark preference.",
+      "Outline generator UI overhaul: button-based category selection with male/female channel toggle, multi-select tags, and word-count buttons.",
+      "Added complete genre classification system: 15 categories each for male and female channels, ~435 sub-tags total.",
+      "Added custom tag management: create, persist, and delete custom outline tags.",
+      "Added model selector dropdowns to outline generation dialog, refine dialog, and AI outline chat panel — no longer falls back to global llmConfig; prompts user to select a model if none chosen.",
+      "Model selection auto-saves and restores on next launch, shared across all three outline scenarios.",
+      "Fixed error messages displaying full API response body: now extracts JSON error fields and truncates to 500 chars.",
+      "Fixed outline generator not showing errors due to stale task state synchronization.",
+      "Added V2 prompt template incorporating channel, category, and style tags into generation prompts.",
+      "Added one-click copy for error details including context (channel, category, tags, model, timestamp).",
+      "AI outline chat panel footer layout: dock controls on the left, model selector on the right.",
     ],
     zh: [
-      "Web 分支同步：保留浏览器文件系统、剪藏和 HTTP 服务适配，同时迁入可安全落地的上游修复。",
-      "LLM 流式请求更稳：解码器状态按请求隔离，取消监听会被清理，卡住的请求保留更清晰的超时处理。",
-      "AI 会话保存为章节时，如果模型返回了章节标题，会自动保留并写入章节标题。",
-      "回收站删除现在能容错文件树里的幽灵条目，即原文件已不存在时也不会中断。",
-      "备份导入影响当前打开项目时，会自动刷新当前项目。",
-      "新增跟随系统主题模式，可随操作系统浅色/深色偏好切换。",
+      "大纲生成器界面重构：下拉框选择改为按钮式分类选择，新增男频/女频频道切换、多选标签、字数规模按钮组。",
+      "新增完整分类标签体系：男频 15 个分类、女频 15 个分类，共计约 435 个子标签。",
+      "新增自定义标签管理：支持创建、持久化存储和删除自定义大纲标签。",
+      "大纲生成对话框、细化生成对话框、AI大纲会话面板新增模型选择下拉框，不再回退到全局 llmConfig，未选择模型时提示用户选择。",
+      "模型选择自动保存，下次启动自动恢复，三个场景共享同一选择。",
+      "修复错误消息显示完整 API 响应体的问题：现在自动提取 JSON 错误字段并截断到 500 字符。",
+      "修复大纲生成器因任务状态同步问题导致错误信息不显示的问题。",
+      "新增 V2 提示词模板，将频道、分类、风格标签纳入生成提示语。",
+      "新增错误详情一键复制功能，包含频道、分类、标签、模型、时间等上下文信息。",
+      "AI 大纲会话面板底部布局调整：停靠图标在最左侧，模型选择下拉框在最右侧。",
     ],
   },
-}
+};
+
+const TWO_POINT_TWO_TWENTY_THREE_CHANGELOG: ChangelogEntry = {
+  version: "2.2.23",
+  date: "2026-06-25",
+  highlights: {
+    en: [
+      "Fixed 'Follow AI Chat Model' checkbox missing and not following: restored checkbox UI and corrected model fallback priority to aiChatModel > defaultLlmModel.",
+      "Fixed DeepSeek model stalling during writing: auto reasoning mode no longer forced to high; novel generation uses config.reasoning directly.",
+      "Fixed scrollbar jumping when deleting text in chapter editor: preserves scroll position during textarea resize.",
+      "Fixed backup import losing chapters and outlines after QMBOOK folder deleted: unified wiki directory name in exports, auto-migrates wiki→QM on import, restores project names from backup.",
+      "Added 'Restore Data' button on welcome/login page for one-click backup import.",
+      "Fixed inability to delete ghost entries (missing files): moveFileToTrash handles missing files gracefully instead of aborting.",
+      "Fixed nested path virtualization bug causing delete failures on files in nested QM directories (wiki/outlines/1/wiki/chapters/...): now replaces all legacy path segments, not just the last one.",
+    ],
+    zh: [
+      "修复「跟随 AI 会话模型」复选框丢失且无法跟随的问题：恢复复选框 UI，修正模型回退优先级为 aiChatModel > defaultLlmModel。",
+      "修复 DeepSeek 模型写作卡顿问题：auto 推理模式不再强制转为 high，小说写作直接使用 config.reasoning。",
+      "修复章节编辑器删除文字时滚动条跳动：在 textarea resize 前后保存并恢复滚动容器位置。",
+      "修复重装系统后备份导入丢失章节和大纲的问题：导出统一以 wiki 目录名打包，导入后自动迁移 wiki→QM、.llm-wiki→.qmai，恢复项目原始名称。",
+      "登录/欢迎页新增「恢复数据」按钮，支持一键导入备份。",
+      "修复文件已丢失的幽灵条目无法删除的问题：moveFileToTrash 容错处理不存在的文件，不中断删除流程。",
+      "修复嵌套路径虚拟化导致部分条目无法删除的问题：路径中包含多个 wiki/QM 段时全量替换，而非仅替换最后一个。",
+    ],
+  },
+};
 
 const TWO_POINT_TWO_TWENTY_TWO_CHANGELOG: ChangelogEntry = {
   version: "2.2.22",
@@ -134,7 +501,7 @@ const TWO_POINT_TWO_TWENTY_TWO_CHANGELOG: ChangelogEntry = {
       "自定义模型卡片输入框内的失败模型标签会高亮变红并带红框，用户可直接点击「×」移除；移除后该模型会从失败列表中清除。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_TWENTY_CHANGELOG: ChangelogEntry = {
   version: "2.2.20",
@@ -177,7 +544,7 @@ const TWO_POINT_TWO_TWENTY_CHANGELOG: ChangelogEntry = {
       "优化Windows更新安装流程，减少文件占用导致的更新失败。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_NINETEEN_CHANGELOG: ChangelogEntry = {
   version: "2.2.19",
@@ -194,7 +561,7 @@ const TWO_POINT_TWO_NINETEEN_CHANGELOG: ChangelogEntry = {
       "新增角色识别回归测试，覆盖中文字段返回格式，防止同类问题再次出现。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_EIGHTEEN_CHANGELOG: ChangelogEntry = {
   version: "2.2.18",
@@ -213,7 +580,7 @@ const TWO_POINT_TWO_EIGHTEEN_CHANGELOG: ChangelogEntry = {
       "优化修复一些其他小问题",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_SEVENTEEN_CHANGELOG: ChangelogEntry = {
   version: "2.2.17",
@@ -234,7 +601,7 @@ const TWO_POINT_TWO_SEVENTEEN_CHANGELOG: ChangelogEntry = {
       "修复拆书测试版与模型配置流程中反馈的若干问题。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_SIXTEEN_CHANGELOG: ChangelogEntry = {
   version: "2.2.16",
@@ -253,7 +620,7 @@ const TWO_POINT_TWO_SIXTEEN_CHANGELOG: ChangelogEntry = {
       "修复一些其他问题。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_FOURTEEN_CHANGELOG: ChangelogEntry = {
   version: "2.2.14",
@@ -267,14 +634,14 @@ const TWO_POINT_TWO_FOURTEEN_CHANGELOG: ChangelogEntry = {
       "Enhanced de-AI rules with Chinese novel adaptation notes: preserve character voice, dialogue edges, narrative rhythm, and necessary pauses; don't apply non-fiction article rules to delete adverbs or compress to fixed word count.",
     ],
     zh: [
-      "修复 Issue #10：AI 修改章节时不再报错\"返回内容缺少 frontmatter，已停止写回\"，现在自动沿用原章节 frontmatter，并容错代码围栏与缺失标题。",
-      "修复 Issue #9：\"继续生成下一章\"不再重复生成第一章；提示词中顺带出现的\"开篇/第一章\"字样不再把目标章节劫持为第1章；本会话记住刚生成、尚未保存的章节号。",
+      '修复 Issue #10：AI 修改章节时不再报错"返回内容缺少 frontmatter，已停止写回"，现在自动沿用原章节 frontmatter，并容错代码围栏与缺失标题。',
+      '修复 Issue #9："继续生成下一章"不再重复生成第一章；提示词中顺带出现的"开篇/第一章"字样不再把目标章节劫持为第1章；本会话记住刚生成、尚未保存的章节号。',
       "修复 Issue #6：大纲细化生成逻辑统一按目录是否已有 .md 文件判断；hasOutlineForRefinement 从基于搜索改为直接文件系统检查。",
-      "修复 Issue #8：新增\"单章目标字数\"设置，章节生成、扩写阈值和\"继续生成下一章\"提示词都按设置目标执行。",
+      '修复 Issue #8：新增"单章目标字数"设置，章节生成、扩写阈值和"继续生成下一章"提示词都按设置目标执行。',
       "增强去AI味规则的中文小说适配说明：保留角色声线、对白毛边、叙事节奏和必要停顿；不要按非虚构文章规则硬删副词或压缩到固定字数。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_THIRTEEN_CHANGELOG: ChangelogEntry = {
   version: "2.2.13",
@@ -309,7 +676,7 @@ const TWO_POINT_TWO_THIRTEEN_CHANGELOG: ChangelogEntry = {
       "深度思考和普通模式互斥切换，普通模式下可以正常对话不走深度思考流程。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_NINE_CHANGELOG: ChangelogEntry = {
   version: "2.2.9",
@@ -322,7 +689,7 @@ const TWO_POINT_TWO_NINE_CHANGELOG: ChangelogEntry = {
       "修复 AI 大纲深度思考生成报错：当大纲上下文或对话字段缺失时，不会再因为 undefined 的 length / trim 报错而直接生成失败。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_EIGHT_CHANGELOG: ChangelogEntry = {
   version: "2.2.8",
@@ -345,7 +712,7 @@ const TWO_POINT_TWO_EIGHT_CHANGELOG: ChangelogEntry = {
       "深度章节长度重写失败上限提升到 6000 字，连续压缩失败时可保留可用长稿继续审查。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_SEVEN_CHANGELOG: ChangelogEntry = {
   version: "2.2.7",
@@ -368,7 +735,7 @@ const TWO_POINT_TWO_SEVEN_CHANGELOG: ChangelogEntry = {
       "继续未完成时即使切换模型，也会重新加载原始请求和恢复快照后再继续后续阶段。",
     ],
   },
-}
+};
 
 const TWO_POINT_TWO_ZERO_CHANGELOG: ChangelogEntry = {
   version: "2.2.0",
@@ -395,7 +762,7 @@ const TWO_POINT_TWO_ZERO_CHANGELOG: ChangelogEntry = {
       "修复 AI 会话停止生成不及时的问题，思考阶段和流式阶段都能立即收口。",
     ],
   },
-}
+};
 
 const TWO_POINT_ONE_ZERO_CHANGELOG: ChangelogEntry = {
   version: "2.1.0",
@@ -442,7 +809,7 @@ const TWO_POINT_ONE_ZERO_CHANGELOG: ChangelogEntry = {
       "补强 AI 审查改写落地逻辑，换行或空格变化后仍能定位原文片段。",
     ],
   },
-}
+};
 
 const TWO_POINT_ZERO_CHANGELOG: ChangelogEntry = {
   version: "2.0.0",
@@ -471,13 +838,32 @@ const TWO_POINT_ZERO_CHANGELOG: ChangelogEntry = {
       "反馈提交流程增加兜底通道，桌面端 HTTP 客户端异常时仍可尝试提交。",
     ],
   },
-}
+};
+
+const TWO_POINT_TWO_TWENTY_ONE_CHANGELOG: ChangelogEntry = {
+  version: "2.2.21",
+  date: "2026-06-23",
+  highlights: {
+    en: [
+      "Security hardening: Zip Slip path traversal protection and CORS policy tightening.",
+      "Fixed ChatPanel resource leak: abort streaming requests on unmount and conversation deletion.",
+      "Fixed race conditions in chat regeneration and deAiMode closure.",
+      "Clip server safety: Mutex poison handling, restart count fix, and projectPath validation.",
+    ],
+    zh: [
+      "安全加固：Zip Slip 路径遍历防护和 CORS 策略收紧。",
+      "修复 ChatPanel 资源泄漏：卸载和删除会话时 abort 流式请求。",
+      "修复聊天重新生成和去AI味模式的竞态条件。",
+      "Clip 服务器安全：Mutex poison 处理、重启计数修复、projectPath 校验。",
+    ],
+  },
+};
 
 function isMergedOnePointRelease(version: string): boolean {
-  const match = /^1\.0\.(\d+)$/.exec(version)
-  if (!match) return false
-  const patch = Number(match[1])
-  return patch >= 8 && patch <= 32
+  const match = /^1\.0\.(\d+)$/.exec(version);
+  if (!match) return false;
+  const patch = Number(match[1]);
+  return patch >= 8 && patch <= 32;
 }
 
 export const CHANGELOG: ChangelogEntry[] = [
@@ -537,38 +923,101 @@ export const CHANGELOG: ChangelogEntry[] = [
       ],
     },
   },
-]
+];
 
 export function currentVersionChangelog(version: string): ChangelogEntry[] {
-  if (version === TWO_POINT_TWO_TWENTY_FOUR_WEB_CHANGELOG.version) return [TWO_POINT_TWO_TWENTY_FOUR_WEB_CHANGELOG]
-  if (version === TWO_POINT_TWO_TWENTY_TWO_CHANGELOG.version) return [TWO_POINT_TWO_TWENTY_TWO_CHANGELOG]
-  if (version === TWO_POINT_TWO_TWENTY_CHANGELOG.version) return [TWO_POINT_TWO_TWENTY_CHANGELOG]
-  if (version === TWO_POINT_TWO_NINETEEN_CHANGELOG.version) return [TWO_POINT_TWO_NINETEEN_CHANGELOG]
-  if (version === TWO_POINT_TWO_EIGHTEEN_CHANGELOG.version) return [TWO_POINT_TWO_EIGHTEEN_CHANGELOG]
-  if (version === TWO_POINT_TWO_SEVENTEEN_CHANGELOG.version) return [TWO_POINT_TWO_SEVENTEEN_CHANGELOG]
-  if (version === TWO_POINT_TWO_SIXTEEN_CHANGELOG.version) return [TWO_POINT_TWO_SIXTEEN_CHANGELOG]
-  if (version === TWO_POINT_TWO_FOURTEEN_CHANGELOG.version) return [TWO_POINT_TWO_FOURTEEN_CHANGELOG]
-  if (version === TWO_POINT_TWO_THIRTEEN_CHANGELOG.version) return [TWO_POINT_TWO_THIRTEEN_CHANGELOG]
-  if (version === TWO_POINT_TWO_TWELVE_CHANGELOG.version) return [TWO_POINT_TWO_TWELVE_CHANGELOG]
-  if (version === TWO_POINT_TWO_ELEVEN_CHANGELOG.version) return [TWO_POINT_TWO_ELEVEN_CHANGELOG]
-  if (version === TWO_POINT_TWO_TEN_CHANGELOG.version) return [TWO_POINT_TWO_TEN_CHANGELOG]
-  if (version === TWO_POINT_TWO_NINE_CHANGELOG.version) return [TWO_POINT_TWO_NINE_CHANGELOG]
-  if (version === TWO_POINT_TWO_EIGHT_CHANGELOG.version) return [TWO_POINT_TWO_EIGHT_CHANGELOG]
-  if (version === TWO_POINT_TWO_SEVEN_CHANGELOG.version) return [TWO_POINT_TWO_SEVEN_CHANGELOG]
-  if (version === TWO_POINT_TWO_ZERO_CHANGELOG.version) return [TWO_POINT_TWO_ZERO_CHANGELOG]
-  if (version === TWO_POINT_ONE_ZERO_CHANGELOG.version) return [TWO_POINT_ONE_ZERO_CHANGELOG]
-  if (version === TWO_POINT_ZERO_CHANGELOG.version) return [TWO_POINT_ZERO_CHANGELOG]
-  if (/^2\.2\.[1-6]$/.test(version)) return []
-  if (/^2\.1\.(?:[1-9]|10)$/.test(version)) return []
-  if (/^2\.0\.(?:[1-9]|1[0-2])$/.test(version)) return []
-  if (isMergedOnePointRelease(version)) return []
-  return CHANGELOG.filter((entry) => entry.version === version)
+  if (version === THREE_POINT_ZERO_ONE_CHANGELOG.version)
+    return [THREE_POINT_ZERO_ONE_CHANGELOG];
+  if (version === THREE_POINT_ZERO_ZERO_CHANGELOG.version)
+    return [THREE_POINT_ZERO_ZERO_CHANGELOG];
+  if (version === TWO_POINT_TWO_THIRTY_SEVEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_THIRTY_SEVEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_THIRTY_SIX_CHANGELOG.version)
+    return [TWO_POINT_TWO_THIRTY_SIX_CHANGELOG];
+  if (version === TWO_POINT_TWO_THIRTY_FIVE_CHANGELOG.version)
+    return [TWO_POINT_TWO_THIRTY_FIVE_CHANGELOG];
+  if (version === TWO_POINT_TWO_THIRTY_THREE_CHANGELOG.version)
+    return [TWO_POINT_TWO_THIRTY_THREE_CHANGELOG];
+  if (version === TWO_POINT_TWO_THIRTY_TWO_CHANGELOG.version)
+    return [TWO_POINT_TWO_THIRTY_TWO_CHANGELOG];
+  if (version === TWO_POINT_TWO_THIRTY_ONE_CHANGELOG.version)
+    return [TWO_POINT_TWO_THIRTY_ONE_CHANGELOG];
+  if (version === TWO_POINT_TWO_THIRTY_CHANGELOG.version)
+    return [TWO_POINT_TWO_THIRTY_CHANGELOG];
+  if (version === TWO_POINT_TWO_TWENTY_NINE_CHANGELOG.version)
+    return [TWO_POINT_TWO_TWENTY_NINE_CHANGELOG];
+  if (version === TWO_POINT_TWO_TWENTY_SEVEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_TWENTY_SEVEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_TWENTY_SIX_CHANGELOG.version)
+    return [TWO_POINT_TWO_TWENTY_SIX_CHANGELOG];
+  if (version === TWO_POINT_TWO_TWENTY_FIVE_CHANGELOG.version)
+    return [TWO_POINT_TWO_TWENTY_FIVE_CHANGELOG];
+  if (version === TWO_POINT_TWO_TWENTY_FOUR_CHANGELOG.version)
+    return [TWO_POINT_TWO_TWENTY_FOUR_CHANGELOG];
+  if (version === TWO_POINT_TWO_TWENTY_THREE_CHANGELOG.version)
+    return [TWO_POINT_TWO_TWENTY_THREE_CHANGELOG];
+  if (version === TWO_POINT_TWO_TWENTY_TWO_CHANGELOG.version)
+    return [TWO_POINT_TWO_TWENTY_TWO_CHANGELOG];
+  if (version === TWO_POINT_TWO_TWENTY_ONE_CHANGELOG.version)
+    return [TWO_POINT_TWO_TWENTY_ONE_CHANGELOG];
+  if (version === TWO_POINT_TWO_TWENTY_CHANGELOG.version)
+    return [TWO_POINT_TWO_TWENTY_CHANGELOG];
+  if (version === TWO_POINT_TWO_NINETEEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_NINETEEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_EIGHTEEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_EIGHTEEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_SEVENTEEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_SEVENTEEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_SIXTEEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_SIXTEEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_FOURTEEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_FOURTEEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_THIRTEEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_THIRTEEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_TWELVE_CHANGELOG.version)
+    return [TWO_POINT_TWO_TWELVE_CHANGELOG];
+  if (version === TWO_POINT_TWO_ELEVEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_ELEVEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_TEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_TEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_NINE_CHANGELOG.version)
+    return [TWO_POINT_TWO_NINE_CHANGELOG];
+  if (version === TWO_POINT_TWO_EIGHT_CHANGELOG.version)
+    return [TWO_POINT_TWO_EIGHT_CHANGELOG];
+  if (version === TWO_POINT_TWO_SEVEN_CHANGELOG.version)
+    return [TWO_POINT_TWO_SEVEN_CHANGELOG];
+  if (version === TWO_POINT_TWO_ZERO_CHANGELOG.version)
+    return [TWO_POINT_TWO_ZERO_CHANGELOG];
+  if (version === TWO_POINT_ONE_ZERO_CHANGELOG.version)
+    return [TWO_POINT_ONE_ZERO_CHANGELOG];
+  if (version === TWO_POINT_ZERO_CHANGELOG.version)
+    return [TWO_POINT_ZERO_CHANGELOG];
+  if (/^2\.2\.[1-6]$/.test(version)) return [];
+  if (/^2\.1\.(?:[1-9]|10)$/.test(version)) return [];
+  if (/^2\.0\.(?:[1-9]|1[0-2])$/.test(version)) return [];
+  if (isMergedOnePointRelease(version)) return [];
+  return CHANGELOG.filter((entry) => entry.version === version);
 }
 
 export function allChangelog(): ChangelogEntry[] {
   return [
-    TWO_POINT_TWO_TWENTY_FOUR_WEB_CHANGELOG,
+    THREE_POINT_ZERO_ONE_CHANGELOG,
+    THREE_POINT_ZERO_ZERO_CHANGELOG,
+    TWO_POINT_TWO_THIRTY_SEVEN_CHANGELOG,
+    TWO_POINT_TWO_THIRTY_SIX_CHANGELOG,
+    TWO_POINT_TWO_THIRTY_FIVE_CHANGELOG,
+    TWO_POINT_TWO_THIRTY_THREE_CHANGELOG,
+    TWO_POINT_TWO_THIRTY_TWO_CHANGELOG,
+    TWO_POINT_TWO_THIRTY_ONE_CHANGELOG,
+    TWO_POINT_TWO_THIRTY_CHANGELOG,
+    TWO_POINT_TWO_TWENTY_NINE_CHANGELOG,
+    TWO_POINT_TWO_TWENTY_SEVEN_CHANGELOG,
+    TWO_POINT_TWO_TWENTY_SIX_CHANGELOG,
+    TWO_POINT_TWO_TWENTY_FIVE_CHANGELOG,
+    TWO_POINT_TWO_TWENTY_FOUR_CHANGELOG,
+    TWO_POINT_TWO_TWENTY_THREE_CHANGELOG,
     TWO_POINT_TWO_TWENTY_TWO_CHANGELOG,
+    TWO_POINT_TWO_TWENTY_ONE_CHANGELOG,
     TWO_POINT_TWO_TWENTY_CHANGELOG,
     TWO_POINT_TWO_NINETEEN_CHANGELOG,
     TWO_POINT_TWO_EIGHTEEN_CHANGELOG,
@@ -586,5 +1035,6 @@ export function allChangelog(): ChangelogEntry[] {
     TWO_POINT_ONE_ZERO_CHANGELOG,
     TWO_POINT_ZERO_CHANGELOG,
     ...CHANGELOG.filter((entry) => !isMergedOnePointRelease(entry.version)),
-  ]
+  ];
 }
+

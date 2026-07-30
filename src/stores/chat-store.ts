@@ -1,6 +1,18 @@
 import { create } from "zustand"
 import type { ChatMessage } from "@/lib/llm-client"
+import type { AgentRunRecord, AgentStageTrace } from "@/lib/agent/types"
+import type { ReferenceToken } from "@/lib/reference/types"
+import type { ContextTrace } from "@/lib/agent/context-trace"
+import type { ContextHubSnapshotRef, SessionContextSummary } from "@/lib/context-hub/types"
 import i18n from "@/i18n"
+import {
+  canStartConversationRun as canStartRun,
+  failConversationRun as createFailedRunState,
+  finishConversationRun as createFinishedRunState,
+  normalizeLoadedRunStates,
+  stopConversationRun as createStoppedRunState,
+  type ConversationRunStates,
+} from "@/lib/conversation-run-state"
 
 export interface Conversation {
   id: string
@@ -8,7 +20,9 @@ export interface Conversation {
   createdAt: number
   updatedAt: number
   deAiMode: boolean
+  selectedDeAiSkillId?: string | null
   inputDraft?: string
+  contextSummary?: SessionContextSummary
 }
 
 export interface MessageReference {
@@ -24,6 +38,12 @@ export interface DisplayMessage {
   conversationId: string
   references?: MessageReference[]  // pages cited in this response, saved at creation time
   discarded?: boolean
+  agentToolCalls?: AgentRunRecord["toolCalls"]
+  agentStages?: AgentStageTrace[]
+  isAgentRunning?: boolean
+  attachedReferences?: ReferenceToken[]
+  contextTrace?: ContextTrace
+  contextHubSnapshot?: ContextHubSnapshotRef
 }
 
 interface ChatState {
@@ -32,6 +52,8 @@ interface ChatState {
   messages: DisplayMessage[]
   /** 按会话 ID 存储流式内容，支持多会话同时生成 */
   streamingContents: Record<string, string>
+  runStates: ConversationRunStates
+  pendingReferenceTokens: ReferenceToken[]
   mode: "chat" | "ingest"
   ingestSource: string | null
   maxHistoryMessages: number
@@ -42,12 +64,20 @@ interface ChatState {
   setActiveConversation: (id: string | null) => void
   renameConversation: (id: string, title: string) => void
   setConversationDeAiMode: (id: string, deAiMode: boolean) => void
+  setConversationDeAiSkillId: (id: string, skillId: string | null | undefined) => void
   setConversationInputDraft: (id: string, draft: string) => void
+  setConversationContextSummary: (id: string, contextSummary: SessionContextSummary | undefined) => void
 
   // Message management
   addMessage: (role: DisplayMessage["role"], content: string) => void
   setMessages: (messages: DisplayMessage[]) => void
   setConversations: (conversations: Conversation[]) => void
+  startConversationRun: (id: string, runId?: string) => boolean
+  finishConversationRun: (id: string, activeId: string | null, runId?: string) => void
+  failConversationRun: (id: string, error: string, runId?: string) => void
+  stopConversationRun: (id: string, runId?: string) => void
+  setLoadedRunStates: (states: ConversationRunStates | undefined) => void
+  canStartConversationRun: (id: string) => boolean
   /** 开始指定会话的流式生成 */
   startStreaming: (conversationId: string) => void
   /** 追加 token 到指定会话的流式内容 */
@@ -64,6 +94,8 @@ interface ChatState {
   setMaxHistoryMessages: (n: number) => void
   removeLastAssistantMessage: () => void  // for regenerate: remove last assistant reply
   markLastAssistantDiscarded: () => void   // for novel draft discard
+  enqueueReferenceTokens: (tokens: ReferenceToken[]) => void
+  consumePendingReferenceTokens: () => ReferenceToken[]
 
   // Helpers
   getActiveMessages: () => DisplayMessage[]
@@ -89,6 +121,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeConversationId: null,
   messages: [],
   streamingContents: {},
+  runStates: {},
+  pendingReferenceTokens: [],
   mode: "chat",
   ingestSource: null,
   maxHistoryMessages: 20,
@@ -102,6 +136,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       createdAt: now,
       updatedAt: now,
       deAiMode: false,
+      selectedDeAiSkillId: undefined,
       inputDraft: "",
     }
     set((state) => ({
@@ -120,15 +155,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : state.activeConversationId
       // 清理该会话的流式状态
       const { [id]: _, ...restStreaming } = state.streamingContents
+      const { [id]: __, ...restRunStates } = state.runStates
       return {
         conversations: remaining,
         messages: state.messages.filter((m) => m.conversationId !== id),
         activeConversationId: newActiveId,
         streamingContents: restStreaming,
+        runStates: restRunStates,
       }
     }),
 
-  setActiveConversation: (id) => set({ activeConversationId: id }),
+  setActiveConversation: (id) =>
+    set((state) => {
+      const runState = id ? state.runStates[id] : undefined
+      return {
+        activeConversationId: id,
+        runStates:
+          id && runState?.status === "completed_unread"
+            ? { ...state.runStates, [id]: createStoppedRunState() }
+            : state.runStates,
+      }
+    }),
 
   renameConversation: (id, title) =>
     set((state) => ({
@@ -144,10 +191,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ),
     })),
 
+  setConversationDeAiSkillId: (id, selectedDeAiSkillId) =>
+    set((state) => ({
+      conversations: state.conversations.map((c) =>
+        c.id === id ? { ...c, selectedDeAiSkillId, updatedAt: Date.now() } : c
+      ),
+    })),
+
   setConversationInputDraft: (id, draft) =>
     set((state) => ({
       conversations: state.conversations.map((c) =>
         c.id === id ? { ...c, inputDraft: draft } : c
+      ),
+    })),
+
+  setConversationContextSummary: (id, contextSummary) =>
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === id
+          ? { ...conversation, contextSummary, updatedAt: Date.now() }
+          : conversation
       ),
     })),
 
@@ -191,6 +254,39 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setConversations: (conversations) => set({ conversations }),
 
+  startConversationRun: (id, runId) => {
+    if (!canStartRun(get().runStates, id)) return false
+    set((state) => ({ runStates: { ...state.runStates, [id]: { status: "running", updatedAt: Date.now(), runId } } }))
+    return true
+  },
+
+  finishConversationRun: (id, activeId, runId) =>
+    set((state) => {
+      const current = state.runStates[id]
+      if (!state.conversations.some((conversation) => conversation.id === id)) return state
+      if (current?.status !== "running" || current.runId !== runId) return state
+      return { runStates: { ...state.runStates, [id]: createFinishedRunState(id, activeId) } }
+    }),
+
+  failConversationRun: (id, error, runId) =>
+    set((state) => {
+      const current = state.runStates[id]
+      if (!state.conversations.some((conversation) => conversation.id === id)) return state
+      if (current?.status !== "running" || current.runId !== runId) return state
+      return { runStates: { ...state.runStates, [id]: createFailedRunState(error) } }
+    }),
+
+  stopConversationRun: (id, runId) =>
+    set((state) => {
+      const current = state.runStates[id]
+      if (current?.status !== "running" || current.runId !== runId) return state
+      return { runStates: { ...state.runStates, [id]: createStoppedRunState() } }
+    }),
+
+  setLoadedRunStates: (states) => set({ runStates: normalizeLoadedRunStates(states) }),
+
+  canStartConversationRun: (id) => canStartRun(get().runStates, id),
+
   startStreaming: (conversationId) =>
     set((state) => ({
       streamingContents: {
@@ -219,9 +315,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const convId = targetConvId ?? state.activeConversationId
       if (!convId) {
-        return {
-          streamingContents: {},
-        }
+        // 无目标会话时不操作，避免清空所有会话的流式状态
+        return {}
       }
 
       const newMessage: DisplayMessage = {
@@ -294,6 +389,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ),
       }
     }),
+
+  enqueueReferenceTokens: (tokens) => {
+    if (tokens.length === 0) return
+    set((state) => ({
+      pendingReferenceTokens: [...state.pendingReferenceTokens, ...tokens],
+    }))
+  },
+
+  consumePendingReferenceTokens: () => {
+    const tokens = get().pendingReferenceTokens
+    set({ pendingReferenceTokens: [] })
+    return tokens
+  },
 
   getActiveMessages: () => {
     const { messages, activeConversationId } = get()

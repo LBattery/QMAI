@@ -1,29 +1,43 @@
-import { Suspense, lazy, useEffect, useCallback, useRef, useMemo, useState, useLayoutEffect } from "react"
+import { type CSSProperties, Suspense, lazy, useEffect, useCallback, useRef, useMemo, useState, useLayoutEffect } from "react"
 import { useTranslation } from "react-i18next"
 import { Check, MoreHorizontal, X } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
-import { resolveDefaultModel } from "@/lib/novel/model-resolver"
+import { resolveDefaultModel, resolveNovelModel, formatResolvedModelLabel } from "@/lib/novel/model-resolver"
 import type { FinalChapterSavePhase } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
-import { deleteFile, fileExists, readFile, writeFile, listDirectory } from "@/commands/fs"
+import { deleteFile, fileExists, readFile, writeFileAtomic, writeFileIfAbsent, listDirectory } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
 import { getFileCategory, isBinary } from "@/lib/file-types"
-import { WikiEditor } from "@/components/editor/wiki-editor"
+import { WikiEditor, type WikiEditorHandle } from "@/components/editor/wiki-editor"
 import { WikiReader } from "@/components/editor/wiki-reader"
 import { FilePreview } from "@/components/editor/file-preview"
 import { formatChapterWriting } from "@/lib/chapter-formatting"
 import { parseFrontmatter } from "@/lib/frontmatter"
 import { buildChapterEditorHeader } from "@/lib/chapter-editor-header"
-import { isChapterPage, isFinalChapter, parseChapterMeta, updateChapterStatus } from "@/lib/novel/chapter-meta"
+import { isChapterPage, isFinalChapter, parseChapterMeta, syncChapterFrontmatterFromBody, updateChapterStatus, updateChapterTitle } from "@/lib/novel/chapter-meta"
 import { resolveReviewModel } from "@/lib/novel/review-model"
 import { CognitionPanel } from "@/components/novel/cognition-panel"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { getNextChatExpanded } from "./chat-layout"
-import { DeAiPreviewDialog } from "@/components/novel/de-ai-preview-dialog"
 import { TextTransformPreviewDialog } from "@/components/novel/text-transform-preview-dialog"
+import { DeAiSkillOptionsPanel } from "@/components/skill-library/de-ai-skill-picker"
+import { useDeAiSkillOptions } from "@/components/skill-library/use-de-ai-skill-options"
 import { buildDeAiRewriteMessages } from "@/lib/novel/de-ai-adapter"
+import {
+  loadDeAiSkillConfig,
+  resolveEffectiveDeAiSkill,
+  saveDeAiSkillConfig,
+  setLastChapterDeAiSkill,
+} from "@/lib/novel/de-ai-skill-library"
 import { startOutlineIngestTask } from "@/lib/novel/outline-generation"
+import { getOutlineIngestIdentity, getOutlineFileName, outlineSnapshotExists } from "@/lib/novel/outline-ingest-utils"
 import { streamChat } from "@/lib/llm-client"
+import {
+  extractChapterNumberFromMarkdown,
+  getDraftChapterPath,
+  resolveChapterFlushMarkdown,
+  shouldSyncChapterOnLeave,
+} from "@/lib/novel/chapter-path-sync"
 import { makeChapterFileName, makeDefaultChapterTitle } from "@/lib/wiki-filename"
 import { getPreviewContentContainerClass, shouldUseCompactChapterToolbar } from "@/lib/workspace-layout"
 import { useOutlineGenerationStore, type OutlineGenerationTask } from "@/stores/outline-generation-store"
@@ -32,11 +46,20 @@ import {
   buildPolishSelectionMessages,
   rebuildChapterBody,
   replaceChapterBodySelection,
-  replaceWholeChapterBody,
   splitChapterHeading,
   type ChapterBodySelection,
   type ChapterSelectionAction,
 } from "@/lib/chapter-selection"
+import { shouldApplyDiskToEditor } from "@/lib/editor-disk-sync"
+import { registerEditorDiskSyncHandler } from "@/lib/editor-disk-sync-session"
+import { registerEditorExternalUpdateHandler } from "@/lib/editor-external-update-session"
+import { createChapterExternalUpdateCoordinator } from "@/lib/chapter-external-update-coordinator"
+import { applyOpenChapterBodyUpdate, createDeAiBatchChapterApplier } from "@/lib/novel/de-ai-batch/chapter-apply"
+import { toast } from "@/lib/toast"
+import { selectProjectDeAiReview, selectProjectDeAiTasks, useDeAiTaskStore } from "@/stores/de-ai-task-store"
+import { DeAiBatchReviewDialog } from "@/components/novel/de-ai-batch-review-dialog"
+import type { DeAiBatchChapter, DeAiBatchTaskRecord } from "@/lib/novel/de-ai-batch/types"
+import { saveDeAiDraftWithoutOverwrite } from "@/lib/novel/de-ai-draft"
 
 const SnapshotViewer = lazy(async () => {
   const mod = await import("@/components/novel/snapshot-viewer")
@@ -87,12 +110,6 @@ async function getCanonicalChapterPath(currentPath: string, markdown: string, ch
   return getUniqueSiblingPath(getDirName(currentPath), makeChapterFileName(title, chapterNumber), currentPath)
 }
 
-function extractChapterNumberFromMarkdown(markdown: string): number | null {
-  const { frontmatter } = parseFrontmatter(markdown)
-  if (!frontmatter || typeof frontmatter !== "object") return null
-  return parseChapterMeta(frontmatter as Record<string, unknown>)?.chapterNumber ?? null
-}
-
 function formatWritingBodyWithIndent(markdown: string): string {
   return formatChapterWriting(markdown)
   /*
@@ -116,31 +133,11 @@ function formatWritingBodyWithIndent(markdown: string): string {
 }
 
 function normalizeChapterWriting(markdown: string): string {
-  return formatWritingBodyWithIndent(syncChapterFrontmatterTitle(markdown))
+  return formatWritingBodyWithIndent(syncChapterFrontmatterFromBody(markdown))
 }
 
-function updateChapterHeading(markdown: string, nextTitle: string): string {
-  const { rawBlock, body } = parseFrontmatter(markdown)
-  const normalizedTitle = nextTitle.trim()
-  const bodyWithoutHeading = body.replace(/^#\s+.+$(\r?\n)?/m, "").replace(/^\n+/, "")
-  const nextBody = normalizedTitle
-    ? `# ${normalizedTitle}${bodyWithoutHeading ? `\n\n${bodyWithoutHeading}` : "\n"}`
-    : bodyWithoutHeading
-  return rawBlock + nextBody
-}
-
-function syncChapterFrontmatterTitle(markdown: string): string {
-  const { rawBlock, body, frontmatter } = parseFrontmatter(markdown)
-  if (!rawBlock || !frontmatter) return markdown
-  const heading = body.match(/^#\s+(.+)$/m)?.[1]?.trim()
-  if (!heading) return markdown
-  const fmTitle = typeof (frontmatter as Record<string, unknown>).title === "string"
-    ? String((frontmatter as Record<string, unknown>).title).trim()
-    : ""
-  if (!fmTitle || fmTitle === heading) return markdown
-  const escaped = heading.replace(/"/g, '\\"')
-  const nextRaw = rawBlock.replace(/^title:\s*.*$/m, `title: "${escaped}"`)
-  return nextRaw + body
+function getDiskSyncNormalize(path: string): (content: string) => string {
+  return isChapterPath(path) ? normalizeChapterWriting : (content) => content
 }
 
 function getChapterTitleFromPath(path: string): string {
@@ -151,6 +148,22 @@ function getChapterTitleFromPath(path: string): string {
 const CHAPTER_TITLE_MIN_WIDTH_PX = 48
 const CHAPTER_TITLE_RESTING_EXTRA_WIDTH_PX = 2
 const CHAPTER_TITLE_EDITING_EXTRA_WIDTH_PX = 16
+const DE_AI_SKILL_PICKER_WIDTH_PX = 288
+
+function getDeAiSkillPickerPosition(anchor?: HTMLElement | null): CSSProperties {
+  if (!anchor) return { right: 24, top: 80 }
+  const rect = anchor.getBoundingClientRect()
+  const gap = 8
+  const viewportWidth = window.innerWidth || DE_AI_SKILL_PICKER_WIDTH_PX
+  const left = Math.min(
+    Math.max(rect.left, gap),
+    Math.max(gap, viewportWidth - DE_AI_SKILL_PICKER_WIDTH_PX - gap),
+  )
+  return {
+    left,
+    top: rect.bottom + gap,
+  }
+}
 
 export function PreviewPanel() {
   const { t } = useTranslation()
@@ -168,10 +181,15 @@ export function PreviewPanel() {
   const pendingEditorHighlight = useWikiStore((s) => s.pendingEditorHighlight)
   const setPendingEditorHighlight = useWikiStore((s) => s.setPendingEditorHighlight)
   const bumpDataVersion = useWikiStore((s) => s.bumpDataVersion)
+  const dataVersion = useWikiStore((s) => s.dataVersion)
   const finalChapterSave = useWikiStore((s) => s.finalChapterSave)
   const setFinalChapterSave = useWikiStore((s) => s.setFinalChapterSave)
   const outlineTasks = useOutlineGenerationStore((s) => s.tasks)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const saveGenerationRef = useRef(0)
+  const chapterExternalUpdateCoordinator = useMemo(() => createChapterExternalUpdateCoordinator(), [])
+  const applyDeAiBatchChapter = useMemo(() => createDeAiBatchChapterApplier(), [])
+  const wikiEditorRef = useRef<WikiEditorHandle>(null)
   const [isSavingFinal, setIsSavingFinal] = useState(false)
   const [saveStatus, setSaveStatus] = useState<string>("")
   const [showSnapshot, setShowSnapshot] = useState(false)
@@ -179,44 +197,195 @@ export function PreviewPanel() {
   const [outlineSnapshotNumber, setOutlineSnapshotNumber] = useState<number | null>(null)
   const [outlineIngested, setOutlineIngested] = useState(false)
   const [showCognition, setShowCognition] = useState(false)
-  const [deAiProcessing, setDeAiProcessing] = useState(false)
-  const [deAiPreviewOpen, setDeAiPreviewOpen] = useState(false)
-  const [deAiSourceContent, setDeAiSourceContent] = useState("")
-  const [deAiCandidateContent, setDeAiCandidateContent] = useState("")
+  const currentChapterDeAiProcessing = useDeAiTaskStore((s) =>
+    selectedFile ? s.isChapterProcessing(selectedFile) : false
+  )
+  const deAiReviewOpen = useDeAiTaskStore((s) => selectProjectDeAiReview(s, project?.path).open)
+  const deAiReviewChapterId = useDeAiTaskStore((s) => selectProjectDeAiReview(s, project?.path).chapterId)
+  const deAiTasks = useDeAiTaskStore((s) => s.tasks)
   const [selectionTransformOpen, setSelectionTransformOpen] = useState(false)
+  const [deAiDraftSaving, setDeAiDraftSaving] = useState(false)
+  const deAiDraftSavingRef = useRef(false)
   const [selectionTransformAction, setSelectionTransformAction] = useState<ChapterSelectionAction | null>(null)
   const [selectionTransformSelection, setSelectionTransformSelection] = useState<ChapterBodySelection | null>(null)
   const [selectionTransformSourceContent, setSelectionTransformSourceContent] = useState("")
   const [selectionTransformCandidateContent, setSelectionTransformCandidateContent] = useState("")
+  const [selectionTransformSkillName, setSelectionTransformSkillName] = useState("")
+  const [selectionTransformModelName, setSelectionTransformModelName] = useState("")
+  const [deAiSkillPickerOpen, setDeAiSkillPickerOpen] = useState(false)
+  const [deAiSkillPickerPosition, setDeAiSkillPickerPosition] = useState<CSSProperties>(() => getDeAiSkillPickerPosition())
+  const [chapterDeAiSkillId, setChapterDeAiSkillId] = useState<string | null | undefined>(undefined)
+  const [pendingSelectionForDeAi, setPendingSelectionForDeAi] = useState<ChapterBodySelection | null>(null)
   const [chapterTitleDraft, setChapterTitleDraft] = useState("")
   const [chapterTitleEditing, setChapterTitleEditing] = useState(false)
   const [chapterTitleWidthPx, setChapterTitleWidthPx] = useState(CHAPTER_TITLE_MIN_WIDTH_PX)
   const [chapterToolbarCompact, setChapterToolbarCompact] = useState(true)
   const [chapterToolbarMoreOpen, setChapterToolbarMoreOpen] = useState(false)
   const [loadedFilePath, setLoadedFilePath] = useState<string | null>(null)
+  const [diskSyncEpoch, setDiskSyncEpoch] = useState(0)
+  const pendingScrollRestoreRef = useRef<number | null>(null)
   // Snapshot of what was most recently loaded from disk. Milkdown re-emits
   // `markdownUpdated` on initial parse (before the user types anything),
   // which used to trigger an auto-save that could write back a placeholder
   // marker if read_file had returned one for a missing/locked file. We
   // skip save when the incoming markdown equals the last-loaded content.
   const lastLoadedRef = useRef<string>("")
+  const lastLoadedByPathRef = useRef<Map<string, string>>(new Map())
   const fileContentRef = useRef(fileContent)
   const selectedFileRef = useRef<string | null>(selectedFile)
+  const deAiSkillPickerRef = useRef<HTMLDivElement | null>(null)
   const chapterToolbarRef = useRef<HTMLDivElement | null>(null)
   const titleMeasureRef = useRef<HTMLSpanElement | null>(null)
+  const chapterDeAiOptions = useDeAiSkillOptions({
+    projectPath: project?.path,
+    selectedSkillId: chapterDeAiSkillId,
+    useLastChapterSkill: true,
+  })
 
   useEffect(() => {
     fileContentRef.current = fileContent
   }, [fileContent])
 
-  const syncChapterToCanonicalPath = useCallback(async (path: string, markdown: string) => {
+  const rememberLoadedChapter = useCallback((path: string, markdown: string) => {
+    const key = normalizePath(path)
+    lastLoadedRef.current = markdown
+    lastLoadedByPathRef.current.set(key, markdown)
+    chapterExternalUpdateCoordinator.markEditorSession(key)
+  }, [chapterExternalUpdateCoordinator])
+
+  const applyDiskSyncIfSafe = useCallback(async (path: string): Promise<boolean> => {
+    const normalizedPath = normalizePath(path)
+    if (getFileCategory(normalizedPath) !== "markdown") return false
+
+    let diskContent: string
+    try {
+      diskContent = await readFile(normalizedPath)
+    } catch {
+      return false
+    }
+
+    const editorContent = wikiEditorRef.current?.getCurrentMarkdown() ?? fileContentRef.current
+    const lastLoaded = lastLoadedByPathRef.current.get(normalizedPath) ?? lastLoadedRef.current
+    const hasPendingSave = saveTimerRef.current != null
+    const normalize = getDiskSyncNormalize(normalizedPath)
+
+    if (!shouldApplyDiskToEditor({
+      lastLoaded,
+      editorContent,
+      diskContent,
+      hasPendingSave,
+      normalize,
+    })) {
+      return false
+    }
+
+    rememberLoadedChapter(normalizedPath, diskContent)
+    fileContentRef.current = diskContent
+    if (selectedFileRef.current && normalizePath(selectedFileRef.current) === normalizedPath) {
+      const scrollTop = wikiEditorRef.current?.getImmersiveScrollTop()
+      if (scrollTop != null) {
+        pendingScrollRestoreRef.current = scrollTop
+      }
+      setFileContent(diskContent)
+      setDiskSyncEpoch((epoch) => epoch + 1)
+    }
+    return true
+  }, [rememberLoadedChapter, setFileContent])
+
+  useLayoutEffect(() => {
+    const pending = pendingScrollRestoreRef.current
+    if (pending == null) return
+    pendingScrollRestoreRef.current = null
+    const restore = () => wikiEditorRef.current?.setImmersiveScrollTop(pending)
+    restore()
+    // WritingTextarea autofocus/caret-to-end can scrollIntoView after mount;
+    // re-apply on the next frames so the restored position sticks.
+    requestAnimationFrame(() => {
+      restore()
+      requestAnimationFrame(restore)
+    })
+  }, [diskSyncEpoch, selectedFile])
+
+  const syncDiskBeforeAction = useCallback(async () => {
+    const path = selectedFileRef.current
+    if (!path) return
+    await applyDiskSyncIfSafe(path)
+  }, [applyDiskSyncIfSafe])
+
+  const applyExternalChapterBody = useCallback(async (path: string, candidateContent: string): Promise<boolean> => {
+    const normalizedPath = normalizePath(path)
+    return applyOpenChapterBodyUpdate({
+      path: normalizedPath,
+      candidateContent,
+      currentOpenPath: () => selectedFileRef.current,
+      currentMarkdown: () => wikiEditorRef.current?.getCurrentMarkdown() ?? fileContentRef.current,
+      invalidatePendingSave: () => {
+        saveGenerationRef.current += 1
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
+      },
+      runExternalUpdate: chapterExternalUpdateCoordinator.runExternalUpdate,
+      markEditorSession: chapterExternalUpdateCoordinator.markEditorSession,
+      writeFileAtomic,
+      commitEditor: (markdown) => {
+        rememberLoadedChapter(normalizedPath, markdown)
+        fileContentRef.current = markdown
+        setFileContent(markdown)
+        setDiskSyncEpoch((epoch) => epoch + 1)
+      },
+      bumpDataVersion,
+    })
+  }, [bumpDataVersion, chapterExternalUpdateCoordinator, rememberLoadedChapter, setFileContent])
+
+  useEffect(() => registerEditorExternalUpdateHandler(applyExternalChapterBody), [applyExternalChapterBody])
+
+  useEffect(() => {
+    registerEditorDiskSyncHandler(applyDiskSyncIfSafe)
+    return () => registerEditorDiskSyncHandler(null)
+  }, [applyDiskSyncIfSafe])
+
+  useEffect(() => {
+    setChapterDeAiSkillId(undefined)
+  }, [project?.path])
+
+  useEffect(() => {
+    if (!deAiSkillPickerOpen) return
+    const handleDeAiSkillPickerMouseDown = (event: MouseEvent) => {
+      if (deAiSkillPickerRef.current?.contains(event.target as Node)) return
+      setDeAiSkillPickerOpen(false)
+      setPendingSelectionForDeAi(null)
+    }
+    document.addEventListener("mousedown", handleDeAiSkillPickerMouseDown)
+    return () => {
+      document.removeEventListener("mousedown", handleDeAiSkillPickerMouseDown)
+    }
+  }, [deAiSkillPickerOpen])
+
+  const syncChapterToCanonicalPath = useCallback(async (
+    path: string,
+    markdown: string,
+    options?: { renameToCanonical?: boolean },
+  ) => {
     const normalized = normalizeChapterWriting(markdown)
     const chapterNumber = extractChapterNumberFromMarkdown(normalized)
-    const targetPath = await getCanonicalChapterPath(path, normalized, chapterNumber)
+    const renameToCanonical = options?.renameToCanonical ?? false
+    const targetPath = renameToCanonical
+      ? await getCanonicalChapterPath(path, normalized, chapterNumber)
+      : path
 
-    await writeFile(targetPath, normalized)
-    if (targetPath !== path) {
+    await writeFileAtomic(targetPath, normalized)
+    if (renameToCanonical && targetPath !== path) {
+      if (useWikiStore.getState().selectedFile === path) {
+        selectedFileRef.current = targetPath
+        useWikiStore.getState().setSelectedFile(targetPath)
+      }
       await deleteFile(path)
+      if (chapterNumber !== null) {
+        const draftPath = getDraftChapterPath(getDirName(targetPath), chapterNumber)
+        if (draftPath !== targetPath && draftPath !== path && await fileExists(draftPath)) {
+          await deleteFile(draftPath)
+        }
+      }
       if (project) {
         try {
           const tree = await listDirectory(normalizePath(project.path))
@@ -225,21 +394,17 @@ export function PreviewPanel() {
           // non-critical tree refresh
         }
       }
-      if (useWikiStore.getState().selectedFile === path) {
-        selectedFileRef.current = targetPath
-        useWikiStore.getState().setSelectedFile(targetPath)
-      }
     }
 
+    rememberLoadedChapter(targetPath, normalized)
     if (useWikiStore.getState().selectedFile === targetPath) {
       setFileContent(normalized)
       fileContentRef.current = normalized
-      lastLoadedRef.current = normalized
     }
 
     bumpDataVersion()
     return { targetPath, markdown: normalized }
-  }, [project, setFileContent, setFileTree, bumpDataVersion])
+  }, [project, rememberLoadedChapter, setFileContent, setFileTree, bumpDataVersion])
 
   const flushChapterBeforeLeave = useCallback(async (path: string | null, markdown: string) => {
     if (!path || !isChapterPath(path)) return
@@ -248,24 +413,36 @@ export function PreviewPanel() {
       clearTimeout(saveTimerRef.current)
       saveTimerRef.current = null
     }
-    if (markdown === lastLoadedRef.current) return
+    const normalizedPath = normalizePath(path)
+    const lastLoadedForPath = lastLoadedByPathRef.current.get(normalizedPath) ?? ""
+    const resolvedMarkdown = resolveChapterFlushMarkdown(path, markdown, lastLoadedByPathRef.current)
+    if (!shouldSyncChapterOnLeave(path, markdown, lastLoadedForPath)) return
     try {
-      await syncChapterToCanonicalPath(path, markdown)
+      await chapterExternalUpdateCoordinator.flushBeforeLeave(path, async () => {
+        await syncChapterToCanonicalPath(path, resolvedMarkdown, { renameToCanonical: false })
+      })
     } catch (err) {
       console.error("切换章节前同步文件失败:", err)
     }
-  }, [syncChapterToCanonicalPath, finalChapterSave])
+  }, [chapterExternalUpdateCoordinator, syncChapterToCanonicalPath, finalChapterSave])
 
   useEffect(() => {
     let cancelled = false
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+    saveGenerationRef.current += 1
     const previousFile = selectedFileRef.current
     const previousContent = fileContentRef.current
+    console.log("[PreviewPanel][debug] useEffect triggered", { selectedFile, previousFile, previousContentLength: previousContent?.length })
     if (previousFile && previousFile !== selectedFile && isChapterPath(previousFile)) {
       void flushChapterBeforeLeave(previousFile, previousContent)
     }
     selectedFileRef.current = selectedFile
     setSelectionTransformOpen(false)
-    setDeAiPreviewOpen(false)
+    setSelectionTransformSkillName("")
+    setSelectionTransformModelName("")
     setLoadedFilePath(null)
 
     if (!selectedFile) {
@@ -293,28 +470,55 @@ export function PreviewPanel() {
 
     setFileContent("")
     fileContentRef.current = ""
-    lastLoadedRef.current = ""
     setSaveStatus("")
 
     readFile(selectedFile)
       .then((content) => {
+        console.log("[PreviewPanel][debug] readFile success", { selectedFile, contentLength: content?.length, cancelled, storeSelectedFile: useWikiStore.getState().selectedFile })
         if (cancelled || useWikiStore.getState().selectedFile !== selectedFile) return
-        lastLoadedRef.current = content
+        rememberLoadedChapter(normalizePath(selectedFile), content)
         setFileContent(content)
         setSaveStatus("")
         setLoadedFilePath(selectedFile)
       })
       .catch((err) => {
+        console.log("[PreviewPanel][debug] readFile error", { selectedFile, err, cancelled, storeSelectedFile: useWikiStore.getState().selectedFile })
         if (cancelled || useWikiStore.getState().selectedFile !== selectedFile) return
         lastLoadedRef.current = ""
+        lastLoadedByPathRef.current.delete(normalizePath(selectedFile))
         setFileContent(`Error loading file: ${err}`)
         setSaveStatus("")
         setLoadedFilePath(selectedFile)
       })
     return () => {
+      console.log("[PreviewPanel][debug] useEffect cleanup", { selectedFile })
       cancelled = true
     }
-  }, [selectedFile, setFileContent, flushChapterBeforeLeave])
+  }, [selectedFile, rememberLoadedChapter, setFileContent, flushChapterBeforeLeave])
+
+  useEffect(() => {
+    if (!selectedFile) return
+    const category = getFileCategory(selectedFile)
+    if (category !== "markdown" || isBinary(category)) return
+
+    const normalizedPath = normalizePath(selectedFile)
+    const syncNow = () => {
+      if (normalizePath(selectedFileRef.current ?? "") !== normalizedPath) return
+      void applyDiskSyncIfSafe(normalizedPath)
+    }
+
+    const intervalId = setInterval(syncNow, 2000)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") syncNow()
+    }
+    window.addEventListener("focus", syncNow)
+    document.addEventListener("visibilitychange", onVisibilityChange)
+    return () => {
+      clearInterval(intervalId)
+      window.removeEventListener("focus", syncNow)
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+    }
+  }, [selectedFile, applyDiskSyncIfSafe])
 
   useEffect(() => {
     return () => {
@@ -327,30 +531,52 @@ export function PreviewPanel() {
 
   const handleSave = useCallback(
     (markdown: string) => {
-      if (!selectedFile) return
-      const persistedMarkdown = isChapterPath(selectedFile)
+      const pathAtSave = selectedFileRef.current
+      if (!pathAtSave) return
+      const persistedMarkdown = isChapterPath(pathAtSave)
         ? normalizeChapterWriting(markdown)
         : markdown
       setFileContent(markdown)
       fileContentRef.current = markdown
-      // Ignore no-op saves from the editor's initial re-emit. Only write
-      // when the user has actually changed the content relative to the
-      // last disk read.
-      if (persistedMarkdown === lastLoadedRef.current) return
+      const normalizedPath = normalizePath(pathAtSave)
+      const lastLoadedForPath = lastLoadedByPathRef.current.get(normalizedPath) ?? lastLoadedRef.current
+      if (persistedMarkdown === lastLoadedForPath) return
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      const generation = saveGenerationRef.current
       saveTimerRef.current = setTimeout(() => {
-        writeFile(selectedFile, persistedMarkdown)
-          .then(() => {
-            // Our own write becomes the new "last loaded" — subsequent
-            // re-emits from Milkdown that match this content must not
-            // trigger another save.
-            lastLoadedRef.current = persistedMarkdown
+        void (async () => {
+          try {
+            if (generation !== saveGenerationRef.current) return
+            if (pathAtSave !== selectedFileRef.current) return
+            if (normalizePath(pathAtSave) !== normalizedPath) return
+
+            let diskContent: string
+            try {
+              diskContent = await readFile(normalizedPath)
+            } catch (err) {
+              console.error("保存前读取磁盘失败:", err)
+              return
+            }
+
+            const currentLastLoaded = lastLoadedByPathRef.current.get(normalizedPath) ?? lastLoadedRef.current
+            const normalize = getDiskSyncNormalize(normalizedPath)
+            if (normalize(diskContent) !== normalize(currentLastLoaded)) {
+              await applyDiskSyncIfSafe(normalizedPath)
+              return
+            }
+
+            await writeFileAtomic(pathAtSave, persistedMarkdown)
+            rememberLoadedChapter(normalizedPath, persistedMarkdown)
             bumpDataVersion()
-          })
-          .catch((err) => console.error("保存失败:", err))
+          } catch (err) {
+            console.error("保存失败:", err)
+          } finally {
+            saveTimerRef.current = null
+          }
+        })()
       }, 1000)
     },
-    [selectedFile, setFileContent, bumpDataVersion]
+    [rememberLoadedChapter, setFileContent, bumpDataVersion, applyDiskSyncIfSafe]
   )
 
   const chapterFrontmatter = useMemo(() => {
@@ -377,6 +603,26 @@ export function PreviewPanel() {
       .sort((a: OutlineGenerationTask, b: OutlineGenerationTask) => b.updatedAt - a.updatedAt)[0] ?? null
   }, [canIngestOutline, outlineTasks, project, selectedFile])
 
+  const outlineIngestProgressRunning = useImportProgressStore((s) => {
+    if (!project || !canIngestOutline || !selectedFile) return null
+    const pp = normalizePath(project.path)
+    return s.tasks.find((task) => (
+      task.projectPath === pp &&
+      task.kind === "outline" &&
+      task.status === "running"
+    )) ?? null
+  })
+  const isOutlineIngesting = useMemo(() => {
+    if (!project || !selectedFile || !canIngestOutline) return false
+    const fileName = getOutlineFileName(selectedFile)
+    if (outlineIngestProgressRunning) {
+      if (outlineIngestProgressRunning.total === 1) return true
+      if (outlineIngestProgressRunning.currentTitle === fileName) return true
+      if (outlineIngestProgressRunning.activeTitles?.includes(fileName)) return true
+    }
+    return currentOutlineTask?.status === "ingesting"
+  }, [canIngestOutline, currentOutlineTask, outlineIngestProgressRunning, project, selectedFile])
+
   // 检测大纲是否已经提取过初始记忆（持久化状态）
   useEffect(() => {
     if (!canIngestOutline || !project || !selectedFile) {
@@ -384,24 +630,29 @@ export function PreviewPanel() {
       setOutlineSnapshotNumber(null)
       return
     }
-    const normalizedOutlinePath = normalizePath(selectedFile)
-    const fileName = normalizedOutlinePath.split("/").pop() ?? "outline"
-    const outlineName = fileName.replace(/\.\w+$/, "")
-    let hash = 0
-    for (let i = 0; i < outlineName.length; i++) {
-      hash = ((hash << 5) - hash + outlineName.charCodeAt(i)) | 0
+    const { chapterNumber } = getOutlineIngestIdentity(project.path, selectedFile)
+    setOutlineSnapshotNumber(chapterNumber)
+    let cancelled = false
+    void outlineSnapshotExists(project.path, selectedFile)
+      .then((exists) => {
+        if (!cancelled) setOutlineIngested(exists)
+      })
+      .catch(() => {
+        if (!cancelled) setOutlineIngested(false)
+      })
+    return () => {
+      cancelled = true
     }
-    const outlineNum = -(Math.abs(hash % 999) + 1)
-    setOutlineSnapshotNumber(outlineNum)
-    const prefix = `outline-${String(Math.abs(outlineNum)).padStart(3, "0")}`
-    const jsonPath = `${normalizePath(project.path)}/.novel/snapshots/${prefix}.snapshot.json`
-    fileExists(jsonPath).then((exists) => setOutlineIngested(exists)).catch(() => setOutlineIngested(false))
-  }, [canIngestOutline, project, selectedFile])
+  }, [canIngestOutline, project, selectedFile, dataVersion, currentOutlineTask?.status, currentOutlineTask?.updatedAt])
   useEffect(() => {
     if (!canIngestOutline) return
     if (!currentOutlineTask?.message) return
+    if (currentOutlineTask.status === "ingesting" && !outlineIngestProgressRunning) {
+      setSaveStatus("")
+      return
+    }
     setSaveStatus(currentOutlineTask.message)
-  }, [canIngestOutline, currentOutlineTask])
+  }, [canIngestOutline, currentOutlineTask, outlineIngestProgressRunning])
   const chapterNumber = useMemo(() => {
     if (!chapterFrontmatter) return null
     const meta = parseChapterMeta(chapterFrontmatter)
@@ -410,7 +661,6 @@ export function PreviewPanel() {
   const canViewSnapshot = Boolean(novelMode && project && chapterNumber !== null)
   const currentFinalChapterSave = finalChapterSave != null && finalChapterSave.projectPath === project?.path && finalChapterSave.filePath === selectedFile ? finalChapterSave : null
   const isFinalChapterSaving = currentFinalChapterSave?.saving ?? isSavingFinal
-  const isOutlineIngesting = currentOutlineTask?.status === "ingesting"
 
   const phaseLabelMap: Record<FinalChapterSavePhase, string> = {
     saving: t("novel.chapter.savingAsFinal"),
@@ -476,6 +726,9 @@ export function PreviewPanel() {
       {chapterWordCountMeta}
     </div>
   ) : null
+  const chapterDeAiSkillName = chapterHeader ? chapterDeAiOptions.effectiveName : "未启用"
+  const chapterDeAiButtonLabel = currentChapterDeAiProcessing ? "处理中" : "去AI味"
+  const chapterDeAiButtonTitle = `当前去AI味 Skill：${chapterDeAiSkillName}`
 
   useEffect(() => {
     if (!chapterHeader) {
@@ -541,7 +794,7 @@ export function PreviewPanel() {
     setChapterTitleEditing(false)
     if (nextTitle === chapterDisplayTitle) return
     try {
-      await syncChapterToCanonicalPath(selectedFile, updateChapterHeading(fileContent, nextTitle))
+      await syncChapterToCanonicalPath(selectedFile, updateChapterTitle(fileContent, nextTitle), { renameToCanonical: true })
     } catch (error) {
       console.error("章节标题同步失败:", error)
     }
@@ -564,6 +817,9 @@ export function PreviewPanel() {
   const handleSaveAsFinal = useCallback(async () => {
     if (!project || !selectedFile || !chapterFrontmatter) return
 
+    await syncDiskBeforeAction()
+    const currentContent = wikiEditorRef.current?.getCurrentMarkdown() ?? fileContentRef.current
+
     let savePath = selectedFile
     const projectPath = project.path
     const updatePhase = (saving: boolean, phase: FinalChapterSavePhase | null, params?: Record<string, string | number>) => {
@@ -580,7 +836,7 @@ export function PreviewPanel() {
       try {
         const chapterNumber = chapterFrontmatter.chapterNumber as number | undefined
         const { reviewChapter } = await import("@/lib/novel/review-adapter")
-        const results = await reviewChapter(project.path, fileContent, chapterNumber)
+        const results = await reviewChapter(project.path, currentContent, chapterNumber)
         if (results.length > 0) {
           const reviewStore = useReviewStore.getState()
           reviewStore.addNovelReviewEntry({
@@ -614,23 +870,35 @@ export function PreviewPanel() {
         saveTimerRef.current = null
       }
 
-      const updatedMarkdown = updateChapterStatus(fileContent, "final")
-      const syncResult = await syncChapterToCanonicalPath(selectedFile, updatedMarkdown)
+      const markdownToSave = currentContent.trim()
+        ? currentContent
+        : (lastLoadedByPathRef.current.get(normalizePath(selectedFile)) ?? lastLoadedRef.current)
+      if (!markdownToSave.trim()) {
+        updatePhase(false, null)
+        setSaveStatus("章节内容为空，无法保存为正式章节")
+        setIsSavingFinal(false)
+        return
+      }
+
+      const updatedMarkdown = updateChapterStatus(markdownToSave, "final")
+      const syncResult = await syncChapterToCanonicalPath(selectedFile, updatedMarkdown, { renameToCanonical: true })
       const targetPath = syncResult.targetPath
       savePath = targetPath
-      lastLoadedRef.current = syncResult.markdown
+      rememberLoadedChapter(targetPath, syncResult.markdown)
+      fileContentRef.current = syncResult.markdown
       setFileContent(syncResult.markdown)
 
       if (novelConfig.autoIngestOnSave) {
-        const llmConfig = useWikiStore.getState().llmConfig
-        if (!hasUsableLlm(llmConfig)) {
+        const state = useWikiStore.getState()
+        const llmConfig = resolveNovelModel(state.llmConfig, state.novelConfig, "extract")
+        if (!hasUsableLlm(llmConfig, state.providerConfigs)) {
           updatePhase(false, "ingest_no_llm")
         } else {
           const verifyContent = await readFile(targetPath)
           const verifyParsed = parseFrontmatter(verifyContent)
           const verifyFm = verifyParsed.frontmatter as Record<string, unknown> | null
           if (!verifyFm || !isFinalChapter(verifyFm)) {
-            await writeFile(targetPath, syncResult.markdown)
+            await writeFileAtomic(targetPath, syncResult.markdown)
             await new Promise((resolve) => setTimeout(resolve, 100))
           }
           const chapterTitle = chapterFrontmatter?.title || `第${chapterFrontmatter?.chapterNumber || '?'}章`
@@ -644,7 +912,7 @@ export function PreviewPanel() {
             abortController: ingestAbortController,
           })
           const { ingestChapter } = await import("@/lib/novel/chapter-ingest")
-          const result = await ingestChapter(project.path, targetPath, resolveReviewModel(), ingestAbortController.signal)
+          const result = await ingestChapter(project.path, targetPath, resolveReviewModel(), ingestAbortController.signal, chapterFrontmatter?.chapterNumber as number | undefined)
           useImportProgressStore.getState().finishTask(ingestTaskId, result.snapshot ? "done" : "error", {
             completed: result.snapshot ? 1 : 0,
             total: 1,
@@ -673,7 +941,7 @@ export function PreviewPanel() {
     } finally {
       setIsSavingFinal(false)
     }
-  }, [chapterFrontmatter, fileContent, project, selectedFile, setFileContent, setFinalChapterSave, t, syncChapterToCanonicalPath])
+  }, [chapterFrontmatter, project, selectedFile, setFileContent, setFinalChapterSave, syncChapterToCanonicalPath, syncDiskBeforeAction])
 
   const handleReingest = useCallback(async () => {
     if (!project || !selectedFile || !chapterFrontmatter) return
@@ -702,7 +970,7 @@ export function PreviewPanel() {
     })
     try {
       const { ingestChapter } = await import("@/lib/novel/chapter-ingest")
-      const result = await ingestChapter(projectPath, filePath, resolveReviewModel(), ingestAbortController.signal)
+      const result = await ingestChapter(projectPath, filePath, resolveReviewModel(), ingestAbortController.signal, chapterFrontmatter?.chapterNumber as number | undefined)
       useImportProgressStore.getState().finishTask(ingestTaskId, result.snapshot ? "done" : "error", {
         completed: result.snapshot ? 1 : 0,
         total: 1,
@@ -734,14 +1002,14 @@ export function PreviewPanel() {
     if (!selectedFile || !canFormatWriting) return
     const formatted = normalizeChapterWriting(fileContent)
     setFileContent(formatted)
-    lastLoadedRef.current = formatted
+    rememberLoadedChapter(selectedFile, formatted)
     try {
-      await writeFile(selectedFile, formatted)
+      await writeFileAtomic(selectedFile, formatted)
       bumpDataVersion()
     } catch (err) {
       console.error("格式化写作内容失败:", err)
     }
-  }, [canFormatWriting, fileContent, selectedFile, setFileContent, bumpDataVersion])
+  }, [canFormatWriting, fileContent, rememberLoadedChapter, selectedFile, setFileContent, bumpDataVersion])
 
   const handleIngestOutline = useCallback(() => {
     if (!project || !selectedFile || !canIngestOutline || isOutlineIngesting) return
@@ -749,89 +1017,89 @@ export function PreviewPanel() {
     startOutlineIngestTask(project.path, selectedFile)
   }, [canIngestOutline, isOutlineIngesting, project, selectedFile])
 
-  const handleDeAiProcess = useCallback(async () => {
-    if (!fileContent.trim()) return
-    setDeAiProcessing(true)
-    const llmConfig = resolveDefaultModel(useWikiStore.getState().llmConfig)
-    if (!hasUsableLlm(llmConfig)) {
-      setDeAiProcessing(false)
+  const runWholeChapterDeAi = useCallback(async (skillContent: string, skillName: string) => {
+    await syncDiskBeforeAction()
+    const source = wikiEditorRef.current?.getCurrentMarkdown() ?? fileContentRef.current
+    if (!source.trim() || !selectedFile || !project) return
+    const state = useWikiStore.getState()
+    const llmConfig = resolveNovelModel(state.llmConfig, state.novelConfig, "deAi")
+    const modelLabel = formatResolvedModelLabel(llmConfig, state.providerConfigs)
+    if (!hasUsableLlm(llmConfig, state.providerConfigs)) {
+      toast.error("未配置可用的 AI 模型，无法去AI味")
       return
     }
-    const { loadSmartDeAiSkill } = await import("@/lib/novel/de-ai-adapter")
-    const customDeAiSkill = await loadSmartDeAiSkill(project?.path ?? null, "去AI味润色", undefined)
-    const source = fileContent
+    const chapterTitle = typeof chapterHeader === "string" ? chapterHeader : (chapterHeader?.heading ?? selectedFile)
+    const taskId = useDeAiTaskStore.getState().startTask({
+      projectPath: project.path,
+      chapterPath: selectedFile,
+      chapterTitle,
+      skillId: chapterDeAiOptions.currentSkillId ?? null,
+      skillName,
+      skillContent,
+      modelName: modelLabel,
+      sourceContent: source,
+    })
     let result = ""
+    let doneCalled = false
     try {
       await streamChat(
         llmConfig,
-        buildDeAiRewriteMessages(source, customDeAiSkill || undefined),
+        buildDeAiRewriteMessages(source, skillContent),
         {
           onToken: (token) => {
             result += token
           },
           onDone: () => {
-            setDeAiSourceContent(source)
-            setDeAiCandidateContent(result)
-            setDeAiPreviewOpen(true)
-            setDeAiProcessing(false)
+            doneCalled = true
+            useDeAiTaskStore.getState().finishTask(taskId, result)
           },
           onError: (error) => {
+            doneCalled = true
             console.error("去AI味处理失败:", error)
-            setDeAiProcessing(false)
+            useDeAiTaskStore.getState().failTask(taskId, error.message ?? String(error))
           },
         },
       )
+      // 兜底：streamChat 正常返回但未调用 onDone/onError 时，用 result 完成
+      if (!doneCalled) {
+        if (result.trim()) {
+          useDeAiTaskStore.getState().finishTask(taskId, result)
+        } else {
+          useDeAiTaskStore.getState().failTask(taskId, "去AI味未返回内容")
+        }
+      }
     } catch (err) {
       console.error("去AI味处理失败:", err)
-      setDeAiProcessing(false)
+      if (!doneCalled) {
+        useDeAiTaskStore.getState().failTask(taskId, String(err))
+      }
     }
-  }, [fileContent])
+  }, [syncDiskBeforeAction, selectedFile, project, chapterHeader, chapterDeAiOptions.currentSkillId])
 
-  const handleDeAiApply = useCallback(() => {
-    setDeAiPreviewOpen(false)
-    handleSave(replaceWholeChapterBody(fileContent, deAiCandidateContent))
-  }, [deAiCandidateContent, fileContent, handleSave])
-
-  const handleDeAiSaveDraft = useCallback(async () => {
-    if (!selectedFile || !project) return
-    const normalizedPath = selectedFile.replace(/\\/g, "/")
-    const dir = normalizedPath.substring(0, normalizedPath.lastIndexOf("/") + 1)
-    const fileName = normalizedPath.split("/").pop() || "file"
-    const baseName = fileName.replace(/\.md$/, "")
-    const draftPath = normalizePath(`${dir}${baseName}-去AI味稿.md`)
-    try {
-      await writeFile(draftPath, deAiCandidateContent)
-      const tree = await listDirectory(normalizePath(project.path))
-      setFileTree(tree)
-      bumpDataVersion()
-      setDeAiPreviewOpen(false)
-    } catch (err) {
-      console.error("另存去AI味草稿失败:", err)
-    }
-  }, [selectedFile, project, deAiCandidateContent, setFileTree, bumpDataVersion])
-
-  const handleDeAiClose = useCallback(() => {
-    setDeAiPreviewOpen(false)
-  }, [])
-
-  const handleSelectionAction = useCallback(async (action: ChapterSelectionAction, selection: ChapterBodySelection) => {
+  const runSelectionTransform = useCallback(async (
+    action: ChapterSelectionAction,
+    selection: ChapterBodySelection,
+    skillContent?: string,
+    skillName?: string,
+  ) => {
     if (!selection.text.trim()) return
-    const llmConfig = resolveDefaultModel(useWikiStore.getState().llmConfig)
-    if (!hasUsableLlm(llmConfig)) {
+    if (action === "de-ai") {
+      await syncDiskBeforeAction()
+    }
+    const state = useWikiStore.getState()
+    const llmConfig = action === "de-ai"
+      ? resolveNovelModel(state.llmConfig, state.novelConfig, "deAi")
+      : resolveDefaultModel(state.llmConfig)
+    if (!hasUsableLlm(llmConfig, state.providerConfigs)) {
       setSaveStatus("未配置可用的 AI 模型，无法处理选中文本")
       return
     }
 
     const actionFile = selectedFileRef.current
     const actionLabel = action === "polish" ? "AI润色" : "去AI味"
-    setSaveStatus(`${actionLabel}处理中...`)
-
-    const { loadSmartDeAiSkill } = await import("@/lib/novel/de-ai-adapter")
-    const customDeAiSkill = await loadSmartDeAiSkill(
-      project?.path ?? null,
-      action === "de-ai" ? "去AI味" : "润色",
-      undefined
-    )
+    const modelLabel = formatResolvedModelLabel(llmConfig, state.providerConfigs)
+    setSelectionTransformSkillName(action === "de-ai" ? skillName ?? "" : "")
+    setSelectionTransformModelName(action === "de-ai" ? modelLabel : "")
 
     let result = ""
     try {
@@ -839,7 +1107,7 @@ export function PreviewPanel() {
         llmConfig,
         action === "polish"
           ? buildPolishSelectionMessages(selection.text)
-          : buildDeAiRewriteMessages(selection.text, customDeAiSkill || undefined),
+          : buildDeAiRewriteMessages(selection.text, skillContent),
         {
           onToken: (token) => {
             result += token
@@ -850,13 +1118,13 @@ export function PreviewPanel() {
             setSelectionTransformSelection(selection)
             setSelectionTransformSourceContent(selection.text)
             setSelectionTransformCandidateContent(result)
+            setSelectionTransformSkillName(action === "de-ai" ? skillName ?? "" : "")
             setSelectionTransformOpen(true)
-            setSaveStatus("")
           },
           onError: (error) => {
             if (selectedFileRef.current !== actionFile) return
             console.error(`${actionLabel}失败:`, error)
-            setSaveStatus(`${actionLabel}失败：${error.message}`)
+            toast.error(`${actionLabel}失败：${error.message}`)
           },
         },
       )
@@ -864,9 +1132,101 @@ export function PreviewPanel() {
       const message = err instanceof Error ? err.message : String(err)
       if (selectedFileRef.current !== actionFile) return
       console.error(`${actionLabel}失败:`, err)
-      setSaveStatus(`${actionLabel}失败：${message}`)
+      toast.error(`${actionLabel}失败：${message}`)
     }
-  }, [])
+  }, [syncDiskBeforeAction])
+
+  const openDeAiSkillPicker = useCallback((selection: ChapterBodySelection | null, anchor?: HTMLElement | null) => {
+    if (currentChapterDeAiProcessing && !selection) return
+    setPendingSelectionForDeAi(selection)
+    setDeAiSkillPickerPosition(getDeAiSkillPickerPosition(anchor))
+    setDeAiSkillPickerOpen(true)
+    if (chapterDeAiOptions.loadError) {
+      setSaveStatus(chapterDeAiOptions.loadError)
+      return
+    }
+    if (!chapterDeAiOptions.loading && chapterDeAiOptions.skills.length === 0) {
+      setSaveStatus("暂无可用去AI味技能")
+      return
+    }
+    setSaveStatus("")
+  }, [chapterDeAiOptions.loadError, chapterDeAiOptions.loading, chapterDeAiOptions.skills.length, currentChapterDeAiProcessing])
+
+  const handlePickedDeAiSkill = useCallback(async (skillId: string) => {
+    const selection = pendingSelectionForDeAi
+    setDeAiSkillPickerOpen(false)
+    setPendingSelectionForDeAi(null)
+
+    let skill = chapterDeAiOptions.skills.find((item) => item.id === skillId) ?? null
+    if (!skill) {
+      const config = await loadDeAiSkillConfig(project?.path ?? null)
+      skill = resolveEffectiveDeAiSkill(config, skillId)
+    }
+    if (!skill) {
+      setSaveStatus("暂无可用去AI味技能")
+      return
+    }
+    setChapterDeAiSkillId(skill.id)
+    if (project) {
+      try {
+        const config = await loadDeAiSkillConfig(project.path)
+        await saveDeAiSkillConfig(project.path, setLastChapterDeAiSkill(config, skill.id))
+        bumpDataVersion()
+      } catch (err) {
+        console.error("保存章节去AI味 Skill 选择失败:", err)
+        toast.error("未能记住本次去AI味 Skill 选择，本次处理仍会继续")
+      }
+    }
+
+    if (selection) {
+      await runSelectionTransform("de-ai", selection, skill.content, skill.name)
+      return
+    }
+    await runWholeChapterDeAi(skill.content, skill.name)
+  }, [bumpDataVersion, chapterDeAiOptions.skills, pendingSelectionForDeAi, project, runSelectionTransform, runWholeChapterDeAi])
+
+  const handleDeAiSaveDraft = useCallback(async (chapterPath: string, candidateContent: string) => {
+    if (!project || !candidateContent || deAiDraftSavingRef.current) return
+    const draftProjectId = project.id
+    const draftProjectPath = normalizePath(project.path)
+    deAiDraftSavingRef.current = true
+    setDeAiDraftSaving(true)
+    try {
+      const draftPath = await saveDeAiDraftWithoutOverwrite(
+        chapterPath,
+        candidateContent,
+        writeFileIfAbsent,
+      )
+
+      if (useWikiStore.getState().project?.id === draftProjectId) {
+        try {
+          const tree = await listDirectory(draftProjectPath)
+          if (useWikiStore.getState().project?.id === draftProjectId) {
+            setFileTree(tree)
+          }
+        } catch (err) {
+          console.error("另存去AI味草稿后刷新文件树失败:", err)
+        }
+        bumpDataVersion()
+      }
+
+      toast.success(`已另存草稿：${draftPath.split("/").pop() ?? draftPath}`)
+    } catch (err) {
+      console.error("另存去AI味草稿失败:", err)
+      toast.error(`另存草稿失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      deAiDraftSavingRef.current = false
+      setDeAiDraftSaving(false)
+    }
+  }, [bumpDataVersion, project, setFileTree])
+
+  const handleSelectionAction = useCallback((action: ChapterSelectionAction, selection: ChapterBodySelection) => {
+    if (action === "de-ai") {
+      void openDeAiSkillPicker(selection)
+      return
+    }
+    void runSelectionTransform(action, selection)
+  }, [openDeAiSkillPicker, runSelectionTransform])
 
   const handleApplySelectionTransform = useCallback(() => {
     if (!selectionTransformSelection || !selectionTransformCandidateContent) return
@@ -885,14 +1245,18 @@ export function PreviewPanel() {
       return
     }
 
-    handleSave(rawBlock + rebuildChapterBody(heading, replaced.body))
+    const replacedMarkdown = rawBlock + rebuildChapterBody(heading, replaced.body)
+    handleSave(selectionTransformAction === "de-ai"
+      ? normalizeChapterWriting(replacedMarkdown)
+      : replacedMarkdown)
     setSelectionTransformOpen(false)
     setSelectionTransformAction(null)
     setSelectionTransformSelection(null)
     setSelectionTransformSourceContent("")
     setSelectionTransformCandidateContent("")
+    setSelectionTransformSkillName("")
     setSaveStatus("")
-  }, [fileContent, handleSave, selectionTransformCandidateContent, selectionTransformSelection])
+  }, [fileContent, handleSave, selectionTransformAction, selectionTransformCandidateContent, selectionTransformSelection])
 
   const handleCloseSelectionTransform = useCallback(() => {
     setSelectionTransformOpen(false)
@@ -900,6 +1264,7 @@ export function PreviewPanel() {
     setSelectionTransformSelection(null)
     setSelectionTransformSourceContent("")
     setSelectionTransformCandidateContent("")
+    setSelectionTransformSkillName("")
   }, [])
 
   useEffect(() => {
@@ -965,8 +1330,7 @@ export function PreviewPanel() {
     canIngestOutline ||
     canSaveAsFinal ||
     canFormatWriting ||
-    canViewSnapshot ||
-    (novelMode && project)
+    canViewSnapshot
   )
 
   if (loadedFilePath !== selectedFile) {
@@ -979,9 +1343,9 @@ export function PreviewPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b px-3 py-1.5">
-        <div ref={chapterToolbarRef} className="flex min-w-0 items-center gap-2">
-          <div className="relative flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+      <div className="flex h-12 shrink-0 items-center border-b px-3">
+        <div ref={chapterToolbarRef} className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="relative flex min-w-0 min-h-0 flex-1 items-center gap-1 overflow-hidden">
             {chapterHeader ? (
               <>
                 <span
@@ -1060,14 +1424,15 @@ export function PreviewPanel() {
                   {chapterHeader ? (
                     <button
                       type="button"
-                      onClick={() => {
+                      onClick={(e) => {
                         setChapterToolbarMoreOpen(false)
-                        void handleDeAiProcess()
+                        void openDeAiSkillPicker(null, e.currentTarget)
                       }}
-                      disabled={deAiProcessing}
+                      disabled={currentChapterDeAiProcessing}
                       className="block w-full rounded px-2 py-1.5 text-left hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                      title={chapterDeAiButtonTitle}
                     >
-                      {deAiProcessing ? "处理中" : "去AI味"}
+                      <span className="block truncate">{chapterDeAiButtonLabel}</span>
                     </button>
                   ) : null}
                   {canIngestOutline ? (
@@ -1080,7 +1445,11 @@ export function PreviewPanel() {
                       disabled={isOutlineIngesting}
                       className="block w-full rounded px-2 py-1.5 text-left hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {isOutlineIngesting ? t("novel.outlineGenerator.ingesting") : outlineIngested ? "已提取记忆" : t("novel.outlineGenerator.ingest")}
+                      {isOutlineIngesting
+                        ? t("novel.outlineGenerator.ingesting")
+                        : outlineIngested
+                          ? t("novel.outlineGenerator.reingestButton")
+                          : t("novel.outlineGenerator.ingest")}
                     </button>
                   ) : null}
                   {canIngestOutline && outlineIngested && outlineSnapshotNumber !== null ? (
@@ -1145,18 +1514,6 @@ export function PreviewPanel() {
                       {t("novel.snapshot.viewButton")}
                     </button>
                   ) : null}
-                  {novelMode && project ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setChapterToolbarMoreOpen(false)
-                        setShowCognition(true)
-                      }}
-                      className="block w-full rounded px-2 py-1.5 text-left hover:bg-accent"
-                    >
-                      {t("novel.cognition.title")}
-                    </button>
-                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -1177,11 +1534,12 @@ export function PreviewPanel() {
             <div className="relative shrink-0">
               <button
                 type="button"
-                onClick={() => void handleDeAiProcess()}
-                disabled={deAiProcessing}
-                className="shrink-0 rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={(e) => void openDeAiSkillPicker(null, e.currentTarget)}
+                disabled={currentChapterDeAiProcessing}
+                className="max-w-[11rem] shrink-0 rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                title={chapterDeAiButtonTitle}
               >
-                {deAiProcessing ? "处理中" : "去AI味"}
+                <span className="block truncate">{chapterDeAiButtonLabel}</span>
               </button>
             </div>
           ) : null}
@@ -1195,9 +1553,13 @@ export function PreviewPanel() {
                   ? "border-emerald-500/50 text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950/30"
                   : "border-border text-foreground hover:bg-accent"
               }`}
-              title={outlineIngested ? "重新提取初始记忆（将覆盖上次提取的内容）" : t("novel.outlineGenerator.ingest")}
+              title={outlineIngested ? t("novel.outlineGenerator.reingestTitle") : t("novel.outlineGenerator.ingest")}
             >
-              {isOutlineIngesting ? t("novel.outlineGenerator.ingesting") : outlineIngested ? "✓ 已提取记忆" : t("novel.outlineGenerator.ingest")}
+              {isOutlineIngesting
+                ? t("novel.outlineGenerator.ingesting")
+                : outlineIngested
+                  ? t("novel.outlineGenerator.reingestButton")
+                  : t("novel.outlineGenerator.ingest")}
             </button>
           ) : null}
           {!chapterToolbarCompact && canIngestOutline && outlineIngested && outlineSnapshotNumber !== null ? (
@@ -1252,16 +1614,6 @@ export function PreviewPanel() {
               {t("novel.snapshot.viewButton")}
             </button>
           ) : null}
-          {!chapterToolbarCompact && novelMode && project ? (
-            <button
-              type="button"
-              onClick={() => setShowCognition(true)}
-              className="shrink-0 rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-accent"
-              title={t("preview.cognitionTitle")}
-            >
-              {t("novel.cognition.title")}
-            </button>
-          ) : null}
           <button
             onClick={() => setSelectedFile(null)}
             className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent"
@@ -1281,7 +1633,8 @@ export function PreviewPanel() {
       <div className={getPreviewContentContainerClass(isSelectedChapter)}>
         {category === "markdown" ? (
           <WikiEditor
-            key={selectedFile}
+            ref={wikiEditorRef}
+            key={`${selectedFile}:${diskSyncEpoch}`}
             content={fileContent}
             onSave={handleSave}
             defaultMode={inferEditorMode(selectedFile)}
@@ -1326,22 +1679,169 @@ export function PreviewPanel() {
           />
         </div>
       ) : null}
-      <DeAiPreviewDialog
-        open={deAiPreviewOpen}
-        sourceContent={deAiSourceContent}
-        candidateContent={deAiCandidateContent}
-        onApply={handleDeAiApply}
-        onSaveDraft={() => void handleDeAiSaveDraft()}
-        onClose={handleDeAiClose}
-      />
+      {deAiSkillPickerOpen ? (
+        <div
+          ref={deAiSkillPickerRef}
+          className="fixed z-50 w-72 rounded-md border bg-popover p-2 text-sm text-popover-foreground shadow-lg"
+          style={deAiSkillPickerPosition}
+        >
+          <div className="mb-1 flex items-center justify-between gap-2 px-1">
+            <div className="truncate text-sm font-medium">
+              {pendingSelectionForDeAi ? "选择选中文本去AI味技能" : "选择去AI味技能"}
+            </div>
+            <button
+              type="button"
+              className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              onClick={() => {
+                setDeAiSkillPickerOpen(false)
+                setPendingSelectionForDeAi(null)
+              }}
+              aria-label="关闭技能选择"
+              title="关闭技能选择"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <DeAiSkillOptionsPanel
+            loading={chapterDeAiOptions.loading}
+            errorMessage={chapterDeAiOptions.loadError}
+            emptyMessage="暂无可用去AI味技能"
+            skills={chapterDeAiOptions.skills}
+            currentSkillId={chapterDeAiOptions.currentSkillId}
+            defaultSkillId={chapterDeAiOptions.defaultSkillId}
+            onClose={() => {
+              setDeAiSkillPickerOpen(false)
+              setPendingSelectionForDeAi(null)
+            }}
+            onPick={(skillId) => void handlePickedDeAiSkill(skillId)}
+          />
+        </div>
+      ) : null}
+      {(() => {
+        const projectDeAiTasks = selectProjectDeAiTasks(deAiTasks, project?.path)
+        const readyTasks = projectDeAiTasks.filter(
+          (t) => t.status === "ready" || t.status === "confirmed" || t.status === "cancelled"
+        )
+        if (!project || readyTasks.length === 0) return null
+        const currentReviewChapterId = readyTasks.some((task) => task.id === deAiReviewChapterId)
+          ? deAiReviewChapterId
+          : readyTasks[0]?.id ?? null
+        const now = Date.now()
+        const reviewChapters = readyTasks.map((t, index) => ({
+          version: 1 as const,
+          id: t.id,
+          taskId: "de-ai-chapter-review",
+          title: t.chapterTitle,
+          order: index,
+          sourcePath: t.chapterPath,
+          sourceContent: t.sourceContent,
+          candidateContent: t.candidateContent,
+          status: (t.status === "confirmed" ? "confirmed" : t.status === "cancelled" ? "cancelled" : "ready") as DeAiBatchChapter["status"],
+          runId: null,
+          generation: 1,
+          error: null,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+        }))
+        const reviewRecord: DeAiBatchTaskRecord = {
+          task: {
+            version: 1 as const,
+            id: "de-ai-chapter-review",
+            projectPath: project?.path ?? "",
+            workId: "chapter-de-ai",
+            workTitle: "去AI味审查",
+            modelKey: "",
+            skillId: readyTasks[0]?.skillId ?? null,
+            skillName: readyTasks[0]?.skillName ?? "",
+            skillContent: "",
+            status: "completed",
+            chapterIds: readyTasks.map((t) => t.id),
+            error: null,
+            createdAt: now,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          },
+          chapters: reviewChapters as unknown as DeAiBatchChapter[],
+        }
+        return (
+           <DeAiBatchReviewDialog
+             open={deAiReviewOpen && readyTasks.length > 0}
+             record={reviewRecord}
+             currentChapterId={currentReviewChapterId}
+             pending={deAiDraftSaving}
+            onSelectChapter={(id) => useDeAiTaskStore.getState().setReviewChapter(project.path, id)}
+             onConfirm={async (_taskId, chapterId, candidateContent) => {
+              const task = readyTasks.find((t) => t.id === chapterId)
+              if (!task) return
+              try {
+                await applyDeAiBatchChapter(task.chapterPath, candidateContent)
+                useDeAiTaskStore.getState().updateTask(chapterId, { candidateContent })
+                useDeAiTaskStore.getState().confirmTask(chapterId)
+                useDeAiTaskStore.getState().closeReview(project.path)
+                toast.success(`${task.chapterTitle} 去AI味结果已保存`)
+              } catch (err) {
+                console.error("保存去AI味结果失败:", err)
+                toast.error(`保存失败：${err instanceof Error ? err.message : String(err)}`)
+               }
+             }}
+             onSaveDraft={async (_taskId, chapterId, candidateContent) => {
+               const task = readyTasks.find((item) => item.id === chapterId)
+               if (!task) return
+               await handleDeAiSaveDraft(task.chapterPath, candidateContent)
+             }}
+             onRegenerate={async (_taskId, chapterId) => {
+              const task = readyTasks.find((t) => t.id === chapterId)
+              if (!task) return
+              useDeAiTaskStore.getState().updateTask(chapterId, {
+                status: "processing",
+                candidateContent: "",
+                error: null,
+              })
+              const state = useWikiStore.getState()
+              const llmConfig = resolveNovelModel(state.llmConfig, state.novelConfig, "deAi")
+              if (!hasUsableLlm(llmConfig, state.providerConfigs)) {
+                useDeAiTaskStore.getState().failTask(chapterId, "未配置可用的 AI 模型")
+                return
+              }
+              let result = ""
+              try {
+                await streamChat(
+                  llmConfig,
+                  buildDeAiRewriteMessages(task.sourceContent, task.skillContent),
+                  {
+                    onToken: (token) => { result += token },
+                    onDone: () => {
+                      useDeAiTaskStore.getState().finishTask(chapterId, result)
+                    },
+                    onError: (error) => {
+                      useDeAiTaskStore.getState().failTask(chapterId, error.message ?? String(error))
+                    },
+                  },
+                )
+              } catch (err) {
+                useDeAiTaskStore.getState().failTask(chapterId, String(err))
+              }
+            }}
+            onCancelChapter={(_taskId, chapterId) => {
+              useDeAiTaskStore.getState().cancelTask(chapterId)
+            }}
+            onClose={() => useDeAiTaskStore.getState().closeReview(project.path)}
+          />
+        )
+      })()}
       <TextTransformPreviewDialog
         open={selectionTransformOpen}
         title={selectionTransformAction === "polish" ? "AI润色预览" : "去AI味预览"}
-        description="确认后会替换当前选中的正文片段。"
+        description={selectionTransformAction === "de-ai" && selectionTransformSkillName
+          ? `本次使用 Skill：${selectionTransformSkillName}${selectionTransformModelName ? `，模型：${selectionTransformModelName}` : ""}。确认后会替换当前选中的正文片段。`
+          : "确认后会替换当前选中的正文片段。"}
         sourceLabel="原文片段"
         candidateLabel={selectionTransformAction === "polish" ? "润色结果" : "去AI味结果"}
         sourceContent={selectionTransformSourceContent}
         candidateContent={selectionTransformCandidateContent}
+        comparisonMode={selectionTransformAction === "de-ai"}
+        onCandidateContentChange={selectionTransformAction === "de-ai" ? setSelectionTransformCandidateContent : undefined}
         applyLabel="替换选中文本"
         onApply={handleApplySelectionTransform}
         onClose={handleCloseSelectionTransform}

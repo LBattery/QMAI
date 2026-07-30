@@ -1,6 +1,8 @@
 import type { LlmConfig } from "@/stores/wiki-store"
+import { useWikiStore } from "@/stores/wiki-store"
+import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { streamChat, type ChatMessage, type RequestOverrides, type StreamCallbacks } from "@/lib/llm-client"
-import { resolveUserVisibleReasoning } from "@/lib/user-visible-reasoning"
+import { USER_ABORT_MESSAGE } from "@/lib/user-abort"
 
 export interface DeepOutlineGenerationInput {
   llmConfig: LlmConfig
@@ -41,6 +43,11 @@ export async function runDeepOutlineGeneration(
   deps: DeepOutlineGenerationDeps = defaultDeps,
   signal?: AbortSignal,
 ): Promise<DeepOutlineGenerationResult> {
+  const { providerConfigs } = useWikiStore.getState()
+  if (!hasUsableLlm(input.llmConfig, providerConfigs)) {
+    throw new Error("请先在设置中配置并选择一个可用的 AI 模型，或在大纲对话中选择模型后再试。")
+  }
+
   const safeContext = ensureString(input.context)
   const safeUserRequest = ensureString(input.userRequest)
   const history = formatRecentHistory(input.historyMessages ?? [])
@@ -121,9 +128,10 @@ async function collectModelText(
       },
     },
     signal,
-    { reasoning: resolveUserVisibleReasoning(config.reasoning) },
+    { reasoning: config.reasoning },
   )
 
+  if (signal?.aborted) throw new Error(USER_ABORT_MESSAGE)
   if (streamError) throw streamError
   return content.trim()
 }
@@ -154,7 +162,12 @@ function buildOutlineDraftPrompt(context: string, history: string, taskBrief: st
     "1. 只输出可保存为大纲的 Markdown 正文。",
     "2. 不要输出思考过程、任务书、解释、引用来源或后续建议。",
     "3. 必须承接已有大纲、章节内容、人物状态和伏笔。",
-    "4. 如果用户要求章节细纲，需要写清章节目标、冲突、转折、伏笔推进和结尾钩子。",
+    "4. 如果用户要求章节细纲，必须按以下五段结构输出：",
+    "   ### 本章钩子（开局1-2句如何抓住读者、期待感来源）",
+    "   ### 铺垫（本章塑造的舞台、规则、压力、配角作用）",
+    "   ### 爽点（具体反转、如何兑取绪释放）",
+    "   ### 结尾钩子（衔接下一章的悬念点）",
+    "   ### 作者手搓留白（标注哪些地方需要用人设卡/文风/玩梗手工填充，AI不可自行填充）",
     "",
     `用户要求：${userRequest}`,
     history ? `\n近期对话：\n${history}` : "",

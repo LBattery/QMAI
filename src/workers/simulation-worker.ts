@@ -1,0 +1,344 @@
+type WorkerRequest =
+  | { id: string; type: "calc-clue-relations"; payload: { clues: { id: string; content: string }[] } }
+  | { id: string; type: "calc-branch-diff"; payload: { branchA: any; branchB: any } }
+  | { id: string; type: "calc-board-layout"; payload: { cards: { id: string; x: number; y: number; width: number }[]; connections: { fromCardId: string; toCardId: string }[] } }
+
+type WorkerResponse =
+  | { id: string; type: "clue-relations"; payload: { pairs: [string, string, number][] } }
+  | { id: string; type: "branch-diff"; payload: any }
+  | { id: string; type: "board-layout"; payload: { id: string; x: number; y: number }[] }
+
+const DIMENSION_KEYS = [
+  "tension",
+  "pace",
+  "characterUtilization",
+  "characterArc",
+  "infoDensity",
+  "emotionalResonance",
+  "logicConsistency",
+] as const
+
+interface DirectorScore {
+  tension: number
+  pace: number
+  characterUtilization: number
+  characterArc: number
+  infoDensity: number
+  emotionalResonance: number
+  logicConsistency: number
+}
+
+interface DirectorEvaluation {
+  scores: DirectorScore
+  totalScore: number
+  highlights: string[]
+  issues: string[]
+  suggestion: string
+  shouldInjectEvent: boolean
+  injectEvent?: string
+}
+
+interface TimelineEvent {
+  id: string
+  round: number
+  nodeIndex: number
+  actorId: string
+  actorName: string
+  actionType: string
+  content: string
+  targetId?: string
+  targetName?: string
+  observableBy: string[]
+  timestamp: string
+}
+
+interface SimulationBranch {
+  id: string
+  name: string
+  frameworkId: string
+  mode: string
+  createdAt: string
+  timelineEvents: TimelineEvent[]
+  rumors: any[]
+  finalAgentSnapshots: { agentId: string; name: string; knownSecrets: string[]; sentiments: [string, number][] }[]
+  directorEvaluations: DirectorEvaluation[]
+  overallScore: number
+  scoreDetails: {
+    avgDirectorScore: number
+    eventCount: number
+    characterDiversity: number
+    plotProgression: number
+  }
+}
+
+function extractKeywords(text: string): string[] {
+  const words = text.split(/[，。？！、的了是在有和与等\s,.!?;:]/).filter((w) => w.length >= 2)
+  return Array.from(new Set(words))
+}
+
+function keywordOverlap(a: string, b: string): number {
+  const keywordsA = extractKeywords(a)
+  const keywordsB = extractKeywords(b)
+  if (keywordsA.length === 0 || keywordsB.length === 0) return 0
+  const setA = new Set(keywordsA)
+  const shared = keywordsB.filter((w) => setA.has(w)).length
+  return shared / Math.min(keywordsA.length, keywordsB.length)
+}
+
+function calcClueRelations(clues: { id: string; content: string }[]): { pairs: [string, string, number][] } {
+  const pairs: [string, string, number][] = []
+  for (let i = 0; i < clues.length; i++) {
+    for (let j = i + 1; j < clues.length; j++) {
+      const score = keywordOverlap(clues[i].content, clues[j].content)
+      if (score > 0.3) {
+        pairs.push([clues[i].id, clues[j].id, score])
+      }
+    }
+  }
+  pairs.sort((a, b) => b[2] - a[2])
+  return { pairs: pairs.slice(0, 50) }
+}
+
+function calcBoardLayout(
+  cards: { id: string; x: number; y: number; width: number }[],
+  connections: { fromCardId: string; toCardId: string }[],
+): { id: string; x: number; y: number }[] {
+  const k = 80
+  const iterations = 80
+  let temperature = 50
+
+  const nodes = cards.map((c) => ({
+    id: c.id,
+    x: c.x + c.width / 2,
+    y: c.y + 60,
+    vx: 0,
+    vy: 0,
+    width: c.width,
+  }))
+
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]))
+
+  for (let iter = 0; iter < iterations; iter++) {
+    for (let i = 0; i < nodes.length; i++) {
+      nodes[i].vx = 0
+      nodes[i].vy = 0
+    }
+
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const dx = nodes[j].x - nodes[i].x
+        const dy = nodes[j].y - nodes[i].y
+        let dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist < 1) dist = 1
+        const force = (k * k) / dist
+        const fx = (dx / dist) * force
+        const fy = (dy / dist) * force
+        nodes[i].vx -= fx
+        nodes[i].vy -= fy
+        nodes[j].vx += fx
+        nodes[j].vy += fy
+      }
+    }
+
+    for (const conn of connections) {
+      const from = nodeMap.get(conn.fromCardId)
+      const to = nodeMap.get(conn.toCardId)
+      if (!from || !to) continue
+      const dx = to.x - from.x
+      const dy = to.y - from.y
+      let dist = Math.sqrt(dx * dx + dy * dy)
+      if (dist < 1) dist = 1
+      const force = dist / k
+      const fx = (dx / dist) * force
+      const fy = (dy / dist) * force
+      from.vx += fx
+      from.vy += fy
+      to.vx -= fx
+      to.vy -= fy
+    }
+
+    for (const node of nodes) {
+      const disp = Math.sqrt(node.vx * node.vx + node.vy * node.vy)
+      if (disp > 0) {
+        const ratio = Math.min(disp, temperature) / disp
+        node.x += node.vx * ratio
+        node.y += node.vy * ratio
+      }
+    }
+
+    temperature *= 0.95
+  }
+
+  return nodes.map((n) => ({
+    id: n.id,
+    x: n.x - n.width / 2,
+    y: n.y - 60,
+  }))
+}
+
+function getAvgDirectorScore(branch: SimulationBranch): DirectorScore {
+  if (branch.directorEvaluations.length === 0) {
+    return {
+      tension: 3.0,
+      pace: 3.0,
+      characterUtilization: 3.0,
+      characterArc: 3.0,
+      infoDensity: 3.0,
+      emotionalResonance: 3.0,
+      logicConsistency: 3.0,
+    }
+  }
+  const sum: DirectorScore = {
+    tension: 0,
+    pace: 0,
+    characterUtilization: 0,
+    characterArc: 0,
+    infoDensity: 0,
+    emotionalResonance: 0,
+    logicConsistency: 0,
+  }
+  for (const ev of branch.directorEvaluations) {
+    for (const key of DIMENSION_KEYS) {
+      sum[key] += ev.scores[key]
+    }
+  }
+  const n = branch.directorEvaluations.length
+  const avg: DirectorScore = { ...sum }
+  for (const key of DIMENSION_KEYS) {
+    avg[key] = Math.round((avg[key] / n) * 10) / 10
+  }
+  return avg
+}
+
+function calcBranchDiff(branchA: SimulationBranch, branchB: SimulationBranch): any {
+  const branches = [branchA, branchB]
+  const scoresList = branches.map((b) => getAvgDirectorScore(b))
+
+  const dimensionDiffs = DIMENSION_KEYS.map((key) => {
+    const values = scoresList.map((s) => s[key])
+    const max = Math.max(...values)
+    const min = Math.min(...values)
+    const maxIdx = values.indexOf(max)
+    return {
+      key,
+      diff: max - min,
+      maxBranchName: branches[maxIdx].name,
+      maxValue: max,
+      minValue: min,
+    }
+  })
+    .sort((a, b) => b.diff - a.diff)
+    .slice(0, 3)
+
+  const eventCounts = branches.map((b) => b.timelineEvents.length)
+  const characterCounts = branches.map((b) => b.finalAgentSnapshots.length)
+
+  const allCharMap = new Map<string, string>()
+  for (const b of branches) {
+    for (const agent of b.finalAgentSnapshots) {
+      allCharMap.set(agent.agentId, agent.name)
+    }
+  }
+
+  const sentimentDiffs: { charId: string; charName: string; maxDiff: number; maxBranch: string; values: number[] }[] = []
+
+  for (const [charId, charName] of allCharMap) {
+    const values: number[] = []
+    for (const b of branches) {
+      const agent = b.finalAgentSnapshots.find((a) => a.agentId === charId)
+      let totalSentiment = 0
+      let count = 0
+      if (agent) {
+        for (const [, val] of agent.sentiments) {
+          totalSentiment += val
+          count++
+        }
+      }
+      values.push(count > 0 ? totalSentiment / count : 0)
+    }
+    const max = Math.max(...values)
+    const min = Math.min(...values)
+    const maxIdx = values.indexOf(max)
+    sentimentDiffs.push({
+      charId,
+      charName,
+      maxDiff: max - min,
+      maxBranch: branches[maxIdx].name,
+      values,
+    })
+  }
+
+  const topSentimentDiffs = sentimentDiffs.sort((a, b) => b.maxDiff - a.maxDiff).slice(0, 3)
+
+  const maxRound = Math.max(
+    ...branches.map((b) => (b.timelineEvents.length > 0 ? Math.max(...b.timelineEvents.map((e) => e.round)) : -1)),
+  )
+
+  let divergenceRound = -1
+  for (let r = 0; r <= maxRound; r++) {
+    const roundContents = branches.map((b) => {
+      const evs = b.timelineEvents.filter((e) => e.round === r)
+      return evs.map((e) => e.content.slice(0, 10)).join("|")
+    })
+
+    let allSame = true
+    for (let i = 1; i < roundContents.length; i++) {
+      if (roundContents[i] !== roundContents[0]) {
+        allSame = false
+        break
+      }
+    }
+    if (!allSame) {
+      divergenceRound = r + 1
+      break
+    }
+  }
+
+  const bestBranchIdx = branches.reduce(
+    (bestIdx, b, idx) => (b.overallScore > branches[bestIdx].overallScore ? idx : bestIdx),
+    0,
+  )
+
+  return {
+    dimensionDiffs,
+    eventCounts,
+    characterCounts,
+    topSentimentDiffs,
+    divergenceRound,
+    bestBranchIdx,
+    scoresList,
+  }
+}
+
+self.onmessage = (e: MessageEvent<WorkerRequest>) => {
+  const request = e.data
+  let response: WorkerResponse
+
+  switch (request.type) {
+    case "calc-clue-relations":
+      response = {
+        id: request.id,
+        type: "clue-relations",
+        payload: calcClueRelations(request.payload.clues),
+      }
+      break
+    case "calc-board-layout":
+      response = {
+        id: request.id,
+        type: "board-layout",
+        payload: calcBoardLayout(request.payload.cards, request.payload.connections),
+      }
+      break
+    case "calc-branch-diff":
+      response = {
+        id: request.id,
+        type: "branch-diff",
+        payload: calcBranchDiff(request.payload.branchA, request.payload.branchB),
+      }
+      break
+    default:
+      return
+  }
+
+  self.postMessage(response)
+}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+﻿import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { AlertTriangle, Link2, PencilLine, Plus, Save, Sparkles, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { streamChat, type ChatMessage } from "@/lib/llm-client"
 import { buildContextPack, contextPackToPrompt } from "@/lib/novel/context-engine"
+import { resolveContextPackTokenBudget } from "@/lib/context-budget"
 import { resolveNovelModel } from "@/lib/novel/model-resolver"
 import { useWikiStore } from "@/stores/wiki-store"
 import {
@@ -356,8 +357,12 @@ export function CharacterAuraView({ hideSidebar = false }: { hideSidebar?: boole
       }
       const contextPack = await buildContextPack(project.path, auraPreviewTask)
       const previewPack = { ...contextPack, characterAuras: characterAuraPreview }
-      const contextPrompt = contextPackToPrompt(previewPack, novelConfig.contextTokenBudget > 0 ? novelConfig.contextTokenBudget : undefined)
+      // 预算须绑定实际发起调用的模型窗口，而非 store 里的基础 llmConfig。
       const effectiveConfig = resolveNovelModel(llmConfig, novelConfig, "writing")
+      const contextPrompt = contextPackToPrompt(previewPack, resolveContextPackTokenBudget({
+        maxContextSize: effectiveConfig.maxContextSize,
+        contextTokenBudget: novelConfig.contextTokenBudget,
+      }))
       const messages: ChatMessage[] = [
         {
           role: "system",
@@ -461,7 +466,7 @@ export function CharacterAuraView({ hideSidebar = false }: { hideSidebar?: boole
       {soulTab === "project" && !hideSidebar ? (
         <SoulDocEditor />
       ) : (
-        <div className="flex-1 flex overflow-hidden">
+        <div className="min-h-0 flex-1 flex overflow-hidden">
       {!hideSidebar && (
       <aside className="flex w-72 shrink-0 flex-col border-r bg-muted/30">
         <div className="border-b p-4">
@@ -508,7 +513,7 @@ export function CharacterAuraView({ hideSidebar = false }: { hideSidebar?: boole
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-2">
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {visibleAuras.map((aura) => (
             <button
               key={aura.id}
@@ -537,7 +542,7 @@ export function CharacterAuraView({ hideSidebar = false }: { hideSidebar?: boole
       </aside>
       )}
 
-      <main className="flex-1 overflow-y-auto p-6">
+      <main className="min-h-0 flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-3xl space-y-6">
           <div className="rounded-lg border bg-card p-4">
             <div className="flex items-start gap-3">

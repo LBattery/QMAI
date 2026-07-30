@@ -2,33 +2,52 @@ import { describe, expect, it } from "vitest"
 import { allChangelog, currentVersionChangelog } from "./changelog"
 
 describe("changelog", () => {
-  it("shows the latest visible 2.2 releases before earlier releases", () => {
+  it("shows the latest 3.0 and visible 2.2 releases in order", () => {
     const entries = allChangelog()
     const versions = entries.map((entry) => entry.version)
 
-    expect(versions[0]).toBe("2.2.24")
-    expect(versions[1]).toBe("2.2.22")
-    expect(versions[2]).toBe("2.2.20")
-    expect(versions[3]).toBe("2.2.19")
-    expect(versions[4]).toBe("2.2.18")
-    expect(versions[5]).toBe("2.2.17")
-    expect(versions[6]).toBe("2.2.16")
-    expect(versions[7]).toBe("2.2.14")
-    expect(versions[8]).toBe("2.2.13")
-    expect(versions[9]).toBe("2.2.12")
-    expect(versions[10]).toBe("2.2.11")
-    expect(versions[11]).toBe("2.2.10")
-    expect(versions[12]).toBe("2.2.9")
-    expect(versions[13]).toBe("2.2.8")
-    expect(versions[14]).toBe("2.2.7")
-    expect(versions[15]).toBe("2.2.0")
-    expect(versions[16]).toBe("2.1.0")
-    expect(versions[17]).toBe("2.0.0")
+    expect(versions.slice(0, 32)).toEqual([
+      "3.0.1",
+      "3.0.0",
+      "2.2.37",
+      "2.2.36",
+      "2.2.35",
+      "2.2.33",
+      "2.2.32",
+      "2.2.31",
+      "2.2.30",
+      "2.2.29",
+      "2.2.27",
+      "2.2.26",
+      "2.2.25",
+      "2.2.24",
+      "2.2.23",
+      "2.2.22",
+      "2.2.21",
+      "2.2.20",
+      "2.2.19",
+      "2.2.18",
+      "2.2.17",
+      "2.2.16",
+      "2.2.14",
+      "2.2.13",
+      "2.2.12",
+      "2.2.11",
+      "2.2.10",
+      "2.2.9",
+      "2.2.8",
+      "2.2.7",
+      "2.2.0",
+      "2.1.0",
+    ])
+    expect(versions[32]).toBe("2.0.0")
 
     for (let patch = 1; patch <= 6; patch += 1) {
       expect(versions).not.toContain(`2.2.${patch}`)
       expect(currentVersionChangelog(`2.2.${patch}`)).toEqual([])
     }
+    expect(versions).not.toContain("2.2.28")
+    expect(currentVersionChangelog("2.2.28")).toEqual([])
     for (let patch = 1; patch <= 10; patch += 1) {
       expect(versions).not.toContain(`2.1.${patch}`)
       expect(currentVersionChangelog(`2.1.${patch}`)).toEqual([])
@@ -47,6 +66,28 @@ describe("changelog", () => {
     expect(release.highlights.en.join("\n")).toContain("Major release")
     expect(release.highlights.en.join("\n")).toContain("Review Center")
     expect(release.highlights.en.join("\n")).toContain("AI Rewrite")
+  })
+
+  it("returns the 2.2.36 reliability release notes", () => {
+    const release = currentVersionChangelog("2.2.36")[0]
+    const zh = release.highlights.zh.join("\n")
+
+    expect(release.version).toBe("2.2.36")
+    expect(zh).toContain("确认计划")
+    expect(zh).toContain("严格审稿")
+    expect(zh).toContain("草稿")
+    expect(zh).toContain("并发保存")
+  })
+
+  it("returns the 2.2.37 cache usage release notes", () => {
+    const release = currentVersionChangelog("2.2.37")[0]
+    const zh = release.highlights.zh.join("\n")
+
+    expect(release.version).toBe("2.2.37")
+    expect(zh).toContain("供应商真实缓存")
+    expect(zh).toContain("Agent")
+    expect(zh).toContain("上下文压缩")
+    expect(zh).toContain("稳定核心")
   })
 
   it("returns the 2.2.0 changelog entry", () => {

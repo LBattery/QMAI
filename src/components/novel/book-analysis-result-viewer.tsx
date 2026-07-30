@@ -5,20 +5,19 @@
 
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { User, X, Plus, Feather, Merge } from "lucide-react"
+import { User, X, Plus, Feather } from "lucide-react"
 import { useBookAnalysisStore } from "@/stores/book-analysis-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { bindCharacterAura, listBindableNovelCharacters } from "@/lib/novel/character-aura"
 import { importBookAnalysisSkillsAsAuras, type ImportedBookAnalysisAura } from "@/lib/novel/book-analysis/aura-adapter"
-import { extractSingleCharacter } from "@/lib/novel/book-analysis/character-extraction-engine"
-import { mergeCharacters, persistMergedCharacter } from "@/lib/novel/book-analysis/character-merger"
 import { analyzeWritingStyle } from "@/lib/novel/book-analysis/style-extraction-engine"
 import { STYLE_DIMENSIONS } from "@/lib/novel/book-analysis/style-prompts"
 import { upsertWritingStylePreset, setEnabledWritingStyle, getEnabledWritingStyle } from "@/lib/novel/writing-style-store"
 import { joinPath } from "@/lib/path-utils"
 import { toast } from "@/lib/toast"
 import { refreshProjectState } from "@/lib/project-refresh"
-import { resolveModelConfig } from "@/lib/novel/model-resolver"
+import { resolveDefaultModel } from "@/lib/novel/model-resolver"
+import { hasUsableLlm } from "@/lib/has-usable-llm"
 import type { BookAnalysisResult, BookAnalysisMetadata, ExtractedCharacter, PersonalityProfile } from "@/lib/novel/book-analysis/types"
 
 interface BookAnalysisResultViewerProps {
@@ -39,18 +38,9 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
   const [selectedAuraId, setSelectedAuraId] = useState("")
   // feature/fix-viewer-ui：多选小说人物
   const [selectedNovelCharacterIds, setSelectedNovelCharacterIds] = useState<Set<string>>(new Set())
-  // feature/book-analysis-reuse：顶栏「重新提取角色」按钮
-  const [reextractOpen, setReextractOpen] = useState(false)
-  const [reextractDepth, setReextractDepth] = useState<"simple" | "six-dimension">("simple")
-  const [reextractRunning, setReextractRunning] = useState(false)
   // feature/book-style-extraction：作品文风提取 / 启用
   const [styleExtracting, setStyleExtracting] = useState(false)
   const [styleEnabledSourceBook, setStyleEnabledSourceBook] = useState<string | null>(null)
-
-  // 角色合并状态
-  const [mergeDialogOpen, setMergeDialogOpen] = useState(false)
-  const [mergePrimaryId, setMergePrimaryId] = useState<string>("")
-  const [mergeMerging, setMergeMerging] = useState(false)
 
   const currentProject = useWikiStore((s) => s.project)
   const tasks = useBookAnalysisStore((s) => s.tasks)
@@ -125,57 +115,6 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
     ? [...characters].sort((a, b) => b.importance - a.importance || a.name.localeCompare(b.name, "zh-CN"))
     : characters
 
-  const handleReextractAll = async () => {
-    if (!currentProject?.path || !effectiveResult || reextractRunning) return
-    setReextractRunning(true)
-    try {
-      const reextractStoreState = useWikiStore.getState()
-      const reextractLlmConfig = reextractStoreState.aiChatModel
-        ? resolveModelConfig(reextractStoreState.aiChatModel, reextractStoreState.llmConfig, reextractStoreState.providerConfigs)
-        : reextractStoreState.llmConfig
-      // 修复：bookPath 实际写入路径是 book-analysis/{bookId}，不是 book-analysis/{title}（feature/book-analysis-reuse）
-      const bookId = task?.bookId
-      const bookPath = joinPath(currentProject.path, "book-analysis", bookId ?? "unknown")
-      let updated: ExtractedCharacter[] = []
-      for (const c of characters) {
-        const { character: fresh } = await extractSingleCharacter({
-          bookPath,
-          bookId: bookId ?? "",
-          character: c,
-          mode: reextractDepth === "simple" ? "simple" : "six-dimension",
-          depth: "standard",
-          llmConfig: reextractLlmConfig,
-          signal: undefined,
-        })
-        updated.push(fresh)
-      }
-      // 写回 result metadata 触发展示刷新
-      // 关键修复（fix/character-reextract-and-loading-state v2）：
-      //   viewer 的 effectiveResult 已改为优先从 task 派生，所以更新 tasks 即可；
-      //   这里再同步 currentResult，保持数据一致性。
-      const storeState = useBookAnalysisStore.getState()
-      if (storeState.currentResult) {
-        storeState.setCurrentResult({
-          ...storeState.currentResult,
-          characters: updated,
-        })
-      }
-      useBookAnalysisStore.setState((s) => ({
-        tasks: s.tasks.map((t) =>
-          t.projectPath === normalizedProjectPath && t.status === "completed"
-            ? { ...t, characters: updated, updatedAt: Date.now() }
-            : t,
-        ),
-      }))
-      toast.success(`已重新提取 ${updated.length} 个角色`)
-      setReextractOpen(false)
-    } catch (err) {
-      toast.error(`重新提取失败：${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setReextractRunning(false)
-    }
-  }
-
   // feature/book-style-extraction：提取作品级写作文风
   const handleExtractStyle = async () => {
     if (!currentProject?.path || styleExtracting) return
@@ -185,15 +124,11 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
       return
     }
     const storeState = useWikiStore.getState()
-    const baseLlmConfig = storeState.llmConfig
-    if (!baseLlmConfig) {
+    const llmConfig = resolveDefaultModel(storeState.llmConfig)
+    if (!hasUsableLlm(llmConfig, storeState.providerConfigs)) {
       toast.error("未配置 LLM，请先在设置中配置")
       return
     }
-    const aiChatModel = storeState.aiChatModel
-    const llmConfig = aiChatModel
-      ? resolveModelConfig(aiChatModel, baseLlmConfig, storeState.providerConfigs)
-      : baseLlmConfig
     const bookPath = joinPath(currentProject.path, "book-analysis", bookId)
     setStyleExtracting(true)
     try {
@@ -230,129 +165,6 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
     } catch (err) {
       toast.error(`操作失败：${err instanceof Error ? err.message : String(err)}`)
     }
-  }
-
-  // feature/book-analysis-reuse：详情卡「单角色再次提取 / 深度提取」- 改为后台任务
-  // 修复（fix/character-reextract-and-loading-state）：
-  //   - 改为按角色 id 跟踪后台提取状态，支持同时跑多个单角色提取
-  //   - 详情卡按钮根据当前 selectedCharacter 自己的 reextracting 状态显示「提取中...」
-  //   - 传入 `bookTitle` 让 six-dimension 模式的 prompt 正确
-  //   - 后台跑时 toast 显式提示「可在查看其他角色或关闭此页面」
-  const [singleReextractingIds, setSingleReextractingIds] = useState<Set<string>>(new Set())
-  const handleSingleReextract = async (
-    character: ExtractedCharacter,
-    mode: "simple" | "six-dimension",
-  ) => {
-    console.log('[单角色提取] 开始:', character.name, mode)
-
-    if (!currentProject?.path || !effectiveResult) {
-      console.log('[单角色提取] 缺少项目路径或结果')
-      toast.error("缺少项目信息")
-      return
-    }
-
-    const storeState = useWikiStore.getState()
-    const baseLlmConfig = storeState.llmConfig
-    if (!baseLlmConfig) {
-      console.log('[单角色提取] 未配置LLM')
-      toast.error("未配置 LLM，请先在设置中配置")
-      return
-    }
-
-    // 解析当前 AI 会话模型配置，确保 apiKey/endpoint 与模型匹配
-    const aiChatModel = storeState.aiChatModel
-    const llmConfig = aiChatModel
-      ? resolveModelConfig(aiChatModel, baseLlmConfig, storeState.providerConfigs)
-      : baseLlmConfig
-
-    const bookId = task?.bookId
-    if (!bookId) {
-      console.log('[单角色提取] 未找到bookId')
-      toast.error("未找到作品标识")
-      return
-    }
-
-    const bookPath = joinPath(currentProject.path, "book-analysis", bookId)
-    const bookTitle = effectiveResult?.metadata?.title
-    const bookAuthor = (effectiveResult?.metadata as any)?.author
-    console.log('[单角色提取] bookPath:', bookPath, 'bookTitle:', bookTitle)
-
-    // 标记此角色正在后台提取（fix/character-reextract-and-loading-state）
-    setSingleReextractingIds((prev) => {
-      const next = new Set(prev)
-      next.add(character.id)
-      return next
-    })
-
-    // 启动后台任务
-    toast.success(
-      `已开始后台${mode === "simple" ? "简单" : "深度"}提取「${character.name}」，可切换到其他角色或关闭此页面`,
-    )
-
-    // 异步执行，不阻塞UI
-    ;(async () => {
-      try {
-        console.log('[单角色提取] 调用extractSingleCharacter')
-        const { character: fresh } = await extractSingleCharacter({
-          bookPath,
-          bookId,
-          character,
-          mode,
-          depth: mode === "simple" ? "fast" : "deep",
-          llmConfig,
-          bookTitle,
-          bookAuthor,
-          signal: undefined,
-        })
-
-        console.log('[单角色提取] 提取完成:', fresh.name)
-
-        // 关键修复（fix/character-reextract-and-loading-state v2）：
-        //   - viewer 的 effectiveResult 已改为优先从 task 派生（task 是 source of truth），
-        //     所以更新 tasks 数组即可让 UI 刷新。
-        //   - 顺带同步 currentResult 快照，避免其他依赖 currentResult 的逻辑出现数据不一致。
-        const storeState = useBookAnalysisStore.getState()
-        const currentResult = storeState.currentResult
-        if (currentResult) {
-          storeState.setCurrentResult({
-            ...currentResult,
-            characters: (currentResult.characters ?? []).map((c) =>
-              c.id === fresh.id ? fresh : c,
-            ),
-          })
-        }
-        useBookAnalysisStore.setState((s) => ({
-          tasks: s.tasks.map((t) =>
-            t.projectPath === normalizedProjectPath && t.status === "completed"
-              ? {
-                  ...t,
-                  characters: (t.characters ?? []).map((c) => (c.id === fresh.id ? fresh : c)),
-                  updatedAt: Date.now(),
-                }
-              : t,
-          ),
-        }))
-
-        // 如果用户还在查看这个角色，更新显示
-        setSelectedCharacter((prev) => (prev?.id === fresh.id ? fresh : prev))
-
-        toast.success(`「${character.name}」${mode === "simple" ? "简单" : "深度"}提取完成`)
-      } catch (err) {
-        console.error('[单角色提取] 错误:', err)
-        toast.error(
-          `「${character.name}」${mode === "simple" ? "简单" : "深度"}提取失败：${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        )
-      } finally {
-        // 解除后台提取标记（fix/character-reextract-and-loading-state）
-        setSingleReextractingIds((prev) => {
-          const next = new Set(prev)
-          next.delete(character.id)
-          return next
-        })
-      }
-    })()
   }
 
   const handleAddSkillsToSoul = async () => {
@@ -432,59 +244,6 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
     setSelectedNovelCharacterIds(new Set())
   }
 
-  const handleMergeCharacters = async () => {
-    if (!currentProject?.path || !effectiveResult || mergeMerging) return
-    const selectedChars = characters.filter((c) => selectedCharacterIds.has(c.id))
-    if (selectedChars.length < 2) return
-
-    const primary = selectedChars.find((c) => c.id === mergePrimaryId)
-    if (!primary) {
-      toast.error("请选择主角色")
-      return
-    }
-    const others = selectedChars.filter((c) => c.id !== mergePrimaryId)
-
-    setMergeMerging(true)
-    try {
-      // 1. 纯逻辑合并
-      const merged = mergeCharacters(primary, others)
-
-      // 2. 持久化到磁盘
-      const bookId = task?.bookId
-      const bookPath = joinPath(currentProject.path, "book-analysis", bookId ?? "unknown")
-      await persistMergedCharacter(bookPath, merged, others, bookTitle)
-
-      // 3. 更新 store
-      const deletedIds = others.map((c) => c.id)
-      if (task) {
-        useBookAnalysisStore.getState().mergeCharactersInTask(task.id, merged, deletedIds)
-      }
-
-      // 4. 同步 currentResult 快照
-      const storeState = useBookAnalysisStore.getState()
-      if (storeState.currentResult) {
-        storeState.setCurrentResult({
-          ...storeState.currentResult,
-          characters: (storeState.currentResult.characters ?? [])
-            .filter((c) => !deletedIds.includes(c.id))
-            .map((c) => (c.id === merged.id ? merged : c)),
-        })
-      }
-
-      // 5. 清空选中状态 + 关闭对话框
-      setSelectedCharacterIds(new Set())
-      setSelectedCharacter((prev) => (prev?.id === merged.id ? merged : prev))
-      setMergeDialogOpen(false)
-      setMergePrimaryId("")
-
-      toast.success(`已将 ${others.map((c) => c.name).join("、")} 合并到「${merged.name}」`)
-    } catch (err) {
-      toast.error(`合并失败：${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setMergeMerging(false)
-    }
-  }
-
   // feature/fix-viewer-ui：删 skills tab，连带删 handleReanalyzeSkill（已无调用点）
 
   const getCategoryLabel = (category: string) => {
@@ -530,42 +289,6 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <div className="relative">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setReextractOpen((v) => !v)}
-                disabled={reextractRunning || characters.length === 0}
-              >
-                {reextractRunning ? "提取中..." : "重新提取角色"}
-              </Button>
-              {reextractOpen && (
-                <div className="absolute right-0 top-full mt-1 z-10 w-56 rounded-md border bg-background p-2 shadow-md space-y-2">
-                  <div className="text-xs text-muted-foreground px-1">选择提取方式</div>
-                  <label className="flex items-center gap-2 px-1 text-sm">
-                    <input
-                      type="radio"
-                      name="reextract"
-                      checked={reextractDepth === "simple"}
-                      onChange={() => setReextractDepth("simple")}
-                    />
-                    简单提取(快速)
-                  </label>
-                  <label className="flex items-center gap-2 px-1 text-sm">
-                    <input
-                      type="radio"
-                      name="reextract"
-                      checked={reextractDepth === "six-dimension"}
-                      onChange={() => setReextractDepth("six-dimension")}
-                    />
-                    深度提取(6 维)
-                  </label>
-                  <Button size="sm" className="w-full" onClick={handleReextractAll} disabled={reextractRunning}>
-                    开始
-                  </Button>
-                </div>
-              )}
-            </div>
             <Button variant="ghost" size="icon" onClick={onClose}>
               <X className="h-5 w-5" />
             </Button>
@@ -680,21 +403,6 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
                           >
                             清空
                           </button>
-                          {selectedCharacterIds.size >= 2 && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                // 默认选中第一个被选角色作为主角色
-                                const firstId = Array.from(selectedCharacterIds)[0]
-                                setMergePrimaryId(firstId)
-                                setMergeDialogOpen(true)
-                              }}
-                              className="rounded border px-2 py-0.5 text-primary hover:bg-primary/10"
-                            >
-                              <Merge className="h-3 w-3 inline-block mr-1" />
-                              合并
-                            </button>
-                          )}
                         </div>
                       </div>
                       {sortedCharacters.map((character) => {
@@ -900,64 +608,6 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
                       </div>
                     </div>
 
-                    {/* feature/book-analysis-reuse：详情卡底部「单角色重提」按钮 */}
-                    {/* 修复（fix/character-reextract-and-loading-state）：按钮根据当前角色是否在后台提取显示不同文案 */}
-                    <div className="pt-4 border-t" onClick={(e) => e.stopPropagation()}>
-                      <div className="text-xs text-muted-foreground mb-2">单角色重提</div>
-                      {selectedCharacter && singleReextractingIds.has(selectedCharacter.id) && (
-                        <div className="text-xs text-primary mb-2">
-                          当前角色「{selectedCharacter.name}」正在后台提取，可切换到其他角色或关闭此页面
-                        </div>
-                      )}
-                      <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={
-                            reextractRunning ||
-                            (!!selectedCharacter && singleReextractingIds.has(selectedCharacter.id))
-                          }
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            console.log('[按钮点击] 再次提取(简单) - 事件触发', e)
-                            console.log('[按钮点击] selectedCharacter:', selectedCharacter)
-                            if (!selectedCharacter) {
-                              console.error('[按钮点击] selectedCharacter 为空!')
-                              toast.error("未选择角色")
-                              return
-                            }
-                            handleSingleReextract(selectedCharacter, "simple")
-                          }}
-                        >
-                          {selectedCharacter && singleReextractingIds.has(selectedCharacter.id)
-                            ? "提取中..."
-                            : "再次提取(简单)"}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={
-                            reextractRunning ||
-                            (!!selectedCharacter && singleReextractingIds.has(selectedCharacter.id))
-                          }
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            console.log('[按钮点击] 深度提取(6维) - 事件触发', e)
-                            console.log('[按钮点击] selectedCharacter:', selectedCharacter)
-                            if (!selectedCharacter) {
-                              console.error('[按钮点击] selectedCharacter 为空!')
-                              toast.error("未选择角色")
-                              return
-                            }
-                            handleSingleReextract(selectedCharacter, "six-dimension")
-                          }}
-                        >
-                          {selectedCharacter && singleReextractingIds.has(selectedCharacter.id)
-                            ? "提取中..."
-                            : "深度提取(6 维)"}
-                        </Button>
-                      </div>
-                    </div>
                   </div>
                 ) : (
                   <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -985,106 +635,6 @@ export function BookAnalysisResultViewer({ projectPath, result, onClose }: BookA
           <Button onClick={onClose}>关闭</Button>
         </div>
       </div>
-
-      {/* 角色合并确认对话框 */}
-      {mergeDialogOpen && (() => {
-        const selectedChars = characters.filter((c) => selectedCharacterIds.has(c.id))
-        const primary = selectedChars.find((c) => c.id === mergePrimaryId)
-        const others = selectedChars.filter((c) => c.id !== mergePrimaryId)
-        const previewAliases = primary
-          ? Array.from(new Set([
-              ...primary.aliases,
-              ...others.map((c) => c.name),
-              ...others.flatMap((c) => c.aliases),
-            ].filter((a) => a !== primary?.name)))
-          : []
-        return (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
-            <div className="bg-background rounded-lg shadow-lg w-full max-w-md mx-4 p-6 space-y-4">
-              <div className="flex items-center gap-2">
-                <Merge className="h-5 w-5 text-primary" />
-                <h3 className="text-lg font-semibold">合并角色</h3>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                选择一个主角色，其他角色将合并到此角色中（其他角色的名字会作为别名保留）。
-              </p>
-
-              <div className="space-y-2">
-                <div className="text-sm font-medium">选择主角色：</div>
-                {selectedChars.map((c) => (
-                  <label
-                    key={c.id}
-                    className={`flex items-center gap-3 rounded-md border p-3 cursor-pointer transition-colors ${
-                      mergePrimaryId === c.id
-                        ? "border-primary bg-primary/5"
-                        : "border-border hover:bg-muted"
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="merge-primary"
-                      checked={mergePrimaryId === c.id}
-                      onChange={() => setMergePrimaryId(c.id)}
-                      className="accent-primary"
-                    />
-                    <div>
-                      <div className="font-medium">{c.name}</div>
-                      {c.aliases.length > 0 && (
-                        <div className="text-xs text-muted-foreground">
-                          别名：{c.aliases.join("、")}
-                        </div>
-                      )}
-                    </div>
-                  </label>
-                ))}
-              </div>
-
-              {primary && (
-                <div className="rounded-md bg-muted/30 p-3 text-sm space-y-1">
-                  <div className="font-medium">合并预览</div>
-                  <div className="text-muted-foreground">
-                    <span>角色名：</span>
-                    <span className="text-foreground">{primary.name}</span>
-                  </div>
-                  <div className="text-muted-foreground">
-                    <span>合并后别名：</span>
-                    <span className="text-foreground">
-                      {previewAliases.length > 0 ? previewAliases.join("、") : "（无）"}
-                    </span>
-                  </div>
-                  <div className="text-muted-foreground">
-                    <span>将被合并：</span>
-                    <span className="text-foreground">
-                      {others.map((c) => c.name).join("、")}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex justify-end gap-2 pt-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setMergeDialogOpen(false)
-                    setMergePrimaryId("")
-                  }}
-                  disabled={mergeMerging}
-                >
-                  取消
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleMergeCharacters}
-                  disabled={mergeMerging || !mergePrimaryId}
-                >
-                  {mergeMerging ? "合并中..." : "确认合并"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        )
-      })()}
     </div>
   )
 }

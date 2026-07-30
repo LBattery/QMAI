@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+﻿import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Bot,
   BookOpen,
@@ -12,6 +12,9 @@ import {
   MessageCircle,
   HeartHandshake,
   Archive,
+  FileText,
+  Download,
+  Brain,
 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import i18n from "@/i18n"
@@ -20,35 +23,45 @@ import { PanelHeaderWithHelp } from "@/components/layout/panel-header-with-help"
 import { useWikiStore } from "@/stores/wiki-store"
 import { isTauri } from "@/lib/platform"
 import { useChatStore } from "@/stores/chat-store"
-import { loadSourceWatchConfig, saveLanguage, loadNovelConfig, loadRerankConfig, normalizeClipServerConfig } from "@/lib/project-store"
+import { loadSourceWatchConfig, saveLanguage, loadNovelConfig, loadRerankConfig } from "@/lib/project-store"
 import type { SettingsDraft, DraftSetter } from "./settings-types"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
+import type { SidebarNavConfig } from "@/lib/sidebar-nav-preferences"
+import type { UiFontFamily } from "@/lib/font-settings"
 import { LlmProviderSection } from "./sections/llm-provider-section"
 import { EmbeddingSection } from "./sections/embedding-section"
 import { RerankSection } from "./sections/rerank-section"
 import { InterfaceSection } from "./sections/interface-section"
 import { NovelSection } from "./sections/novel-section"
+import { ClassificationSection } from "./sections/classification-section"
 import { NetworkSection } from "./sections/network-section"
+import { McpSection } from "./sections/mcp-section"
 import { ChangelogSection } from "./sections/changelog-section"
 import { MaintenanceSection } from "./sections/maintenance-section"
 import { FeedbackSection } from "./sections/feedback-section"
 import { UsageGuideSection } from "./sections/usage-guide-section"
 import { ContactSupportSection } from "./sections/contact-support-section"
 import { DataManagementSection } from "./sections/data-management-section"
+import { ExportCenterSection } from "./sections/export-center-section"
+import { UserMemorySection } from "./sections/user-memory-section"
 
 type CategoryId =
   | "llm"
   | "rerank"
   | "embedding"
   | "network"
+  | "mcp"
   | "interface"
   | "novel"
+  | "user-memory"
   | "usage-guide"
   | "maintenance"
   | "data-management"
+  | "export-center"
   | "feedback"
   | "contact-support"
-  | "changelog"
+  | "classification"
+| "changelog"
 
 interface Category {
   id: CategoryId
@@ -56,7 +69,10 @@ interface Category {
    *  switching language in Settings → Interface takes effect without
    *  remounting this component (Bug #53). */
   labelKey: string
+  /** Optional muted subtitle under the label (e.g. novel → model setup). */
+  hintKey?: string
   icon: typeof Bot
+  defaultLabel?: string
 }
 
 const CATEGORIES: Category[] = [
@@ -64,14 +80,27 @@ const CATEGORIES: Category[] = [
   { id: "rerank", labelKey: "settings.categories.rerank", icon: ListFilter },
   { id: "embedding", labelKey: "settings.categories.embedding", icon: Database },
   { id: "network", labelKey: "settings.categories.network", icon: Network },
+  { id: "mcp", labelKey: "settings.categories.mcp", icon: Network },
   { id: "interface", labelKey: "settings.categories.interface", icon: Palette },
-  { id: "novel", labelKey: "settings.categories.novel", icon: BookOpen },
+  { id: "novel", labelKey: "settings.categories.novel", hintKey: "settings.categories.novelHint", icon: BookOpen },
+  { id: "user-memory", labelKey: "settings.categories.userMemory", icon: Brain },
   { id: "usage-guide", labelKey: "settings.categories.usageGuide", icon: HelpCircle },
   { id: "maintenance", labelKey: "settings.categories.maintenance", icon: Wrench },
   { id: "data-management", labelKey: "settings.categories.dataManagement", icon: Archive },
+  { id: "export-center", labelKey: "settings.categories.exportCenter", defaultLabel: "导出中心", icon: Download },
   { id: "feedback", labelKey: "settings.categories.feedback", icon: MessageCircle },
   { id: "contact-support", labelKey: "settings.categories.contactSupport", icon: HeartHandshake },
+  { id: "classification", labelKey: "settings.categories.classification", icon: FileText },
   { id: "changelog", labelKey: "settings.categories.changelog", icon: History },
+]
+
+/** Settings tabs that edit the shared draft and need the global Save footer. */
+const CATEGORIES_WITH_SAVE_FOOTER: CategoryId[] = [
+  "rerank",
+  "embedding",
+  "network",
+  "interface",
+  "novel",
 ]
 
 function initialDraft(
@@ -81,7 +110,6 @@ function initialDraft(
   multimodal: ReturnType<typeof useWikiStore.getState>["multimodalConfig"],
   outputLanguage: ReturnType<typeof useWikiStore.getState>["outputLanguage"],
   proxy: ReturnType<typeof useWikiStore.getState>["proxyConfig"],
-  clipServer: ReturnType<typeof useWikiStore.getState>["clipServerConfig"],
   scheduledImport: ReturnType<typeof useWikiStore.getState>["scheduledImportConfig"],
   sourceWatch: ReturnType<typeof useWikiStore.getState>["sourceWatchConfig"],
   revisionFeedbackWindowConfig: ReturnType<typeof useWikiStore.getState>["revisionFeedbackWindowConfig"],
@@ -89,6 +117,9 @@ function initialDraft(
   maxHistoryMessages: number,
   uiLanguage: string,
   uiFontSizeScale: number,
+  uiFontFamily: UiFontFamily,
+  visualStyle: SettingsDraft["visualStyle"],
+  sidebarNavConfig: SidebarNavConfig,
   projectPath?: string,
 ): SettingsDraft {
   // Show absolute path: if stored path is empty, show default using project path
@@ -138,8 +169,6 @@ function initialDraft(
     proxyEnabled: proxy.enabled,
     proxyUrl: proxy.url,
     proxyBypassLocal: proxy.bypassLocal,
-    clipServerEnabled: clipServer.enabled,
-    clipServerPort: clipServer.port,
     scheduledImportEnabled: scheduledImport.enabled,
     scheduledImportPath: displayPath,
     scheduledImportInterval: scheduledImport.interval,
@@ -148,6 +177,9 @@ function initialDraft(
     novelConfig,
     uiLanguage,
     uiFontSizeScale,
+    uiFontFamily,
+    visualStyle,
+    sidebarNavConfig,
   }
 }
 
@@ -168,8 +200,6 @@ export function SettingsView() {
   const setOutputLanguage = useWikiStore((s) => s.setOutputLanguage)
   const proxyConfig = useWikiStore((s) => s.proxyConfig)
   const setProxyConfig = useWikiStore((s) => s.setProxyConfig)
-  const clipServerConfig = useWikiStore((s) => s.clipServerConfig)
-  const setClipServerConfig = useWikiStore((s) => s.setClipServerConfig)
   const scheduledImportConfig = useWikiStore((s) => s.scheduledImportConfig)
   const setScheduledImportConfig = useWikiStore((s) => s.setScheduledImportConfig)
   const sourceWatchConfig = useWikiStore((s) => s.sourceWatchConfig)
@@ -182,6 +212,12 @@ export function SettingsView() {
   const setMaxHistoryMessages = useChatStore((s) => s.setMaxHistoryMessages)
   const uiFontSizeScale = useWikiStore((s) => s.uiFontSizeScale)
   const setUiFontSizeScale = useWikiStore((s) => s.setUiFontSizeScale)
+  const uiFontFamily = useWikiStore((s) => s.uiFontFamily)
+  const setUiFontFamily = useWikiStore((s) => s.setUiFontFamily)
+  const visualStyle = useWikiStore((s) => s.visualStyle)
+  const setVisualStyle = useWikiStore((s) => s.setVisualStyle)
+  const sidebarNavConfig = useWikiStore((s) => s.sidebarNavConfig)
+  const setSidebarNavConfig = useWikiStore((s) => s.setSidebarNavConfig)
 
   const [active, setActive] = useState<CategoryId>("llm")
   const [saved, setSaved] = useState(false)
@@ -193,7 +229,6 @@ export function SettingsView() {
       multimodalConfig,
       outputLanguage,
       proxyConfig,
-      clipServerConfig,
       scheduledImportConfig,
       sourceWatchConfig,
       revisionFeedbackWindowConfig,
@@ -201,6 +236,9 @@ export function SettingsView() {
       maxHistoryMessages,
       i18n.language,
       uiFontSizeScale,
+      uiFontFamily,
+      visualStyle,
+      sidebarNavConfig,
       project?.path,
     ),
   )
@@ -272,7 +310,6 @@ export function SettingsView() {
         multimodalConfig,
         outputLanguage,
         proxyConfig,
-        clipServerConfig,
         scheduledImportConfig,
         sourceWatchConfig,
         revisionFeedbackWindowConfig,
@@ -280,6 +317,9 @@ export function SettingsView() {
         maxHistoryMessages,
         prev.uiLanguage,
         uiFontSizeScale,
+        uiFontFamily,
+        visualStyle,
+        sidebarNavConfig,
         project?.path,
       ),
     )
@@ -290,13 +330,15 @@ export function SettingsView() {
     multimodalConfig,
     outputLanguage,
     proxyConfig,
-    clipServerConfig,
     scheduledImportConfig,
     sourceWatchConfig,
     revisionFeedbackWindowConfig,
     novelConfig,
     maxHistoryMessages,
     uiFontSizeScale,
+    uiFontFamily,
+    visualStyle,
+    sidebarNavConfig,
     project,
   ])
 
@@ -311,11 +353,16 @@ export function SettingsView() {
       saveRerankConfig,
       saveMultimodalConfig,
       saveProxyConfig,
-      saveClipServerConfig,
       saveScheduledImportConfig,
       saveSourceWatchConfig,
       saveRevisionFeedbackWindowConfig,
       saveNovelConfig,
+      saveDefaultLlmModel,
+      saveOutputLanguage,
+      saveMaxHistoryMessages,
+      saveUiFontSizeScale,
+      saveUiFontFamily,
+      saveVisualStyle,
     } = await import("@/lib/project-store")
 
     const newLlm = {
@@ -370,10 +417,6 @@ export function SettingsView() {
       url: draft.proxyUrl.trim(),
       bypassLocal: draft.proxyBypassLocal,
     }
-    const newClipServer = normalizeClipServerConfig({
-      enabled: draft.clipServerEnabled,
-      port: draft.clipServerPort,
-    })
 
     setLlmConfig(newLlm)
     await saveLlmConfig(newLlm)
@@ -385,8 +428,6 @@ export function SettingsView() {
     await saveMultimodalConfig(newMultimodal)
     setProxyConfig(newProxy)
     await saveProxyConfig(newProxy)
-    setClipServerConfig(newClipServer)
-    await saveClipServerConfig(newClipServer)
     const newSourceWatch = normalizeSourceWatchConfig(draft.sourceWatchConfig)
     setSourceWatchConfig(newSourceWatch)
     await saveSourceWatchConfig(newSourceWatch, project?.id, project?.path)
@@ -408,7 +449,6 @@ export function SettingsView() {
       if (isTauri()) {
         const { invoke } = await import("@tauri-apps/api/core")
         await invoke<string>("set_proxy_env", { config: newProxy })
-        await invoke("set_clip_server_config", { config: newClipServer })
       }
     } catch (err) {
       console.warn("[settings] live network update failed; restart will still apply:", err)
@@ -442,8 +482,21 @@ export function SettingsView() {
 
     setNovelConfig(draft.novelConfig)
     await saveNovelConfig(draft.novelConfig, project?.id, project?.path)
+    await saveDefaultLlmModel(draft.novelConfig.defaultLlmModel)
 
+    setOutputLanguage(draft.outputLanguage)
+    await saveOutputLanguage(draft.outputLanguage, project?.id)
+    setMaxHistoryMessages(draft.maxHistoryMessages)
+    await saveMaxHistoryMessages(draft.maxHistoryMessages, project?.id, project?.path)
     setUiFontSizeScale(draft.uiFontSizeScale)
+    await saveUiFontSizeScale(draft.uiFontSizeScale, project?.id, project?.path)
+    setUiFontFamily(draft.uiFontFamily)
+    await saveUiFontFamily(draft.uiFontFamily)
+    setVisualStyle(draft.visualStyle)
+    await saveVisualStyle(draft.visualStyle)
+    const { applyVisualStyle } = await import("@/lib/visual-style-settings")
+    applyVisualStyle(draft.visualStyle)
+    setSidebarNavConfig(draft.sidebarNavConfig)
 
     if (draft.uiLanguage !== i18n.language) {
       await i18n.changeLanguage(draft.uiLanguage)
@@ -460,7 +513,6 @@ export function SettingsView() {
     setRerankConfig,
     setOutputLanguage,
     setProxyConfig,
-    setClipServerConfig,
     setScheduledImportConfig,
     setSourceWatchConfig,
     setRevisionFeedbackWindowConfig,
@@ -469,6 +521,9 @@ export function SettingsView() {
     setMaxHistoryMessages,
     outputLanguage,
     setUiFontSizeScale,
+    setUiFontFamily,
+    setVisualStyle,
+    setSidebarNavConfig,
   ])
 
   const body = useMemo(() => {
@@ -481,16 +536,24 @@ export function SettingsView() {
         return <EmbeddingSection draft={draft} setDraft={setDraft} />
       case "network":
         return <NetworkSection draft={draft} setDraft={setDraft} />
+      case "mcp":
+        return <McpSection />
       case "interface":
         return <InterfaceSection draft={draft} setDraft={setDraft} />
       case "novel":
         return <NovelSection draft={draft} setDraft={setDraft} />
+      case "user-memory":
+        return <UserMemorySection />
+      case "classification":
+        return <ClassificationSection projectPath={project?.path ?? undefined} />
       case "usage-guide":
         return <UsageGuideSection />
       case "maintenance":
         return <MaintenanceSection />
       case "data-management":
         return <DataManagementSection />
+      case "export-center":
+        return <ExportCenterSection currentProject={project} />
       case "feedback":
         return <FeedbackSection />
       case "contact-support":
@@ -500,19 +563,21 @@ export function SettingsView() {
     }
   }, [active, draft, setDraft])
 
+  const showSaveFooter = CATEGORIES_WITH_SAVE_FOOTER.includes(active)
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Sidebar — category nav. Matches the IconSidebar's pill-on-accent
           pattern so the two navigational surfaces feel like one app. */}
-      <aside className="flex w-56 shrink-0 flex-col border-r bg-muted/30">
+      <aside className="flex w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
         <div className="flex items-center gap-1.5 px-4 pb-2 pt-4 text-[11px] font-semibold uppercase tracking-wider">
           <PanelHeaderWithHelp
             title={t("settings.title")}
             helpKey="settings"
-            className="cursor-pointer text-muted-foreground transition-colors hover:text-primary"
+            className="cursor-pointer text-sidebar-foreground/65 transition-colors hover:text-sidebar-foreground"
           />
         </div>
-        <nav className="flex-1 overflow-y-auto px-2 pb-3">
+        <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
           {CATEGORIES.map((c) => {
             const Icon = c.icon
             const isActive = c.id === active
@@ -525,16 +590,25 @@ export function SettingsView() {
                 aria-current={isActive ? "page" : undefined}
                 className={`group mb-0.5 flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors ${
                   isActive
-                    ? "bg-foreground/[0.08] font-medium text-foreground ring-1 ring-border/70"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
+                    ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
                 }`}
               >
                 <Icon
                   className={`h-4 w-4 shrink-0 transition-colors ${
-                    isActive ? "text-primary" : "text-muted-foreground/80 group-hover:text-accent-foreground"
+                    isActive ? "text-sidebar-primary" : "text-sidebar-foreground/70 group-hover:text-sidebar-accent-foreground"
                   }`}
                 />
-                <span className="truncate">{t(c.labelKey)}</span>
+                <span className="flex min-w-0 flex-1 flex-col items-start">
+                  <span className="truncate">{t(c.labelKey, { defaultValue: c.defaultLabel })}</span>
+                  {c.hintKey ? (
+                    <span className={`truncate text-[10px] leading-tight ${
+                      isActive ? "text-sidebar-accent-foreground/70" : "text-sidebar-foreground/55"
+                    }`}>
+                      {t(c.hintKey)}
+                    </span>
+                  ) : null}
+                </span>
               </button>
             )
           })}
@@ -542,21 +616,23 @@ export function SettingsView() {
       </aside>
 
       {/* Content */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <div className="flex-1 overflow-y-auto px-8 py-6">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
           <div className="mx-auto max-w-2xl">{body}</div>
         </div>
 
-        <div className="shrink-0 border-t bg-background/80 backdrop-blur px-8 py-3">
-          <div className="mx-auto flex max-w-2xl items-center justify-between gap-4">
-            <p className="text-xs text-muted-foreground">
-              {saved ? t("settings.savedTick") : t("settings.changeHint")}
-            </p>
-            <Button onClick={handleSave}>
-              {saved ? t("settings.saved") : t("settings.save")}
-            </Button>
+        {showSaveFooter && (
+          <div className="shrink-0 border-t bg-background/80 backdrop-blur px-8 py-3">
+            <div className="mx-auto flex max-w-2xl items-center justify-between gap-4">
+              <p className="text-xs text-muted-foreground">
+                {saved ? t("settings.savedTick") : t("settings.changeHint")}
+              </p>
+              <Button onClick={handleSave}>
+                {saved ? t("settings.saved") : t("settings.save")}
+              </Button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   )

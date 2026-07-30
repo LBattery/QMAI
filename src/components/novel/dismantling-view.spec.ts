@@ -1,11 +1,11 @@
-import { readFileSync } from "node:fs"
+﻿import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 
 const root = resolve(__dirname, "../../..")
 
-describe("dismantling library visibility", () => {
-  it("hides the dismantling library navigation entry in version 2.2.7+", () => {
+describe("dismantling library implementation", () => {
+  it("keeps the book analysis routing connected", () => {
     const storeSource = readFileSync(resolve(root, "src/stores/wiki-store.ts"), "utf8")
     const sidebarSource = readFileSync(resolve(root, "src/components/layout/icon-sidebar.tsx"), "utf8")
     const contentSource = readFileSync(resolve(root, "src/components/layout/content-area.tsx"), "utf8")
@@ -17,16 +17,13 @@ describe("dismantling library visibility", () => {
     expect(contentSource).toContain("@/components/novel/book-analysis-view")
   })
 
-  it("keeps the hidden dismantling sidebar disconnected from the visible workspace", () => {
+  it("keeps the underlying dismantling implementation intact", () => {
     const viewSource = readFileSync(resolve(root, "src/components/novel/dismantling-view.tsx"), "utf8")
-    const sidebarSource = readFileSync(resolve(root, "src/components/layout/sidebar-panel.tsx"), "utf8")
 
-    expect(sidebarSource).not.toContain('activeView === "dismantling"')
-    expect(sidebarSource).toContain("DismantlingSidebarPanel")
     expect(viewSource).toContain("拆文结果")
   })
 
-  it("keeps the underlying dismantling implementation intact for later re-enable", () => {
+  it("keeps the dismantling sidebar helpers intact", () => {
     const sidebarSource = readFileSync(resolve(root, "src/components/layout/sidebar-panel.tsx"), "utf8")
 
     expect(sidebarSource).toContain("正在提取章节")
