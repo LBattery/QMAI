@@ -6,9 +6,18 @@ describe("changelog", () => {
     const entries = allChangelog()
     const versions = entries.map((entry) => entry.version)
 
-    expect(versions.slice(0, 32)).toEqual([
+    expect(versions.slice(0, 8)).toEqual([
+      "3.0.8",
+      "3.0.7",
+      "3.0.6",
+      "3.0.5",
+      "3.0.4",
+      "3.0.3",
       "3.0.1",
       "3.0.0",
+    ])
+
+    const visibleTwoPointTwoVersions = [
       "2.2.37",
       "2.2.36",
       "2.2.35",
@@ -38,9 +47,12 @@ describe("changelog", () => {
       "2.2.8",
       "2.2.7",
       "2.2.0",
-      "2.1.0",
-    ])
-    expect(versions[32]).toBe("2.0.0")
+    ]
+    expect(versions.slice(8, 8 + visibleTwoPointTwoVersions.length)).toEqual(
+      visibleTwoPointTwoVersions,
+    )
+    expect(versions[8 + visibleTwoPointTwoVersions.length]).toBe("2.1.0")
+    expect(versions[9 + visibleTwoPointTwoVersions.length]).toBe("2.0.0")
 
     for (let patch = 1; patch <= 6; patch += 1) {
       expect(versions).not.toContain(`2.2.${patch}`)

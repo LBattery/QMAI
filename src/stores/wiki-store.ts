@@ -553,7 +553,7 @@ interface WikiState {
   selectedMemoryCenterEntry: string | null
   chatExpanded: boolean
   searchPanelOpen: boolean
-  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "soul" | "skillLibrary" | "writingSkillLibrary" | "bookAnalysis" | "settings" | "trash" | "reviewCenter" | "storySimulation"
+  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "soul" | "skillLibrary" | "writingSkillLibrary" | "skillFavorites" | "bookAnalysis" | "settings" | "trash" | "reviewCenter" | "storySimulation"
   activeSettingsCategory: SettingsCategoryId | null
   selectedSoulId: string | null
   selectedSoulTab: "project" | "character"
@@ -564,7 +564,6 @@ interface WikiState {
   writingSkillLibraryDraftDirty: boolean
   selectedReviewDimension: string | null
   selectedReviewFilePath: string
-  selectedDismantlingProjectId: string | null
   graphMode: string
   graphDisplayMode: string
   graphColorMode: string
@@ -642,7 +641,6 @@ interface WikiState {
   setWritingSkillLibraryDraftDirty: (dirty: boolean) => void
   setSelectedReviewDimension: (dimension: string | null) => void
   setSelectedReviewFilePath: (path: string) => void
-  setSelectedDismantlingProjectId: (id: string | null) => void
   setGraphMode: (mode: string) => void
   setGraphDisplayMode: (mode: string) => void
   setGraphColorMode: (mode: string) => void
@@ -718,7 +716,6 @@ export const useWikiStore = create<WikiState>((set) => ({
   writingSkillLibraryDraftDirty: false,
   selectedReviewDimension: null,
   selectedReviewFilePath: "",
-  selectedDismantlingProjectId: null,
   graphMode: "overview",
   graphDisplayMode: "graph",
   graphColorMode: "type",
@@ -820,7 +817,6 @@ export const useWikiStore = create<WikiState>((set) => ({
   setWritingSkillLibraryDraftDirty: (writingSkillLibraryDraftDirty) => set({ writingSkillLibraryDraftDirty }),
   setSelectedReviewDimension: (selectedReviewDimension) => set({ selectedReviewDimension }),
   setSelectedReviewFilePath: (selectedReviewFilePath) => set({ selectedReviewFilePath }),
-  setSelectedDismantlingProjectId: (selectedDismantlingProjectId) => set({ selectedDismantlingProjectId }),
   setGraphMode: (graphMode) => set({ graphMode }),
   setGraphDisplayMode: (graphDisplayMode) => set({ graphDisplayMode }),
   setGraphColorMode: (graphColorMode) => set({ graphColorMode }),

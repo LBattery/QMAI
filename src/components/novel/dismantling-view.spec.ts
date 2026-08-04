@@ -23,11 +23,12 @@ describe("dismantling library implementation", () => {
     expect(viewSource).toContain("拆文结果")
   })
 
-  it("keeps the dismantling sidebar helpers intact", () => {
+  it("uses the upgraded book analysis sidebar instead of the legacy import helpers", () => {
     const sidebarSource = readFileSync(resolve(root, "src/components/layout/sidebar-panel.tsx"), "utf8")
+    const bookSidebarSource = readFileSync(resolve(root, "src/components/layout/book-analysis-sidebar-panel.tsx"), "utf8")
 
-    expect(sidebarSource).toContain("正在提取章节")
-    expect(sidebarSource).toContain("已存在相同拆文作品")
-    expect(sidebarSource).toContain("normalizeDismantlingProjectTitle")
+    expect(sidebarSource).toContain("BookAnalysisSidebarPanel")
+    expect(bookSidebarSource).toContain("BookAnalysisInputDialog")
+    expect(bookSidebarSource).toContain("BookAnalysisImportTaskPanel")
   })
 })

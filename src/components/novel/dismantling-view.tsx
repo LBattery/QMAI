@@ -42,9 +42,6 @@ export function DismantlingView() {
   const llmConfig = useWikiStore((state) => state.llmConfig);
   const novelConfig = useWikiStore((state) => state.novelConfig);
   const dataVersion = useWikiStore((state) => state.dataVersion);
-  const selectedDismantlingProjectId = useWikiStore(
-    (state) => state.selectedDismantlingProjectId,
-  );
   const bumpDataVersion = useWikiStore((state) => state.bumpDataVersion);
   const [selectedProject, setSelectedProject] =
     useState<DismantlingProject | null>(null);
@@ -67,23 +64,21 @@ export function DismantlingView() {
   }>({ open: false, frameworkId: undefined });
 
   useEffect(() => {
-    if (!project || !selectedDismantlingProjectId) {
+    if (!project) {
       setSelectedProject(null);
       return;
     }
     let cancelled = false;
     void loadDismantlingLibrary(project.path).then((value) => {
       if (cancelled) return;
-      const found = value.projects.find(
-        (item) => item.id === selectedDismantlingProjectId,
-      );
+      const found = value.projects[0] ?? null;
       setSelectedProject(found ?? null);
       setSelectedChapterIds(found?.chapters.map((chapter) => chapter.id) ?? []);
     });
     return () => {
       cancelled = true;
     };
-  }, [project, dataVersion, selectedDismantlingProjectId]);
+  }, [project, dataVersion]);
 
   // 加载剧情框架库
   useEffect(() => {

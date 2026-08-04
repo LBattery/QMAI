@@ -1,7 +1,7 @@
 {
   "name": "qmai",
   "private": true,
-  "version": "3.0.3",
+  "version": "3.0.8",
   "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
@@ -47,6 +47,7 @@
     "graphology-layout-forceatlas2": "^0.10.1",
     "i18next": "^26.3.4",
     "js-yaml": "^4.3.0",
+    "jsonrepair": "^3.15.0",
     "katex": "^0.16.47",
     "lucide-react": "^1.23.0",
     "mermaid": "^11.16.0",

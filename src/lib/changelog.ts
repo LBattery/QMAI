@@ -7,6 +7,115 @@ export interface ChangelogEntry {
   };
 }
 
+const THREE_POINT_ZERO_EIGHT_CHANGELOG: ChangelogEntry = {
+  version: "3.0.8",
+  date: "2026-08-04",
+  highlights: {
+    en: [
+      "[Character Selection Gate] Book analysis character deep-dive now uses an identify -> select target characters -> queue deep-dive flow (awaiting-character-selection), avoiding blind deep-dive on all characters. (Merged from PR #43, thanks @darknessomi)",
+      "[Visual Progress] Pipeline/scheduler expose runtime fine-grained progress (phase text + percentage + currentItem), wired to task bar and chunk row UI.",
+      "[JSON Tolerance] LLM dirty JSON now parsed via jsonrepair, reducing character/story/style adapter parse failures.",
+      "[Character Sorting] Character result list panel sorts by importance -> type -> name, important characters first.",
+      "[Orphan Chunk Fix] Reassigning tasks now clears old disk chunks via replaceAnalysisTaskChunks; scheduler/aggregate only honor expectedIds to prevent orphan pending from running LLM.",
+      "[Progress Stuck / Fake 100% Fix] Chunk occupies 0-90%, aggregate/publish uses phase percentage; concurrent running progress accumulates; fixed {total} template not interpolated.",
+      "[Partial Failure Tolerance] Single chapter/character/6-dim failure can skip with warnings; partial chunk failure can still aggregate/publish; all fail only then fail; continue resets failed chunks.",
+      "[UI Cleanup] Cleaned P0 broken-link novel UI (de-ai-batch, dismantling/plot-framework, character-profile, foreshadowing, timeline, clue-board, etc.).",
+    ],
+    zh: [
+      "【角色选择门禁】拆书库角色深度分析增加「识别 → 勾选目标角色 → 再排队深挖」门禁流程，避免对所有角色盲目深挖浪费算力（合并自 PR #43，感谢 @darknessomi 贡献）",
+      "【可视化进度】pipeline/scheduler 暴露运行时细粒度进度（阶段文案+百分比+currentItem），接到任务条/区块行 UI",
+      "【JSON 容错解析】LLM 脏 JSON 经 jsonrepair 解析，降低角色/故事/文风 adapter 解析失败率",
+      "【角色排序】角色结果列表面板按「重要度→类型→名称」排序，重要角色优先展示",
+      "【孤儿区块修复】重配任务时清磁盘旧区块，调度/汇总只认 expectedIds，避免孤儿 pending 误跑 LLM",
+      "【进度钉死修复】chunk 占 0-90%，aggregate/publish 用 phase 百分比，修复 {total} 未插值与假 100%",
+      "【部分失败容忍】单章/单角色/6 维失败可跳过并带 warnings，部分区块失败仍可 aggregate/publish",
+      "【UI 清理】清理 P0 断链 novel UI（de-ai-batch、拆书/情节框架、角色档案、伏笔、时间线、线索板等）",
+    ],
+  },
+};
+
+const THREE_POINT_ZERO_SEVEN_CHANGELOG: ChangelogEntry = {
+  version: "3.0.7",
+  date: "2026-08-04",
+  highlights: {
+    en: [
+      "[Chinese Chapter Number Routing Fix] Unified task router chapter number token parsing so Chinese number commands like '编写第五章' / '生成第五章' now hit write_chapter with the same high confidence as Arabic numerals. Also fixed continuation/rewrite/polish/review intents and hasExplicitLaterChapterNumber for Chinese chapter numbers. (Merged from PR #42, thanks @darknessomi)",
+      "[Dismantling Library Unstable] The dismantling library is currently unstable; usage is not recommended until stabilized.",
+    ],
+    zh: [
+      "【中文数字章号识别修复】统一任务路由章号 token，使「编写第五章」/「生成第五章」等中文数字指令与阿拉伯数字一样高置信命中写章任务。同步修复续写/改写/润色/审稿意图及 hasExplicitLaterChapterNumber 对中文章号的支持（合并自 PR #42，感谢 @darknessomi 贡献）",
+      "【拆书库不稳定】拆书库目前不稳定，建议暂不使用，待后续版本修复稳定后恢复",
+    ],
+  },
+};
+
+const THREE_POINT_ZERO_SIX_CHANGELOG: ChangelogEntry = {
+  version: "3.0.6",
+  date: "2026-08-03",
+  highlights: {
+    en: [
+      "[Outline Save Blank Fix] Fixed 'Save as Outline' writing near-empty files due to extractBodyContent stripping markdown fences; empty content no longer writes to disk. (Merged from PR #40, thanks @darknessomi)",
+      "[Outline Silent Save Fix] Outline types no longer auto-save silently; unified through outlineSaveRequests -> confirmation dialog -> write. write_outline_node disabled in outline conversations to prevent double-write.",
+      "[Switch Project Chapter Residue Fix] Fixed chapters from project A still open after switching to project B: lastReadChapter isolated by projectId, path ownership validated on restore, fileContent and session restore keys cleaned.",
+      "[Entity Miss Web Search] When local entities are not found for character/setting questions, agent now proactively enables web_search. (Merged from feat/entity-miss-web-search)",
+      "[Dismantling Library Unstable] The dismantling library is currently unstable; usage is not recommended until stabilized.",
+    ],
+    zh: [
+      "【大纲保存空白修复】修复手动「保存为大纲」因 extractBodyContent 误删 markdown 围栏而写入近空白文件；空 content 不再落盘（合并自 PR #40，感谢 @darknessomi 贡献）",
+      "【大纲静默落盘修复】禁止章纲等大纲类型静默 auto-save，统一走确认弹窗；大纲对话禁用 write_outline_node 切断双写",
+      "【切换项目章节残留修复】修复切换写作项目后仍打开其他项目章节：lastReadChapter 按 projectId 隔离，恢复时校验路径归属",
+      "【实体未命中 web_search】本地实体未命中时主动启用 web_search（合并自 feat/entity-miss-web-search）",
+      "【拆书库不稳定】拆书库目前不稳定，建议暂不使用，待后续版本修复稳定后恢复",
+    ],
+  },
+};
+
+const THREE_POINT_ZERO_FIVE_CHANGELOG: ChangelogEntry = {
+  version: "3.0.5",
+  date: "2026-08-03",
+  highlights: {
+    en: [
+      "[Immersive Writing Truncation Fix] Adopted CSS `field-sizing: content` to let the textarea auto-size natively, fixing the bug where the end of chapter body text was clipped when the window was shrunk. Falls back to JS scrollHeight + ResizeObserver when unsupported. (Merged from PR #39, thanks @darknessomi)",
+      "[Memory Center Crash Fix] Fixed 'Application error (React error #300)' when selecting a memory and clicking 'View Memory' in the Memory Center. Root cause: 3 useMemo hooks were placed inside a conditional branch, violating the Rules of Hooks.",
+      "[Dismantling Library Unstable] The dismantling library is currently unstable; usage is not recommended until stabilized.",
+    ],
+    zh: [
+      "【沉浸式写作正文截断修复】采用 CSS `field-sizing: content` 原生方案，彻底修复缩小窗口时沉浸式写作正文末尾内容被截断不可见的问题。不支持时降级为现有 JS scrollHeight + ResizeObserver 逻辑。（合并自 PR #39，感谢 @darknessomi 贡献）",
+      "【记忆中心崩溃修复】修复记忆中心选中记忆后点击「查看记忆」时显示「应用运行出错（React error #300）」的崩溃问题。根因：3 个 useMemo hooks 被放在条件分支内部，违反 React Hooks 规则。",
+      "【拆书库不稳定】拆书库目前不稳定，建议暂不使用，待后续版本修复稳定后恢复",
+    ],
+  },
+};
+
+const THREE_POINT_ZERO_FOUR_CHANGELOG: ChangelogEntry = {
+  version: "3.0.4",
+  date: "2026-08-02",
+  highlights: {
+    en: [
+      "[Skill Favorites] Star any skill in the sidebar to save it to a global favorites list; access them from the new 'Favorites' tab.",
+      "[Cross-Project Copy] Copy any favorited skill to the current project with one click; works across different projects.",
+      "[Global Storage] Favorites are stored globally via Tauri plugin-store; they persist across project switches.",
+      "[Content Snapshot] Favoriting captures a content snapshot; favorites remain intact even if the original skill is modified or deleted.",
+      "[Foreshadowing Fix] Fixed foreshadowing ingestion: full/half-width colon compatibility, name normalization, deduplication.",
+      "[Abandoned State] Foreshadowing now supports 'abandoned' status; new cleanup maintenance tool added in Settings.",
+      "[Chat Model Dropdown] Fixed dropdown clipping in chat model selector; now expands upward when space is insufficient.",
+      "[Thinking Mode Fix] Fixed reasoning_content propagation in multi-turn tool calls for thinking models.",
+      "[Dismantling Library Unstable] The dismantling library is currently unstable; usage is not recommended until stabilized.",
+    ],
+    zh: [
+      "【技能库收藏】侧边栏技能卡片新增星标按钮，一键收藏到全局收藏列表，通过新增的「收藏」Tab 集中查看",
+      "【跨项目复制】收藏列表支持「复制到当前项目」，一键将收藏的技能复制到当前打开的项目，跨项目复用更便捷",
+      "【全局存储】收藏数据通过 Tauri plugin-store 全局存储，切换项目不丢失",
+      "【内容快照】收藏时固化技能内容快照，原技能被修改或删除后收藏不会失效",
+      "【伏笔摄取修复】修复伏笔摄取全角/半角冒号兼容、name 字段归一化、重复伏笔去重问题",
+      "【已放弃状态】伏笔新增「已放弃」状态，设置中新增伏笔清理维护工具",
+      "【聊天模型下拉修复】修复聊天模型选择下拉框被裁切问题，空间不足时自动向上展开",
+      "【思维模式修复】修复思维模式多轮工具调用时 reasoning_content 未正确回传问题",
+      "【拆书库不稳定】拆书库目前不稳定，建议暂不使用，待后续版本修复稳定后恢复",
+    ],
+  },
+};
+
 const THREE_POINT_ZERO_THREE_CHANGELOG: ChangelogEntry = {
   version: "3.0.3",
   date: "2026-08-01",
@@ -953,6 +1062,16 @@ export const CHANGELOG: ChangelogEntry[] = [
 ];
 
 export function currentVersionChangelog(version: string): ChangelogEntry[] {
+  if (version === THREE_POINT_ZERO_EIGHT_CHANGELOG.version)
+    return [THREE_POINT_ZERO_EIGHT_CHANGELOG];
+  if (version === THREE_POINT_ZERO_SEVEN_CHANGELOG.version)
+    return [THREE_POINT_ZERO_SEVEN_CHANGELOG];
+  if (version === THREE_POINT_ZERO_SIX_CHANGELOG.version)
+    return [THREE_POINT_ZERO_SIX_CHANGELOG];
+  if (version === THREE_POINT_ZERO_FIVE_CHANGELOG.version)
+    return [THREE_POINT_ZERO_FIVE_CHANGELOG];
+  if (version === THREE_POINT_ZERO_FOUR_CHANGELOG.version)
+    return [THREE_POINT_ZERO_FOUR_CHANGELOG];
   if (version === THREE_POINT_ZERO_THREE_CHANGELOG.version)
     return [THREE_POINT_ZERO_THREE_CHANGELOG];
   if (version === THREE_POINT_ZERO_ONE_CHANGELOG.version)
@@ -1030,6 +1149,12 @@ export function currentVersionChangelog(version: string): ChangelogEntry[] {
 
 export function allChangelog(): ChangelogEntry[] {
   return [
+    THREE_POINT_ZERO_EIGHT_CHANGELOG,
+    THREE_POINT_ZERO_SEVEN_CHANGELOG,
+    THREE_POINT_ZERO_SIX_CHANGELOG,
+    THREE_POINT_ZERO_FIVE_CHANGELOG,
+    THREE_POINT_ZERO_FOUR_CHANGELOG,
+    THREE_POINT_ZERO_THREE_CHANGELOG,
     THREE_POINT_ZERO_ONE_CHANGELOG,
     THREE_POINT_ZERO_ZERO_CHANGELOG,
     TWO_POINT_TWO_THIRTY_SEVEN_CHANGELOG,

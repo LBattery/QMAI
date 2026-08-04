@@ -457,10 +457,11 @@ export async function listInvalidSnapshots(
 }
 
 export async function deleteInvalidSnapshots(
-  _projectPath: string,
+  projectPath: string,
   paths: string[],
   options: { onLog?: CleanupLogFn } = {},
 ): Promise<number> {
+  void projectPath;
   const log = options.onLog
   let deleted = 0
   for (const path of paths) {

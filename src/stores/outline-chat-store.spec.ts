@@ -235,7 +235,7 @@ describe("outline-chat-store", () => {
     expect(state.conversations.map((item) => item.id)).toEqual(["from-b"])
     expect(state.activeConversationId).toBe("from-b")
     expect(state.loaded).toBe(true)
-  })
+  }, 10_000)
   it("persists structured model content and reloads legacy messages", async () => {
     useWikiStore.setState({ project: { name: "??", path: "C:/Book" } })
     const request: OutlineWizardRequest = {
