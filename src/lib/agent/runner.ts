@@ -1,6 +1,6 @@
 import { streamChat } from "../llm-client"
 import type { StreamCallbacks } from "../llm-client"
-import { providerUsesTextToolCalls } from "./config"
+import { isFunctionCallingEnabled, providerUsesTextToolCalls } from "./config"
 import { accumulateToolCalls, parseTextToolCalls } from "./tool-call-parser"
 import { toOpenAITools } from "./tools-schema"
 import type { ToolRegistry } from "./registry"
@@ -17,6 +17,7 @@ import type { ChatMessage } from "../llm-providers"
 import { isReasoningDisabled, isReasoningOnlyResponseError, withReasoningDisabled } from "../reasoning-retry"
 import { addLlmUsage } from "../llm-usage"
 import { trimChatMessagesToBudget } from "../chat-request-budget"
+import { logReasoningReplay } from "../reasoning-replay-debug"
 import { ToolEvidenceLedger } from "./tool-evidence-ledger"
 
 export class ModelDoesNotSupportToolsError extends Error {
@@ -120,11 +121,16 @@ export class AgentRunner {
 
       const toolCallDeltas: ToolCallDelta[] = []
       let roundText = ""
+      let roundReasoningContent = ""
       let streamError: Error | undefined
 
       const streamCallbacks: StreamCallbacks = {
         onToken: (t: string) => {
           roundText += t
+        },
+        onReasoningToken: (t: string) => {
+          roundReasoningContent += t
+          callbacks.onReasoningToken?.(t)
         },
         onToolCallDelta: (delta: ToolCallDelta) => {
           toolCallDeltas.push(delta)
@@ -140,12 +146,22 @@ export class AgentRunner {
         },
       }
 
-      const openaiTools = config.tools.length > 0 ? toOpenAITools(config.tools) : undefined
+      const toolsAllowed = isFunctionCallingEnabled(config.llmConfig) && config.tools.length > 0
+      let openaiTools = toolsAllowed ? toOpenAITools(config.tools) : undefined
+      let attemptedToolsFallback = false
       const buildRequestOverrides = (baseOverrides = config.requestOverrides) =>
         openaiTools
           ? { ...baseOverrides, tools: openaiTools as any, toolChoice: "auto" as const }
           : baseOverrides
       let requestOverrides = buildRequestOverrides()
+      const isToolUnsupportedError = (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        return /function[\s_.-]*call|tool_choice|tools?\s+(?:is|are)\s+not\s+supported|does\s+not\s+support\s+(?:function|tools?)|unsupported\s+(?:function|tools?|tool_choice)|不支持\s*(?:工具|function\s*call|FunctionCall)/i.test(msg)
+      }
+      const failToolsUnsupported = () => {
+        callbacks.onError(new ModelDoesNotSupportToolsError())
+        return record
+      }
       const streamRound = async () => {
         const internalBudget = Math.max(1, Math.floor((config.llmConfig.maxContextSize || 204_800) * 0.75))
         const compacted = trimChatMessagesToBudget(workingMessages as ChatMessage[], internalBudget) as AgentMessage[]
@@ -158,17 +174,41 @@ export class AgentRunner {
           requestOverrides,
         )
       }
+      const retryWithoutTools = async () => {
+        attemptedToolsFallback = true
+        openaiTools = undefined
+        roundText = ""
+        roundReasoningContent = ""
+        toolCallDeltas.length = 0
+        streamError = undefined
+        requestOverrides = buildRequestOverrides(config.requestOverrides)
+        await streamRound()
+      }
       try {
         await streamRound()
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        if (openaiTools && /tool|function.?call|unsupported|不支持工具/i.test(msg)) {
-          const modelErr = new ModelDoesNotSupportToolsError()
-          callbacks.onError(modelErr)
+        if (openaiTools && isToolUnsupportedError(err)) {
+          try {
+            await retryWithoutTools()
+          } catch {
+            return failToolsUnsupported()
+          }
+        } else {
+          callbacks.onError(err instanceof Error ? err : new Error(String(err)))
           return record
         }
-        callbacks.onError(err instanceof Error ? err : new Error(String(err)))
-        return record
+      }
+
+      if (
+        streamError &&
+        openaiTools &&
+        isToolUnsupportedError(streamError)
+      ) {
+        try {
+          await retryWithoutTools()
+        } catch {
+          return failToolsUnsupported()
+        }
       }
 
       if (
@@ -177,6 +217,7 @@ export class AgentRunner {
         !isReasoningDisabled(config.llmConfig, requestOverrides)
       ) {
         roundText = ""
+        roundReasoningContent = ""
         toolCallDeltas.length = 0
         streamError = undefined
         requestOverrides = buildRequestOverrides(withReasoningDisabled(config.requestOverrides))
@@ -189,6 +230,9 @@ export class AgentRunner {
       }
 
       if (streamError) {
+        if (attemptedToolsFallback) {
+          return failToolsUnsupported()
+        }
         callbacks.onError(streamError)
         return record
       }
@@ -219,12 +263,22 @@ export class AgentRunner {
         return record
       }
 
-      // Add assistant message with tool calls
+      // Add assistant message with tool calls.
+      // DeepSeek/Kimi thinking mode requires reasoning_content on every
+      // tool-call assistant message in subsequent rounds — even "".
       const assistantMsg: AgentMessage = {
         role: "assistant",
         content: roundText || "",
         tool_calls: toolCalls,
+        reasoning_content: roundReasoningContent,
       }
+      logReasoningReplay("agent.round.tool_assistant", {
+        round: round + 1,
+        contentLen: (roundText || "").length,
+        reasoningLen: roundReasoningContent.length,
+        toolNames: toolCalls.map((call) => call.function.name),
+        workingMessageCount: workingMessages.length + 1,
+      })
       workingMessages.push(assistantMsg)
 
       // Execute each tool call

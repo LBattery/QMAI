@@ -46,6 +46,14 @@ const mocks = vi.hoisted(() => {
   const deleteFailedTask = vi.fn()
   const renameCompletedTask = vi.fn()
   const dispose = vi.fn()
+  const initializePipelineProject = vi.fn()
+  const createAwaitingRangeTask = vi.fn()
+  const configureTaskRange = vi.fn()
+  const startPipelineTask = vi.fn()
+  const pausePipelineTask = vi.fn()
+  const continuePipelineTask = vi.fn()
+  const retryPipelineChunk = vi.fn()
+  const cancelPipelineTask = vi.fn()
   const setPanelCollapsed = vi.fn()
   const triggerSidebarRefresh = vi.fn()
   const setSelectedLibraryBookId = vi.fn()
@@ -108,6 +116,18 @@ const mocks = vi.hoisted(() => {
       setPanelCollapsed,
       dispose,
     },
+    pipelineState: {
+      tasks: [],
+      chunks: [],
+      initializeProject: initializePipelineProject,
+      createAwaitingRangeTask,
+      configureTaskRange,
+      startTask: startPipelineTask,
+      pauseTask: pausePipelineTask,
+      continueTask: continuePipelineTask,
+      retryFailedChunk: retryPipelineChunk,
+      cancelTask: cancelPipelineTask,
+    },
     initializeProject,
     createBatch,
     continueTask,
@@ -117,6 +137,14 @@ const mocks = vi.hoisted(() => {
     deleteFailedTask,
     renameCompletedTask,
     dispose,
+    initializePipelineProject,
+    createAwaitingRangeTask,
+    configureTaskRange,
+    startPipelineTask,
+    pausePipelineTask,
+    continuePipelineTask,
+    retryPipelineChunk,
+    cancelPipelineTask,
     setPanelCollapsed,
     triggerSidebarRefresh,
     setSelectedLibraryBookId,
@@ -158,6 +186,14 @@ vi.mock("@/stores/book-analysis-import-store", () => {
     { getState: () => mocks.importState },
   )
   return { useBookAnalysisImportStore }
+})
+
+vi.mock("@/stores/book-analysis-pipeline-store", () => {
+  const useBookAnalysisPipelineStore = Object.assign(
+    (selector: (state: typeof mocks.pipelineState) => unknown) => selector(mocks.pipelineState),
+    { getState: () => mocks.pipelineState },
+  )
+  return { useBookAnalysisPipelineStore }
 })
 
 vi.mock("./hooks/use-library-operations", () => ({
@@ -372,6 +408,14 @@ beforeEach(() => {
   mocks.deleteFailedTask.mockReset().mockResolvedValue(undefined)
   mocks.renameCompletedTask.mockReset().mockResolvedValue(undefined)
   mocks.dispose.mockReset().mockResolvedValue(undefined)
+  mocks.initializePipelineProject.mockReset().mockResolvedValue(undefined)
+  mocks.createAwaitingRangeTask.mockReset().mockResolvedValue(null)
+  mocks.configureTaskRange.mockReset().mockResolvedValue(undefined)
+  mocks.startPipelineTask.mockReset().mockResolvedValue(undefined)
+  mocks.pausePipelineTask.mockReset().mockResolvedValue(undefined)
+  mocks.continuePipelineTask.mockReset().mockResolvedValue(undefined)
+  mocks.retryPipelineChunk.mockReset().mockResolvedValue(undefined)
+  mocks.cancelPipelineTask.mockReset().mockResolvedValue(undefined)
   mocks.setPanelCollapsed.mockReset()
   mocks.triggerSidebarRefresh.mockReset().mockImplementation(() => { mocks.oldState.sidebarRefreshCounter += 1 })
   mocks.setSelectedLibraryBookId.mockReset().mockImplementation((id: string | null) => { mocks.oldState.selectedLibraryBookId = id })
@@ -404,22 +448,24 @@ afterEach(async () => {
 afterAll(() => restoreActEnvironment())
 
 describe("BookAnalysisView 批量导入运行时接线", () => {
-  it("挂载和项目切换时初始化对应项目，并在切换和卸载时异步释放", async () => {
+  it("挂载和项目切换时初始化对应项目，卸载后保持后台任务运行", async () => {
     await renderView()
     expect(mocks.initializeProject).toHaveBeenCalledWith("E:/项目甲")
+    expect(mocks.initializePipelineProject).toHaveBeenCalledWith("E:/项目甲")
 
     mocks.wikiState.project = { id: "project-b", name: "项目乙", path: "F:/项目乙" }
     await rerenderView()
 
-    expect(mocks.dispose).toHaveBeenCalledTimes(1)
+    expect(mocks.dispose).not.toHaveBeenCalled()
     expect(mocks.initializeProject).toHaveBeenLastCalledWith("F:/项目乙")
+    expect(mocks.initializePipelineProject).toHaveBeenLastCalledWith("F:/项目乙")
 
     await act(async () => {
       root.unmount()
       await Promise.resolve()
     })
     mounted = false
-    expect(mocks.dispose).toHaveBeenCalledTimes(2)
+    expect(mocks.dispose).not.toHaveBeenCalled()
   })
 
   it("弹窗通过同名批量入口原样提交完整候选列表，并在成功后关闭", async () => {

@@ -145,9 +145,11 @@ interface LlmConfig {
   reasoning?: ReasoningConfig
   localCliIsolation?: boolean
   codexCliTimeoutMinutes?: number
+  /** When false, Agent requests omit tools/tool_choice. Default/undefined = enabled. */
+  functionCallingEnabled?: boolean
 }
 
-export type SearchProvider = "tavily" | "serpapi" | "searxng" | "none"
+export type SearchProvider = "bocha" | "qiniu" | "metaso" | "tavily" | "serpapi" | "searxng" | "none"
 export type SerpApiEngine =
   | "google"
   | "google_news"
@@ -450,6 +452,8 @@ export interface ProviderOverride {
   enabled?: boolean
   /** 已保存的模型列表（仅用于自定义供应商） */
   savedModels?: SavedModel[]
+  /** When false, Agent requests for this provider omit tools/tool_choice. Default/undefined = enabled. */
+  functionCallingEnabled?: boolean
 }
 
 export type ProviderConfigs = Record<string, ProviderOverride>

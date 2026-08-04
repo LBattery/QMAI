@@ -4,8 +4,9 @@ import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
 import { isTauri, pickDirectory } from "@/lib/platform"
 import { useChatStore } from "@/stores/chat-store"
+import { useOutlineChatStore } from "@/stores/outline-chat-store"
 import { openProject, fileExists, listDirectory, readFile } from "@/commands/fs"
-import { getLastProject, saveLastProject, loadLlmConfig, loadAiChatModel, loadDefaultLlmModel, loadLanguage, loadEmbeddingConfig, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadScheduledImportConfig, saveScheduledImportConfig, loadSourceWatchConfig, loadNovelMode, loadNovelConfig, loadRevisionFeedbackWindowConfig, loadTheme, loadMaxHistoryMessages, loadUiFontFamily, loadVisualStyle, saveLlmConfig, loadLastReadChapter, loadMcpConfig } from "@/lib/project-store"
+import { getLastProject, saveLastProject, loadLlmConfig, loadAiChatModel, loadDefaultLlmModel, loadLanguage, loadEmbeddingConfig, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadScheduledImportConfig, saveScheduledImportConfig, loadSourceWatchConfig, loadNovelMode, loadNovelConfig, loadRevisionFeedbackWindowConfig, loadTheme, loadMaxHistoryMessages, loadUiFontFamily, loadVisualStyle, saveLlmConfig, loadLastReadChapter, loadMcpConfig, loadSearchApiConfig } from "@/lib/project-store"
 import { loadReviewItems, loadChatHistory, saveChatHistory, saveReviewItems } from "@/lib/persist"
 import { initializeAiOutlineModelFromStorage } from "@/lib/ai-outline-model-initialization"
 import { setupAutoSave, teardownAutoSave } from "@/lib/auto-save"
@@ -66,18 +67,26 @@ function App() {
 
     try {
       const savedChat = await loadChatHistory(proj.path)
-      if (!isCurrentProject(proj)) return
-      useChatStore.getState().setLoadedRunStates(savedChat.runStates)
-      if (savedChat.conversations.length > 0) {
-        useChatStore.getState().setConversations(savedChat.conversations)
-        useChatStore.getState().setMessages(savedChat.messages)
-        const sorted = [...savedChat.conversations].sort((a, b) => b.updatedAt - a.updatedAt)
-        if (sorted[0]) {
-          useChatStore.getState().setActiveConversation(sorted[0].id)
+      if (isCurrentProject(proj)) {
+        useChatStore.getState().setLoadedRunStates(savedChat.runStates)
+        if (savedChat.conversations.length > 0) {
+          useChatStore.getState().setConversations(savedChat.conversations)
+          useChatStore.getState().setMessages(savedChat.messages)
+          const sorted = [...savedChat.conversations].sort((a, b) => b.updatedAt - a.updatedAt)
+          if (sorted[0]) {
+            useChatStore.getState().setActiveConversation(sorted[0].id)
+          }
         }
       }
     } catch (err) {
       console.warn("[startup] 加载聊天历史失败:", err)
+    }
+
+    try {
+      if (!isCurrentProject(proj)) return
+      await useOutlineChatStore.getState().loadFromDisk()
+    } catch (err) {
+      console.warn("[startup] 加载大纲 AI 对话历史失败:", err)
     }
   }
 
@@ -128,6 +137,17 @@ function App() {
       await restoreDedupQueue(proj.id, proj.path)
     } catch (err) {
       console.error("恢复去重队列失败:", err)
+    }
+
+    if (!isCurrentProject(proj)) return
+
+    try {
+      const {
+        restoreForeshadowingCleanupQueue,
+      } = await import("@/lib/foreshadowing-cleanup-queue")
+      await restoreForeshadowingCleanupQueue(proj.id, proj.path)
+    } catch (err) {
+      console.error("恢复伏笔清理队列失败:", err)
     }
 
     if (!isCurrentProject(proj)) return
@@ -289,6 +309,10 @@ function App() {
         }
         const savedMcpConfig = await loadMcpConfig()
         useWikiStore.getState().setMcpConfig(savedMcpConfig)
+        const savedSearchApiConfig = await loadSearchApiConfig()
+        if (savedSearchApiConfig) {
+          useWikiStore.getState().setSearchApiConfig(savedSearchApiConfig)
+        }
         const savedProxy = await loadProxyConfig()
         if (savedProxy) {
           useWikiStore.getState().setProxyConfig(savedProxy)

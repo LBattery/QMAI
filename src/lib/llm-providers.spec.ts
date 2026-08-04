@@ -23,6 +23,25 @@ function requestBody(config: LlmConfig): Record<string, unknown> {
 }
 
 describe("llm provider reasoning options", () => {
+  it("replays assistant reasoning_content including empty string", () => {
+    const body = getProviderConfig(customConfig()).buildBody([
+      { role: "user", content: "写第一章" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "read_chapter", arguments: "{}" },
+        }],
+        reasoning_content: "",
+      },
+      { role: "tool", content: "章节内容", tool_call_id: "call_1", name: "read_chapter" },
+    ]) as { messages: Array<{ reasoning_content?: string }> }
+
+    expect(body.messages[1]?.reasoning_content).toBe("")
+  })
+
   it("sends reasoning_effort for explicit custom OpenAI-compatible reasoning mode", () => {
     const body = requestBody(customConfig({ reasoning: { mode: "high" } }))
 
@@ -83,6 +102,30 @@ describe("internal request overrides", () => {
     expect(serialized).not.toContain("userMemorySurface")
     expect(serialized).not.toContain("userMemoryProjectKey")
     expect(serialized).not.toContain("userMemorySessionKey")
+  })
+
+  it("sends snake_case tool_choice without leaking camelCase toolChoice", () => {
+    const tools = [{
+      type: "function",
+      function: {
+        name: "read_chapter",
+        description: "read",
+        parameters: { type: "object", properties: {} },
+      },
+    }]
+    const body = getProviderConfig(customConfig()).buildBody(
+      [{ role: "user", content: "测试请求" }],
+      {
+        temperature: 0.2,
+        tools,
+        toolChoice: "auto",
+      },
+    ) as Record<string, unknown>
+
+    expect(body.tools).toEqual(tools)
+    expect(body.tool_choice).toBe("auto")
+    expect(body).not.toHaveProperty("toolChoice")
+    expect(JSON.stringify(body)).not.toContain("toolChoice")
   })
 })
 

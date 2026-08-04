@@ -44,6 +44,7 @@ import { BookAnalysisCharacterSkillDialog } from "./book-analysis-character-skil
 import { OutlineCreatorDialog } from "./outline-editor"
 import { generateSkillsForCharacters } from "@/lib/novel/book-analysis/skill-generator"
 import { selectCharacterCandidates } from "@/lib/novel/book-analysis/character-candidate-selection"
+import { loadBookAnalysisResult } from "@/lib/novel/book-analysis/result-loader"
 
 interface StoryFrameworkSelectionData {
   book: BookAnalysisLibraryBook
@@ -124,7 +125,6 @@ export function BookAnalysisView() {
   const deleteFailedImportTask = useBookAnalysisImportStore((s) => s.deleteFailedTask)
   const renameCompletedImportTask = useBookAnalysisImportStore((s) => s.renameCompletedTask)
   const setImportPanelCollapsed = useBookAnalysisImportStore((s) => s.setPanelCollapsed)
-  const disposeImportStore = useBookAnalysisImportStore((s) => s.dispose)
   const pipelineTasks = useBookAnalysisPipelineStore((s) => s.tasks)
   const pipelineChunks = useBookAnalysisPipelineStore((s) => s.chunks)
   const initializePipelineProject = useBookAnalysisPipelineStore((s) => s.initializeProject)
@@ -135,10 +135,10 @@ export function BookAnalysisView() {
   const continuePipelineTask = useBookAnalysisPipelineStore((s) => s.continueTask)
   const retryPipelineChunk = useBookAnalysisPipelineStore((s) => s.retryFailedChunk)
   const cancelPipelineTask = useBookAnalysisPipelineStore((s) => s.cancelTask)
-  const disposePipeline = useBookAnalysisPipelineStore((s) => s.dispose)
   const importRevisionBaselineRef = useRef({ projectPath: currentProject?.path ?? null, revision: importRevision })
   const importInitializationSequenceRef = useRef(0)
   const importInitializationTokenRef = useRef<{ sequence: number; projectPath: string } | null>(null)
+  const notifiedPipelineTaskIdsRef = useRef<Set<string>>(new Set())
 
   // 角色识别 LLM 配置（feature/llm-character-recognizer）
   const baseLlmConfig = useWikiStore((s) => s.llmConfig)
@@ -277,12 +277,10 @@ export function BookAnalysisView() {
       if (importInitializationTokenRef.current === initializationToken) importInitializationTokenRef.current = null
     })
 
-    return () => {
-      void Promise.all([disposeImportStore(), disposePipeline()]).catch((error) => {
-        console.error("释放批量导入任务失败", error)
-      })
-    }
-  }, [currentProject?.path, initializeImportProject, disposeImportStore, initializePipelineProject, disposePipeline])
+    // 不在卸载时 dispose：调度器在后台持续运行，
+    // 切换页面再返回时通过 initializeProject 的同项目早返回保持进度不丢失。
+    // 项目切换时 initializeProject 内部会自动释放旧调度器。
+  }, [currentProject?.path, initializeImportProject, initializePipelineProject])
 
   useEffect(() => {
     if (!currentProject?.path) return
@@ -298,6 +296,44 @@ export function BookAnalysisView() {
       })
     }
   }, [createAwaitingRangeTask, currentProject?.path, importBatches, importTasks])
+
+  useEffect(() => {
+    if (!currentProject?.path) return
+    for (const task of pipelineTasks) {
+      if (task.status === "completed" && !notifiedPipelineTaskIdsRef.current.has(`${task.id}:completed`)) {
+        notifiedPipelineTaskIdsRef.current.add(`${task.id}:completed`)
+        void reloadLibraryState()
+        if (task.batchId) continue
+        if (task.selectedSkills.includes("characters") && task.selectedSkills.length === 1) {
+          toast.success("角色信息已提取完成，可选择角色生成 Skill。", {
+            persistent: true,
+            action: { label: "打开角色信息", onClick: handleOpenCharacterSkillSelection },
+          })
+        } else {
+          toast.success("拆书任务已完成，结果已更新。", {
+            persistent: true,
+            action: {
+              label: "查看结果",
+              onClick: async () => {
+                const loadedResult = await loadBookAnalysisResult(task.projectPath, task.bookId)
+                if (loadedResult) {
+                  useBookAnalysisStore.getState().setCurrentResult(loadedResult)
+                }
+                setViewingResultPath(task.projectPath)
+                setShowResultViewer(true)
+              },
+            },
+          })
+        }
+      } else if (task.status === "failed" && !notifiedPipelineTaskIdsRef.current.has(`${task.id}:failed`)) {
+        notifiedPipelineTaskIdsRef.current.add(`${task.id}:failed`)
+        void reloadLibraryState()
+        if (!task.batchId) {
+          toast.error(`分析失败：${task.error || "未知错误"}`)
+        }
+      }
+    }
+  }, [currentProject?.path, pipelineTasks, reloadLibraryState, handleOpenCharacterSkillSelection])
 
   useEffect(() => {
     const projectPath = currentProject?.path ?? null
@@ -662,11 +698,33 @@ export function BookAnalysisView() {
           setPipelineDialog(null)
           void startPipelineTask(pipelineDialog.taskId).then(async () => {
             await reloadLibraryState()
-            if (selectedSkills.includes("characters")) {
-              toast.success("角色信息已提取完成，可选择角色生成 Skill。", {
-                persistent: true,
-                action: { label: "打开角色信息", onClick: handleOpenCharacterSkillSelection },
-              })
+            const completedTask = useBookAnalysisPipelineStore.getState().tasks.find(t => t.id === pipelineDialog.taskId)
+            if (completedTask?.status === "completed") {
+              if (selectedSkills.includes("characters")) {
+                toast.success("角色信息已提取完成，可选择角色生成 Skill。", {
+                  persistent: true,
+                  action: { label: "打开角色信息", onClick: handleOpenCharacterSkillSelection },
+                })
+              } else {
+                toast.success("拆书任务已完成，结果已更新。", {
+                  persistent: true,
+                  action: {
+                    label: "查看结果",
+                    onClick: async () => {
+                      if (completedTask) {
+                        const loadedResult = await loadBookAnalysisResult(completedTask.projectPath, completedTask.bookId)
+                        if (loadedResult) {
+                          useBookAnalysisStore.getState().setCurrentResult(loadedResult)
+                        }
+                        setViewingResultPath(completedTask.projectPath)
+                      }
+                      setShowResultViewer(true)
+                    },
+                  },
+                })
+              }
+            } else if (completedTask?.status === "failed") {
+              toast.error(`分析失败：${completedTask.error || "未知错误"}`)
             }
           }).catch((error) => {
             toast.error(`分析失败：${error instanceof Error ? error.message : String(error)}`)

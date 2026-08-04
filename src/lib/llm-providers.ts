@@ -52,6 +52,14 @@ export interface ChatMessage {
   tool_calls?: ToolCall[]
   tool_call_id?: string
   name?: string
+  /**
+   * Chain-of-thought / reasoning content from thinking models
+   * (DeepSeek-R1, Qwen3, Kimi K2.x, etc.). Must be passed back
+   * on subsequent multi-turn requests or the API returns 400:
+   * "The `reasoning_content` in the thinking mode must be passed
+   * back to the API."
+   */
+  reasoning_content?: string
 }
 
 /**
@@ -427,6 +435,7 @@ function buildOpenAiBody(
     ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
     ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
     ...(m.name ? { name: m.name } : {}),
+    ...(m.reasoning_content !== undefined ? { reasoning_content: m.reasoning_content } : {}),
   }))
   const body: Record<string, unknown> = { messages: translated, stream: true, ...stripWireAgnosticOverrides(overrides) }
   if (overrides?.tools && overrides.tools.length > 0) {
@@ -477,13 +486,24 @@ function buildResponsesBody(
   return body
 }
 
-function stripWireAgnosticOverrides(overrides?: RequestOverrides): Omit<RequestOverrides, "reasoning" | "skipUserMemory" | "userMemorySurface" | "userMemoryProjectKey" | "userMemorySessionKey"> {
+function stripWireAgnosticOverrides(overrides?: RequestOverrides): Omit<
+  RequestOverrides,
+  | "reasoning"
+  | "skipUserMemory"
+  | "userMemorySurface"
+  | "userMemoryProjectKey"
+  | "userMemorySessionKey"
+  | "tools"
+  | "toolChoice"
+> {
   const {
     reasoning: _reasoning,
     skipUserMemory: _skipUserMemory,
     userMemorySurface: _userMemorySurface,
     userMemoryProjectKey: _userMemoryProjectKey,
     userMemorySessionKey: _userMemorySessionKey,
+    tools: _tools,
+    toolChoice: _toolChoice,
     ...rest
   } = overrides ?? {}
   return rest
@@ -563,7 +583,9 @@ function buildOpenAiCompatibleBody(
   overrides?: RequestOverrides,
 ): Record<string, unknown> {
   const reasoning = effectiveReasoning(config, overrides)
-  const body: Record<string, unknown> = buildOpenAiBody(messages, stripWireAgnosticOverrides(overrides))
+  // Pass full overrides: buildOpenAiBody strips internal/wire-agnostic
+  // fields (including tools/toolChoice) then re-emits tools + tool_choice.
+  const body: Record<string, unknown> = buildOpenAiBody(messages, overrides)
   if (
     config.provider === "openai"
     || config.provider === "azure"

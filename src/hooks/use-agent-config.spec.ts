@@ -140,6 +140,12 @@ async function renderHook(systemPrompt: string, overrides: StoreStates & {
 
   vi.doMock("@/lib/web-search", () => ({
     resolveSearchConfig: (config: SearchApiConfig) => config,
+    providerRequiresApiKey: (provider: SearchApiConfig["provider"]) =>
+      provider === "bocha" ||
+      provider === "qiniu" ||
+      provider === "metaso" ||
+      provider === "tavily" ||
+      provider === "serpapi",
     webSearch: (...args: unknown[]) => webSearchMock(...args),
   }))
 
@@ -266,6 +272,38 @@ describe("useAgentConfig", () => {
     expect(result.config?.tools.length).toBeGreaterThan(0)
     expect(result.registry.list().some((tool) => tool.name === "read_chapter")).toBe(true)
     expect(result.registry.list().some((tool) => tool.name === "apply_skill")).toBe(true)
+
+    await cleanup()
+  }, 15000)
+
+  it("provider 关闭 Function Calling 时仍返回 config，但 tools 为空", async () => {
+    const { result, cleanup } = await renderHook("test prompt", {
+      wiki: {
+        aiChatModel: "openai/gpt-4o",
+        project: { path: "/tmp/project" } as WikiProject,
+        providerConfigs: {
+          openai: {
+            enabled: true,
+            apiKey: "test-key",
+            functionCallingEnabled: false,
+            savedModels: [{ id: "gpt-4o", name: "GPT-4o", model: "gpt-4o", createdAt: 1 }],
+          },
+        },
+      },
+      skillConfig: {
+        version: 1,
+        defaultSkillId: "built-in:comprehensive",
+        disabledSkillIds: [],
+        projectSkills: [],
+        builtInSkillOverrides: [],
+        lastChapterDeAiSkillId: null,
+      },
+    })
+
+    expect(result.config).not.toBeNull()
+    expect(result.supportsTools).toBe(false)
+    expect(result.config?.tools).toEqual([])
+    expect(result.config?.llmConfig.functionCallingEnabled).toBe(false)
 
     await cleanup()
   }, 15000)

@@ -1184,15 +1184,13 @@ export function ChatPanel() {
   }, [activeConversationId])
 
   // Auto-scroll to bottom when messages change or streaming content updates
-  // But stop if user manually scrolled up
+  // But stop if user manually scrolled up. Use instant scroll — smooth fights the
+  // user wheel and stacks animations while tool/thinking updates fire rapidly.
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container) return
     if (!userScrolledUpRef.current) {
-      container.scrollTo({
-        top: container.scrollHeight,
-        behavior: "smooth",
-      })
+      container.scrollTop = container.scrollHeight
       lastScrollTopRef.current = container.scrollTop
     }
   }, [activeMessages, batchedStreamingContent])
@@ -1294,12 +1292,12 @@ export function ChatPanel() {
         setDeAiSkillWarningMessage("请先打开一个项目")
         return
       }
-      if (!agentSupportsTools) {
-        setDeAiSkillWarningMessage("Agent 调度模型不支持工具调用，请更换小说设置中的默认模型")
-        return
-      }
       if (!agentSkillConfigLoaded || !agentConfig) {
-        setDeAiSkillWarningMessage("Agent配置仍在加载，请稍后重试")
+        setDeAiSkillWarningMessage(
+          !agentSupportsTools
+            ? "Agent 调度模型不支持工具调用，请更换小说设置中的默认模型"
+            : "Agent配置仍在加载，请稍后重试",
+        )
         return
       }
 
@@ -1402,11 +1400,13 @@ export function ChatPanel() {
       void shouldRunNovelPrePluginChain
       let hasAgentError = false
       let lastAgentError = "生成失败"
+      let accumulatedReasoningContent = ""
 
       const markDone = (record?: AgentRunRecord) => {
         updateAgentAssistantMessage(assistantMessage.id, (message) => ({
           ...message,
           content: message.content || record?.finalText || "Agent未返回内容。",
+          reasoning_content: accumulatedReasoningContent,
           agentToolCalls: settleRunningAgentToolCalls(record?.toolCalls.length ? record.toolCalls : message.agentToolCalls),
           agentStages: settleRunningAgentStages(message.agentStages, "done"),
           references: (() => {
@@ -1432,6 +1432,7 @@ export function ChatPanel() {
           content: message.content
             ? `${message.content}\n\n出错：${error.message}`
             : `出错：${error.message}`,
+          reasoning_content: accumulatedReasoningContent,
           agentToolCalls: settleRunningAgentToolCalls(message.agentToolCalls, "error"),
           agentStages: settleRunningAgentStages(message.agentStages, "error"),
           contextTrace: contextTrace || message.contextTrace,
@@ -1706,6 +1707,9 @@ export function ChatPanel() {
         ).map((message) => ({
           role: message.role,
           content: message.content,
+          ...(message.reasoning_content !== undefined
+            ? { reasoning_content: message.reasoning_content }
+            : {}),
         } satisfies AgentMessage)),
         { role: "user", content: userContent },
       ]
@@ -1780,6 +1784,9 @@ export function ChatPanel() {
                 content: message.content + chunk,
               }))
             },
+            onReasoningToken: (chunk: string) => {
+              accumulatedReasoningContent += chunk
+            },
               onToolEvent: (event) => {
                 if (contextTrace) {
                   contextTrace = appendWebSearchTrace(contextTrace, event)
@@ -1805,6 +1812,7 @@ export function ChatPanel() {
               updateAgentAssistantMessage(assistantMessage.id, (message) => ({
                 ...message,
                 content: finalContent,
+                reasoning_content: accumulatedReasoningContent,
                 isAgentRunning: false,
               }))
             },

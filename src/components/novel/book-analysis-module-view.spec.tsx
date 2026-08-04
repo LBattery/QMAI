@@ -119,9 +119,10 @@ describe("BookAnalysisModuleView 分析进度", () => {
       />,
     )
 
-    expect(html).toContain("正在进行：角色 Skill")
+    expect(html).toContain("分析任务进行中 · 当前：角色 Skill")
     expect(html).toContain("当前区块：第 1/2 个（第 1～10 章）")
-    expect(html).toContain("下一步：文风 Skill")
+    expect(html).toContain("角色 Skill · 分析中")
+    expect(html).toContain("文风 Skill · 待分析")
     expect(html).not.toContain("未选择")
   })
 })

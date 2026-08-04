@@ -1,7 +1,7 @@
 {
   "name": "qmai",
   "private": true,
-  "version": "3.0.1",
+  "version": "3.0.3",
   "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
@@ -51,6 +51,7 @@
     "lucide-react": "^1.23.0",
     "mermaid": "^11.16.0",
     "opencc-js": "^1.4.0",
+    "pangu": "^9.0.0",
     "pinyin-pro": "^3.28.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

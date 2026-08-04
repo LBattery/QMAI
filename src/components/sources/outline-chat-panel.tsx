@@ -97,6 +97,16 @@ import {
   type CharacterSaveDraft,
   extractCharacterSaveDrafts,
 } from "@/lib/novel/character-save-extractor";
+import {
+  buildCharacterAgentSystemPrompt,
+  buildCharacterAgentPlans,
+  buildCharacterPlannerSystemPrompt,
+  buildCharacterPlannerUserPrompt,
+  parseCharacterPlannerResult,
+  runCharacterMultiAgent,
+  type CharacterAgentPlan,
+  type CharacterAgentResult,
+} from "@/lib/novel/character-multi-agent";
 import { classifyOutlineSaveTarget } from "@/lib/novel/outline-save-classifier";
 import {
   buildOutlineGenerationQualityFeedback,
@@ -121,7 +131,6 @@ import {
 } from "@/lib/novel/model-resolver";
 import { getEffectiveSavedModels } from "@/lib/llm-model-keys";
 import { ChatModelSelector } from "@/components/chat/chat-model-selector";
-import { useStreamingText } from "@/hooks/use-streaming-text";
 import { highlightCode } from "@/lib/streaming-code-highlight";
 import { separateThinking } from "@/lib/separate-thinking";
 import { StreamingMarkdown } from "@/components/common/streaming-markdown";
@@ -1156,7 +1165,6 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const activeRunState = activeConversationId ? runStates[activeConversationId] : undefined;
   const isStreaming = activeRunState?.status === "running";
   const streamingContent = activeConversationId ? streamingContents[activeConversationId] ?? "" : "";
-  const batchedStreamingContent = useStreamingText(streamingContent, isStreaming);
   const loaded = useOutlineChatStore((s) => s.loaded);
   const createConversation = useOutlineChatStore((s) => s.createConversation);
   const setActiveConversation = useOutlineChatStore(
@@ -1492,12 +1500,9 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const container = scrollRef.current;
     if (!container || userScrolledUpRef.current) return;
-    container.scrollTo({
-      top: container.scrollHeight,
-      behavior: "smooth",
-    });
+    container.scrollTop = container.scrollHeight;
     lastScrollTopRef.current = container.scrollTop;
-  }, [activeMessages, batchedStreamingContent]);
+  }, [activeMessages, streamingContent]);
 
   // 重新进入面板时滚动到最后一条消息
   // AI 大纲消息渲染较重（StreamingMarkdown、时间线、工具调用等），
@@ -1882,6 +1887,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       let followUpGenerationPrompt: string | null = null;
       let contextHubResult: ContextHubResult | null = null;
       let providerUsage: LlmUsage | undefined;
+      let accumulatedReasoningContent = "";
 
       try {
         const contextHub = getContextHub(normalizePath(project.path));
@@ -2043,6 +2049,10 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
               ...agentConfig,
               requestOverrides: {
                 ...agentConfig.requestOverrides,
+                max_tokens: Math.max(
+                  agentConfig.requestOverrides?.max_tokens ?? 0,
+                  32768,
+                ),
                 userMemorySurface: "ai-outline" as const,
                 userMemoryProjectKey: normalizePath(project.path),
                 userMemorySessionKey: capturedConvId,
@@ -2060,12 +2070,13 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             streamToUser?: boolean;
             statusText?: string;
           } = {},
-        ): Promise<{ text: string; record: AgentRunRecord }> => {
+        ): Promise<{ text: string; record: AgentRunRecord; error?: Error; reasoning_content: string }> => {
           const { agentConfig, registry } = buildConfigForSkillNames(
             optionsForRun.skillNames,
             optionsForRun.disableWriteTools,
           );
           let runText = "";
+          let runReasoningContent = "";
           let agentError: Error | null = null;
           if (optionsForRun.statusText) {
             if (isCurrentRun()) setStreamingContent(capturedConvId, optionsForRun.statusText);
@@ -2079,8 +2090,18 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                 runText += chunk;
                 if (optionsForRun.streamToUser) {
                   result += chunk;
-                  if (isCurrentRun()) setStreamingContent(capturedConvId, result);
+                  if (isCurrentRun()) {
+                    setStreamingContent(capturedConvId, result);
+                    updateOutlineAssistantMessage(convId, assistantId, (message) => ({
+                      ...message,
+                      content: result,
+                    }));
+                  }
                 }
+              },
+              onReasoningToken: (chunk) => {
+                runReasoningContent += chunk;
+                accumulatedReasoningContent += chunk;
               },
               onToolCall: () => {},
               onToolResult: () => {},
@@ -2108,8 +2129,16 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           );
           providerUsage = addLlmUsage(providerUsage, record.usage);
           allToolCalls.push(...record.toolCalls);
-          if (agentError) throw agentError;
-          return { text: runText || record.finalText, record };
+          const capturedAgentError = agentError as Error | null;
+          const errMsg = capturedAgentError?.message ?? "";
+          const isLengthTruncated = errMsg.includes("输出被截断") || errMsg.includes("最大输出 token");
+          if (capturedAgentError && !isLengthTruncated) throw capturedAgentError;
+          return {
+            text: runText || record.finalText,
+            record,
+            error: capturedAgentError ?? undefined,
+            reasoning_content: runReasoningContent,
+          };
         };
 
         const runSingleAgentFallback = async () => {
@@ -2119,12 +2148,127 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             disableWriteTools: options.disableWriteTools,
             streamToUser: true,
           });
-          return singleRun.text || "AI大纲未返回内容。";
+          let text = singleRun.text || "AI大纲未返回内容。";
+          if (singleRun.error) {
+            const errorMsg = singleRun.error.message;
+            text = text + "\n\n---\n\n⚠️ **注意**：" + errorMsg + "\n\n您可以在新消息中输入\"继续\"来让模型补全剩余内容，或点击保存尝试保存已生成的内容。";
+          }
+          return text;
         };
 
         let finalText = "";
         let capturedSuccessfulResults: OutlineSubAgentResult[] = [];
-        if (options.enableMultiAgent) {
+
+        const currentIntentContext = intentContextsRef.current[capturedConvId];
+        const isCharacterMultiAgentTask =
+          options.intentPhase === "generation" &&
+          currentIntentContext?.title === "人物小传" &&
+          !options.enableMultiAgent;
+
+        if (isCharacterMultiAgentTask) {
+          setStreamingContent(capturedConvId, "正在分析需要生成的角色清单...");
+          updateOutlineAssistantMessage(convId, assistantId, (message) => ({
+            ...message,
+            content: "# 人物小传生成中\n\n正在分析角色清单，请稍候...",
+          }));
+
+          const projectContext = [
+            targetConversation?.contextSummary?.text,
+            contextDecision.instruction,
+            historyPlan.instruction,
+          ].filter(Boolean).join("\n");
+
+          let characterPlans: CharacterAgentPlan[] = [];
+          try {
+            const plannerMessages: AgentMessage[] = [
+              { role: "system", content: buildOutlineRunSystemContent(buildCharacterPlannerSystemPrompt()) },
+              { role: "user", content: buildCharacterPlannerUserPrompt({ userPrompt: prompt, projectContext }) },
+            ];
+            const plannerRun = await runOutlineAgentOnce(plannerMessages, {
+              skillNames: [],
+              disableWriteTools: true,
+            });
+            const plannerResult = parseCharacterPlannerResult(plannerRun.text);
+            characterPlans = buildCharacterAgentPlans(plannerResult, prompt, projectContext);
+          } catch {
+            characterPlans = [];
+          }
+
+          if (characterPlans.length === 0) {
+            setStreamingContent(capturedConvId, "角色规划未识别到明确角色，按单 Agent 模式生成...");
+            finalText = await runSingleAgentFallback();
+          } else {
+            const headerContent = `# 人物小传\n\n共识别到 ${characterPlans.length} 个角色，正在并行生成...\n\n`;
+            updateOutlineAssistantMessage(convId, assistantId, (message) => ({
+              ...message,
+              content: `# 人物小传生成中\n\n共识别到 ${characterPlans.length} 个角色，正在并行生成...`,
+            }));
+            setStreamingContent(capturedConvId, headerContent);
+
+            const completedByIndex: (CharacterAgentResult | null)[] = new Array(characterPlans.length).fill(null);
+
+            const rebuildAccumulated = () => {
+              const parts: string[] = ["# 人物小传\n\n"];
+              let hasContent = false;
+              for (const r of completedByIndex) {
+                if (r) {
+                  if (hasContent) parts.push("\n\n---\n\n");
+                  parts.push(r.content);
+                  hasContent = true;
+                }
+              }
+              return parts.join("");
+            };
+
+            const multiAgentResult = await runCharacterMultiAgent({
+              plans: characterPlans,
+              maxConcurrency: 2,
+              runCharacterAgent: async (charPlan) => {
+                const charMessages: AgentMessage[] = [
+                  { role: "system", content: buildOutlineRunSystemContent(buildCharacterAgentSystemPrompt(charPlan)) },
+                  ...historyPlan.messages.slice(-2),
+                  { role: "user", content: charPlan.taskPrompt },
+                ];
+                const charRun = await runOutlineAgentOnce(charMessages, {
+                  skillNames: options.preferredSkillNames,
+                  disableWriteTools: true,
+                  streamToUser: false,
+                });
+                if (charRun.error) {
+                  throw new Error(charRun.error.message);
+                }
+                return charRun.text;
+              },
+              onCharacterStart: (_charPlan) => {
+                if (!isCurrentRun()) return;
+              },
+              onCharacterComplete: (result) => {
+                if (!isCurrentRun()) return;
+                completedByIndex[result.plan.index] = result;
+                const newContent = rebuildAccumulated();
+                setStreamingContent(capturedConvId, newContent);
+                updateOutlineAssistantMessage(convId, assistantId, (message) => ({
+                  ...message,
+                  content: newContent,
+                }));
+              },
+              onCharacterError: (_charPlan, _error) => {
+                if (!isCurrentRun()) return;
+              },
+            });
+
+            if (multiAgentResult.characters.length === 0) {
+              finalText = await runSingleAgentFallback();
+            } else {
+              finalText = `# 人物小传\n\n${multiAgentResult.combinedMarkdown}`;
+            }
+
+            updateOutlineAssistantMessage(convId, assistantId, (message) => ({
+              ...message,
+              characterMultiAgentResults: multiAgentResult.characters,
+            }));
+          }
+        } else if (options.enableMultiAgent) {
           const maxConcurrency = 3;
           const fallbackSubAgentPlan = planOutlineSubAgents({
             preferredSkillNames: options.preferredSkillNames ?? [],
@@ -2225,7 +2369,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                   ),
                 },
               ];
-              let subRun: { text: string; record: AgentRunRecord };
+              let subRun: { text: string; record: AgentRunRecord; error?: Error };
               try {
                 subRun = await runOutlineAgentOnce(subAgentMessages, {
                   skillNames: subAgentPlan.skillNames,
@@ -2242,6 +2386,16 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                   finishedAt: Date.now(),
                 }));
                 throw error;
+              }
+              if (subRun.error) {
+                const message = subRun.error.message;
+                updateOutlineMultiAgentItem(convId, assistantId, subAgentPlan.id, (agent) => ({
+                  ...agent,
+                  status: "error",
+                  error: message,
+                  finishedAt: Date.now(),
+                }));
+                throw new Error(message);
               }
               return subRun.text;
 
@@ -2303,7 +2457,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                   ].join("\n"),
                 },
               ];
-              let mergeRun: { text: string; record: AgentRunRecord };
+              let mergeRun: { text: string; record: AgentRunRecord; error?: Error };
               try {
                 mergeRun = await runOutlineAgentOnce(mergeMessages, {
                   skillNames: options.preferredSkillNames,
@@ -2327,16 +2481,20 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                 throw error;
               }
               if (!isCurrentRun()) throw new Error("aborted");
+              let mergeText = mergeRun.text || "AI大纲未返回内容。";
+              if (mergeRun.error) {
+                mergeText = mergeText + "\n\n---\n\n⚠️ **注意**：" + mergeRun.error.message + "\n\n您可以在新消息中输入\"继续\"来让模型补全剩余内容，或点击保存尝试保存已生成的内容。";
+              }
               updateOutlineMultiAgentRun(convId, assistantId, (run) => run ? ({
                 ...run,
                 status: "done",
                 merge: {
                   status: "done",
                   finishedAt: Date.now(),
-                  summary: "合并完成，已输出最终大纲草稿。",
+                  summary: mergeRun.error ? "合并完成，但内容可能被截断。" : "合并完成，已输出最终大纲草稿。",
                 },
               }) : run);
-              return mergeRun.text || "AI大纲未返回内容。";
+              return mergeText;
             },
           });
           if (!isCurrentRun()) return { started: true, sent: false };
@@ -2433,6 +2591,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           },
         );
         if (!isCurrentRun()) return { started: true, sent: false };
+        // 先将流式内容同步为最终内容，确保打字机效果立即终止、切换无跳变
+        setStreamingContent(capturedConvId, finalContent);
         const visibleToolCalls = allToolCalls.length ? allToolCalls : [];
         const shouldShowToolProcess =
           historyPlan.showToolProcess ||
@@ -2440,6 +2600,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         updateOutlineAssistantMessage(convId, assistantId, (message) => ({
           ...message,
           content: finalContent,
+          reasoning_content: accumulatedReasoningContent,
           sources: finalSources,
           showThinkingProcess: historyPlan.showThinkingProcess,
           agentToolCalls: shouldShowToolProcess
@@ -2454,9 +2615,17 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         // 解析意图清晰度结果
         const intentResult = parseIntentClarity(finalContent);
         if (intentResult) {
-          const intentContext = intentContextsRef.current[capturedConvId] ?? { title: "", hint: "" };
+          const existingContext = intentContextsRef.current[capturedConvId] ?? { title: "", hint: "" };
+          const matchedConfig = !existingContext.title
+            ? OUTLINE_SECTION_GENERATION_CONFIGS.find((c) => c.title === intentResult.module)
+            : null;
+          const updatedContext = matchedConfig
+            ? { title: matchedConfig.title, hint: matchedConfig.requestHint, outputMode: matchedConfig.outputMode }
+            : existingContext.title
+              ? existingContext
+              : { ...existingContext, title: intentResult.module };
           intentContextsRef.current = setOutlineSessionValue(intentContextsRef.current, capturedConvId, {
-            ...intentContext,
+            ...updatedContext,
             result: intentResult,
           });
           updateOutlineAssistantMessage(convId, assistantId, (message) => ({
@@ -2560,6 +2729,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           updateOutlineAssistantMessage(convId, assistantId, (message) => ({
             ...message,
             content: partial,
+            reasoning_content: accumulatedReasoningContent,
             agentToolCalls: historyPlan.showToolProcessOnError
               ? settleRunningAgentToolCalls(
                   message.agentToolCalls?.length ? message.agentToolCalls : hiddenToolCalls,
@@ -2575,6 +2745,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             updateOutlineAssistantMessage(convId, assistantId, (message) => ({
               ...message,
               content: `生成失败：${errorMsg}`,
+              reasoning_content: accumulatedReasoningContent,
               agentToolCalls: historyPlan.showToolProcessOnError
                 ? settleRunningAgentToolCalls(
                     message.agentToolCalls?.length ? message.agentToolCalls : hiddenToolCalls,
@@ -2903,7 +3074,13 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             ], {
               onText: (chunk) => {
                 mergeText += chunk;
-                if (isCurrentRun()) setStreamingContent(capturedConvId, mergeText);
+                if (isCurrentRun()) {
+                  setStreamingContent(capturedConvId, mergeText);
+                  updateOutlineAssistantMessage(capturedConvId, messageId, (message) => ({
+                    ...message,
+                    content: mergeText,
+                  }));
+                }
               },
               onToolCall: () => {},
               onToolResult: () => {},
@@ -3233,6 +3410,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           userMemorySessionKey: capturedConvId,
         };
         let agentError: Error | null = null;
+        let accumulatedReasoningContent = "";
         const record = await new AgentRunner().run(
           agentConfig,
           registry,
@@ -3244,7 +3422,20 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           {
             onText: (chunk) => {
               result += chunk;
-              if (isCurrentRun()) setStreamingContent(capturedConvId, result);
+              if (isCurrentRun()) {
+                setStreamingContent(capturedConvId, result);
+                updateOutlineAssistantMessage(
+                  capturedConvId,
+                  assistantId,
+                  (message) => ({
+                    ...message,
+                    content: result,
+                  }),
+                );
+              }
+            },
+            onReasoningToken: (chunk) => {
+              accumulatedReasoningContent += chunk;
             },
             onToolCall: () => {},
             onToolResult: () => {},
@@ -3270,6 +3461,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                 assistantId,
                 (message) => ({
                   ...message,
+                  reasoning_content: accumulatedReasoningContent,
                   agentToolCalls: settleRunningAgentToolCalls(
                     message.agentToolCalls,
                   ),
@@ -3325,12 +3517,15 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           }),
         });
         if (!isCurrentRun()) return;
+        // 先将流式内容同步为最终内容，确保打字机效果立即终止、切换无跳变
+        setStreamingContent(capturedConvId, finalContent);
         updateOutlineAssistantMessage(
           capturedConvId,
           assistantId,
           (message) => ({
             ...message,
             content: finalContent,
+            reasoning_content: accumulatedReasoningContent,
             sources,
             agentToolCalls: settleRunningAgentToolCalls(record.toolCalls.length ? record.toolCalls : message.agentToolCalls),
             isAgentRunning: false,
@@ -3437,7 +3632,31 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           title: draft.title,
           content: draft.content,
         });
+
+        const currentConv = useOutlineChatStore.getState().conversations.find((c) => c.id === capturedConvId);
+        const lastAssistantMsg = [...(currentConv?.messages ?? [])].reverse().find((m) => m.role === "assistant");
+        const characterResults = lastAssistantMsg?.characterMultiAgentResults;
+
         if (classification.fileType === "character") {
+          if (characterResults && characterResults.length > 0) {
+            const characterDrafts: CharacterSaveDraft[] = characterResults.map((r) => ({
+              id: `${r.plan.roleType}:${r.plan.characterName}`,
+              characterName: r.plan.characterName,
+              roleType: r.plan.roleType,
+              fileName: r.fileName,
+              content: r.content,
+              selected: true,
+              confidence: "high",
+            }));
+            setSaveConfirmState({
+              title: "请确认要保存的人物角色",
+              mode: "character",
+              requests: [],
+              characterDrafts,
+            });
+            return;
+          }
+
           const extracted = extractCharacterSaveDrafts(draft.content);
           if (extracted.drafts.length === 0) {
             setSaveStatus(extracted.errors.join("；"));
@@ -3861,7 +4080,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                   msg={msg}
                   index={i}
                   isStreaming={isStreaming}
-                  streamingContent={batchedStreamingContent}
+                  streamingContent={streamingContent}
                   activeMessagesLength={activeMessages.length}
                   copied={copied}
                   projectPath={project?.path ?? null}
