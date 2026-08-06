@@ -2,7 +2,20 @@ import { useCallback, useState } from "react"
 import { Lightbulb, Loader2, MessageSquare, NotebookPen } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
-import { runBulkOutlineIngest, formatBulkOutlineIngestResult, OutlineIngestNotReadyError } from "@/lib/novel/outline-generation"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  runBulkOutlineIngest,
+  formatBulkOutlineIngestResult,
+  OutlineIngestNotReadyError,
+  type BulkOutlineIngestMode,
+} from "@/lib/novel/outline-generation"
 import { cn } from "@/lib/utils"
 import { toast } from "@/lib/toast"
 import { useImportProgressStore } from "@/stores/import-progress-store"
@@ -31,6 +44,7 @@ export function OutlineActionToolbar({
   const setNotesPanelOpen = useInspirationNotesStore((s) => s.setPanelOpen)
   const [bulkIngestRunning, setBulkIngestRunning] = useState(false)
   const [inspirationOpen, setInspirationOpen] = useState(false)
+  const [bulkIngestDialogOpen, setBulkIngestDialogOpen] = useState(false)
 
   const bulkOutlineProgressRunning = useImportProgressStore((s) => (
     project != null && s.tasks.some((task) => (
@@ -61,12 +75,13 @@ export function OutlineActionToolbar({
     }
   }, [notesPanelOpen, setActiveView, setNotesPanelOpen, setOutlineChatOpen])
 
-  const handleBulkIngest = useCallback(async () => {
+  const handleBulkIngest = useCallback(async (mode: BulkOutlineIngestMode) => {
     if (!project || bulkIngestActive) return
+    setBulkIngestDialogOpen(false)
     setBulkIngestRunning(true)
     onBulkIngestResult?.(null)
     try {
-      const result = await runBulkOutlineIngest(project.path)
+      const result = await runBulkOutlineIngest(project.path, { mode })
       onBulkIngestResult?.(formatBulkOutlineIngestResult(result))
     } catch (err) {
       if (err instanceof OutlineIngestNotReadyError) {
@@ -95,7 +110,12 @@ export function OutlineActionToolbar({
         <NotebookPen className="mr-1 h-4 w-4" />
         {t("novel.inspirationNotes.button")}
       </Button>
-      <Button size="sm" variant="outline" onClick={() => void handleBulkIngest()} disabled={bulkIngestActive}>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => setBulkIngestDialogOpen(true)}
+        disabled={bulkIngestActive}
+      >
         {bulkIngestActive ? (
           <>
             <Loader2 className="mr-1 h-4 w-4 animate-spin" />
@@ -106,6 +126,35 @@ export function OutlineActionToolbar({
         )}
       </Button>
       <InspirationDialog open={inspirationOpen} onOpenChange={setInspirationOpen} />
+      <Dialog
+        open={bulkIngestDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) setBulkIngestDialogOpen(false)
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("novel.outlineGenerator.bulkIngestDialogTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("novel.outlineGenerator.bulkIngestDialogDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+            {t("novel.outlineGenerator.bulkIngestDialogHint")}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setBulkIngestDialogOpen(false)}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => void handleBulkIngest("pending")}>
+              {t("novel.outlineGenerator.bulkIngestPending")}
+            </Button>
+            <Button type="button" onClick={() => void handleBulkIngest("all")}>
+              {t("novel.outlineGenerator.bulkIngestAll")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
