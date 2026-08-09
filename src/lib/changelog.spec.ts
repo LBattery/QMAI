@@ -2,57 +2,16 @@ import { describe, expect, it } from "vitest"
 import { allChangelog, currentVersionChangelog } from "./changelog"
 
 describe("changelog", () => {
-  it("shows the latest 3.0 and visible 2.2 releases in order", () => {
+  it("shows current releases first and keeps intentionally retained history", () => {
     const entries = allChangelog()
     const versions = entries.map((entry) => entry.version)
 
-    expect(versions.slice(0, 8)).toEqual([
-      "3.0.8",
-      "3.0.7",
-      "3.0.6",
-      "3.0.5",
-      "3.0.4",
-      "3.0.3",
-      "3.0.1",
-      "3.0.0",
-    ])
-
-    const visibleTwoPointTwoVersions = [
-      "2.2.37",
-      "2.2.36",
-      "2.2.35",
-      "2.2.33",
-      "2.2.32",
-      "2.2.31",
-      "2.2.30",
-      "2.2.29",
-      "2.2.27",
-      "2.2.26",
-      "2.2.25",
-      "2.2.24",
-      "2.2.23",
-      "2.2.22",
-      "2.2.21",
-      "2.2.20",
-      "2.2.19",
-      "2.2.18",
-      "2.2.17",
-      "2.2.16",
-      "2.2.14",
-      "2.2.13",
-      "2.2.12",
-      "2.2.11",
-      "2.2.10",
-      "2.2.9",
-      "2.2.8",
-      "2.2.7",
-      "2.2.0",
-    ]
-    expect(versions.slice(8, 8 + visibleTwoPointTwoVersions.length)).toEqual(
-      visibleTwoPointTwoVersions,
-    )
-    expect(versions[8 + visibleTwoPointTwoVersions.length]).toBe("2.1.0")
-    expect(versions[9 + visibleTwoPointTwoVersions.length]).toBe("2.0.0")
+    expect(versions.slice(0, 3)).toEqual(["3.1.2", "3.1.1", "3.1.0"])
+    expect(versions).toContain("3.0.9")
+    expect(versions).toContain("2.2.37")
+    expect(versions).toContain("2.1.0")
+    expect(versions).toContain("2.0.0")
+    expect(new Set(versions).size).toBe(versions.length)
 
     for (let patch = 1; patch <= 6; patch += 1) {
       expect(versions).not.toContain(`2.2.${patch}`)

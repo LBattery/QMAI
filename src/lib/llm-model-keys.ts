@@ -1,8 +1,9 @@
 import type { ProviderConfigs, ProviderOverride, SavedModel } from "@/stores/wiki-store"
 
-function isProviderAvailable(providerId: string, config: ProviderOverride): boolean {
-  if (providerId.startsWith("custom-") || config.enabled === false) {
-    return config.enabled !== false
+export function isProviderAvailable(providerId: string, config: ProviderOverride): boolean {
+  if (config.enabled === false) return false
+  if (providerId.startsWith("custom-")) {
+    return true
   }
   // 兼容没有 enabled 字段的旧配置；显式关闭的服务商仍应保持不可用。
   return config.enabled === true

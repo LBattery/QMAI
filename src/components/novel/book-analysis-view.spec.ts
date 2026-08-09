@@ -448,7 +448,7 @@ afterEach(async () => {
 afterAll(() => restoreActEnvironment())
 
 describe("BookAnalysisView 批量导入运行时接线", () => {
-  it("挂载和项目切换时初始化对应项目，卸载后保持后台任务运行", async () => {
+  it("挂载和项目切换时初始化对应项目，切换页面时保留后台调度器", async () => {
     await renderView()
     expect(mocks.initializeProject).toHaveBeenCalledWith("E:/项目甲")
     expect(mocks.initializePipelineProject).toHaveBeenCalledWith("E:/项目甲")

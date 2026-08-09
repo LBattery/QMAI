@@ -113,7 +113,7 @@ import {
   resolveNovelModel,
   resolveUsableModelKey,
 } from "@/lib/novel/model-resolver";
-import { getEffectiveSavedModels } from "@/lib/llm-model-keys";
+import { hasAvailableModels as hasConfiguredModels } from "@/lib/llm-model-keys";
 import { ChatModelSelector } from "@/components/chat/chat-model-selector";
 import { highlightCode } from "@/lib/streaming-code-highlight";
 import { separateThinking } from "@/lib/separate-thinking";
@@ -204,6 +204,8 @@ import {
 } from "@/lib/conversation-create-guard";
 import { outlineConversationRunRegistry } from "@/lib/conversation-run-registry";
 import { toast } from "@/lib/toast";
+import { finalizeStructuredMarkdownMessage } from "@/lib/novel/markdown-quality-finalizer";
+import { repairMarkdownFormatWithAi } from "@/lib/novel/markdown-quality-ai-repair";
 import {
   type OutlineWorkflowStage,
   canTransitionOutlineWorkflow,
@@ -1194,23 +1196,10 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   );
   const historyCount = historyConversations.length;
 
-  const hasAvailableModels = useMemo(() => {
-    for (const key of Object.keys(providerConfigs)) {
-      const config = providerConfigs[key];
-      if (key.startsWith("custom-")) {
-        if (config.enabled === false) continue;
-      } else {
-        // 内置预设：已启用，或有有效配置（apiKey + model/savedModels）
-        const hasConfig = config.enabled === true
-          || Boolean((config.apiKey || config.savedModels?.length) && (config.model || config.savedModels?.length));
-        if (!hasConfig) continue;
-      }
-      if (getEffectiveSavedModels(config).length > 0) {
-        return true;
-      }
-    }
-    return false;
-  }, [providerConfigs]);
+  const hasAvailableModels = useMemo(
+    () => hasConfiguredModels(providerConfigs),
+    [providerConfigs],
+  );
 
   const defaultOutlineLlmConfig = useMemo(
     () => resolveNovelModel(llmConfig, novelConfig, "writing"),
@@ -2561,7 +2550,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
               maxTokens,
             }),
             onFailure: () => {
-              if (!isCurrentRun()) return { started: true, sent: false };
+              if (!isCurrentRun()) return;
               toast.info("Markdown 格式自动修复未完全通过，已保留内容最完整的版本。", {
                 dedupeKey: "outline-markdown-quality-incomplete",
               });
