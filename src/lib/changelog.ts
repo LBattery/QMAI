@@ -7,6 +7,46 @@ export interface ChangelogEntry {
   };
 }
 
+const THREE_POINT_ONE_FOUR_CHANGELOG: ChangelogEntry = {
+  version: "3.1.4",
+  date: "2026-08-11",
+  highlights: {
+    en: [
+      "[Outline Reliability] Fixed generated outline results being lost and stabilized plan-mode transitions and confirmations.",
+      "[Chapter Deletion] Improved chapter deletion so related snapshots, indexes, and source memories are cleaned in the background without blocking the UI.",
+      "[Memory Cleanup Safety] Added project and chapter ownership checks to avoid deleting unrelated memory data during cleanup.",
+    ],
+    zh: [
+      "【大纲结果可靠性】修复生成完成后大纲结果丢失的问题，并稳定计划模式的状态切换与确认流程",
+      "【章节删除优化】删除章节时在后台清理相关快照、索引和来源记忆，减少界面阻塞",
+      "【记忆清理安全性】增加项目与章节归属校验，避免后台清理误删无关记忆数据",
+    ],
+  },
+};
+
+const THREE_POINT_ONE_THREE_CHANGELOG: ChangelogEntry = {
+  version: "3.1.3",
+  date: "2026-08-10",
+  highlights: {
+    en: [
+      "[Chapter Output Safety] Preserved generated chapter text after request errors, ignored empty completion messages, and kept copy/save actions available for partial results.",
+      "[Writing Workflow] Chapter-writing requests now always use the workflow path, with outline lookup routed by folder and guarded by required-tool checks.",
+      "[Outline Extraction] One-click extraction now lets users process all outlines or only outlines that have not been extracted yet.",
+      "[De-AI Review] Model input and comparisons now use chapter body text only, excluding frontmatter metadata.",
+      "[Context Hub Cache v2] Reduced cache growth, added stable fingerprints and source registration, and automatically migrated legacy v1 cache data.",
+      "[Path And Export Fixes] Prevented relative outline paths from polluting project directories and registered the Tauri export-file command.",
+    ],
+    zh: [
+      "【章节正文安全网】请求报错后仍保留已生成正文并允许复制或保存；过滤空结果和过短完成提示，避免空章节落盘",
+      "【写章工作流】写章请求强制走 workflow，按文件夹查找大纲，并通过必需工具门禁确保写作前完成必要读取",
+      "【大纲提取范围】一键提取前可选择处理全部大纲，或仅处理尚未提取的大纲",
+      "【去 AI 味正文聚焦】送模内容和前后对比仅使用章节正文，自动排除 frontmatter 元数据",
+      "【Context Hub 缓存 v2】通过稳定指纹和来源注册减少缓存膨胀，并自动迁移旧版 v1 缓存",
+      "【路径与导出修复】修复相对大纲路径污染项目目录的问题，并补齐 Tauri 导出文件命令注册",
+    ],
+  },
+};
+
 const THREE_POINT_ONE_TWO_CHANGELOG: ChangelogEntry = {
   version: "3.1.2",
   date: "2026-08-08",
@@ -1057,6 +1097,8 @@ function isMergedOnePointRelease(version: string): boolean {
 }
 
 export const CHANGELOG: ChangelogEntry[] = [
+  THREE_POINT_ONE_FOUR_CHANGELOG,
+  THREE_POINT_ONE_THREE_CHANGELOG,
   THREE_POINT_ONE_TWO_CHANGELOG,
   {
     version: "1.0.7",
@@ -1117,6 +1159,10 @@ export const CHANGELOG: ChangelogEntry[] = [
 ];
 
 export function currentVersionChangelog(version: string): ChangelogEntry[] {
+  if (version === THREE_POINT_ONE_FOUR_CHANGELOG.version)
+    return [THREE_POINT_ONE_FOUR_CHANGELOG];
+  if (version === THREE_POINT_ONE_THREE_CHANGELOG.version)
+    return [THREE_POINT_ONE_THREE_CHANGELOG];
   if (version === THREE_POINT_ONE_TWO_CHANGELOG.version)
     return [THREE_POINT_ONE_TWO_CHANGELOG];
   if (version === THREE_POINT_ONE_ONE_CHANGELOG.version)
@@ -1212,6 +1258,8 @@ export function currentVersionChangelog(version: string): ChangelogEntry[] {
 
 export function allChangelog(): ChangelogEntry[] {
   return [
+    THREE_POINT_ONE_FOUR_CHANGELOG,
+    THREE_POINT_ONE_THREE_CHANGELOG,
     THREE_POINT_ONE_TWO_CHANGELOG,
     THREE_POINT_ONE_ONE_CHANGELOG,
     THREE_POINT_ONE_ZERO_CHANGELOG,
@@ -1257,6 +1305,8 @@ export function allChangelog(): ChangelogEntry[] {
     TWO_POINT_ZERO_CHANGELOG,
     ...CHANGELOG.filter(
       (entry) =>
+        entry !== THREE_POINT_ONE_FOUR_CHANGELOG &&
+        entry !== THREE_POINT_ONE_THREE_CHANGELOG &&
         entry !== THREE_POINT_ONE_TWO_CHANGELOG &&
         !isMergedOnePointRelease(entry.version),
     ),

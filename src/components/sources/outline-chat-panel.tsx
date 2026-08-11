@@ -1596,30 +1596,6 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       }
 
       if (!canApply()) return;
-      const qualityFeedback = parsed.requests
-        .map((request) =>
-          buildOutlineGenerationQualityFeedback({
-            fileType: request.fileType,
-            fileName: request.fileName,
-            content: request.content,
-          }),
-        )
-        .find((feedback): feedback is OutlineGenerationQualityFeedback =>
-          Boolean(feedback && feedback.status !== "pass"),
-        );
-
-      if (qualityFeedback) {
-        setQualityFeedbackStates((states) => setOutlineSessionValue(states, conversationId, qualityFeedback));
-        const split = splitConfirmRequiredSaveRequests(parsed.requests);
-        setQualityConfirmStates((states) => setOutlineSessionValue(states, conversationId, {
-          feedback: qualityFeedback,
-          requests: split.autoSaveable,
-        }));
-        setSaveStatus("");
-        return;
-      }
-
-      setSaveStatus("正在自动保存大纲...");
       try {
         const split = splitConfirmRequiredSaveRequests(parsed.requests);
         const characterRequests = split.confirmRequired.filter(
@@ -3652,36 +3628,6 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         const mdContent = body
           ? `# ${titleHeading}\n\n${body}`
           : draft.content.trim();
-        if (classification.fileType === "chapter-outline") {
-          const quality = summarizeChapterOutlineQuality(mdContent);
-          if (!quality.valid) {
-            const qualityFeedback = buildOutlineGenerationQualityFeedback({
-              fileType: classification.fileType,
-              fileName: classification.fileName,
-              content: mdContent,
-            });
-            if (qualityFeedback) {
-              setQualityFeedbackStates((states) => setOutlineSessionValue(states, capturedConvId, qualityFeedback));
-              setQualityConfirmStates((states) => setOutlineSessionValue(states, capturedConvId, {
-                feedback: qualityFeedback,
-                requests: [{
-                  targetFolder: classification.targetFolder,
-                  fileName: classification.fileName,
-                  fileType: classification.fileType,
-                  writeMode: "create",
-                  referencedSkills: [],
-                  sourceIntent: "手动保存 AI 大纲结果",
-                  content: mdContent,
-                }],
-              }));
-            }
-            setSaveStatus(formatChapterOutlineQualityReport(quality, {
-              maxIssues: 4,
-              includeWarnings: true,
-            }));
-            return;
-          }
-        }
         if (!body) {
           setSaveStatus("大纲正文为空，未创建保存请求。");
           return;
