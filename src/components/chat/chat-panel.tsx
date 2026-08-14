@@ -1756,6 +1756,10 @@ export function ChatPanel() {
 
       const prePluginSystemPrompt = prePluginResult?.finalSystemPrompt?.trim()
       const prePluginSystemRulesPrompt = prePluginResult?.finalSystemRulesPrompt?.trim()
+      const stableSystemRulesPrompt = prePluginResult?.stableSystemRulesPrompt?.trim()
+      const dynamicSystemRulesPrompt = prePluginResult?.dynamicSystemRulesPrompt?.trim()
+      const hasSplitSystemRules = prePluginResult?.stableSystemRulesPrompt !== undefined
+        || prePluginResult?.dynamicSystemRulesPrompt !== undefined
       const baseSystemPrompt = [
         prePluginSystemPrompt || sessionAgentSystemPrompt,
         qmQuaiSystemPrompt ? `## QM-QUAI 技能\n${qmQuaiSystemPrompt}` : "",
@@ -1775,14 +1779,17 @@ export function ChatPanel() {
         : [
             baseSystemPrompt,
           ].filter(Boolean).join("\n")
-      const contextHubSoftwareRules = prePluginSystemRulesPrompt || sessionAgentSystemPrompt
+      const contextHubSoftwareRules = hasSplitSystemRules
+        ? (stableSystemRulesPrompt ?? "")
+        : (prePluginSystemRulesPrompt || sessionAgentSystemPrompt)
       const contextHubSystemContent = contextHubResult
         ? buildContextHubSystemContent(contextHubSoftwareRules, contextHubResult, [
+            dynamicSystemRulesPrompt ?? "",
             qmQuaiSystemPrompt ? `## QM-QUAI 技能\n${qmQuaiSystemPrompt}` : "",
-            prePluginSystemRulesPrompt ? "" : taskDirective,
+            prePluginSystemRulesPrompt || hasSplitSystemRules ? "" : taskDirective,
             goldenDirective,
-            prePluginSystemRulesPrompt ? "" : selectedSkillsPrompt,
-            !prePluginSystemRulesPrompt && prePluginResult?.selectedSkills?.length
+            prePluginSystemRulesPrompt || hasSplitSystemRules ? "" : selectedSkillsPrompt,
+            !prePluginSystemRulesPrompt && !hasSplitSystemRules && prePluginResult?.selectedSkills?.length
               ? `## 当前会话写作技能\n${buildSelectedSkillsPrompt(prePluginResult.selectedSkills)}`
               : "",
           ])
@@ -1875,7 +1882,9 @@ export function ChatPanel() {
           : sessionTools
         const usageSnapshotBase = buildContextUsageSnapshot({
           windowTokens: getEffectiveMaxContextSize(agentConfig.llmConfig),
-          softwareRules: contextHubResult ? contextHubSoftwareRules : systemPromptForConfig,
+          softwareRules: contextHubResult
+            ? [contextHubSoftwareRules, dynamicSystemRulesPrompt].filter(Boolean).join("\n\n")
+            : systemPromptForConfig,
           toolDefinitionsJson: JSON.stringify(toOpenAITools(advertisedTools)),
           stableTokens: contextHubResult?.stats.stableTokens,
           summaryTokens: contextHubResult?.stats.summaryTokens,
@@ -1975,7 +1984,7 @@ export function ChatPanel() {
             record.lastRequestUsage ?? record.usage,
           ),
         )
-        if (contextHubResult && record.usage) {
+        if (contextHubResult && (record.usage || record.requestTraces?.length)) {
           try {
             const contextHubSnapshot = await persistContextHubProviderUsage(
               getContextHub(pp),
@@ -1987,6 +1996,12 @@ export function ChatPanel() {
                 requestDiagnostics: buildLlmRequestDiagnostics(
                   record.usage,
                   Math.max(1, record.roundsUsed || 1),
+                  {
+                    requests: record.requestTraces,
+                    omittedRequestCount: record.omittedRequestTraceCount,
+                    requestCountAvailable: record.providerRequestCountAvailable,
+                    usageScope: record.usageAggregationScope,
+                  },
                 ),
               },
             )
