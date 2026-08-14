@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import { buildSnapshotMemorySyncPreview, normalizeChapterSnapshot } from "./chapter-ingest"
 import { buildChapterIngestOutput } from "./chapter-ingest-output"
 import { buildStructuredMemoryDocuments } from "./memory-rebuild"
+import { buildChapterExtractUserPrompt } from "./chapter-ingest-extract"
 
 const source = readFileSync(resolve(__dirname, "chapter-ingest.ts"), "utf8")
 
@@ -14,6 +15,17 @@ describe("chapter ingest draft boundary", () => {
     expect(source).toContain("options: IngestChapterOptions = {}")
     expect(source).toContain("if (!options.allowDraft && !isFinalChapter(fm))")
     expect(source).toContain('failReason: "not_final"')
+  })
+
+  it("does not persist a snapshot before syncSnapshotToMemory", () => {
+    const ingestFn = source.slice(
+      source.indexOf("export async function ingestChapter"),
+      source.indexOf("function createRetrievalStore"),
+    )
+    const saveBeforeSync = ingestFn.indexOf("await saveSnapshot(")
+    const syncCall = ingestFn.indexOf("await syncSnapshotToMemory(")
+    expect(syncCall).toBeGreaterThan(0)
+    expect(saveBeforeSync).toBe(-1)
   })
 })
 
@@ -39,8 +51,9 @@ describe("chapter snapshot appearance compatibility", () => {
   })
 
   it("keeps clothing extraction and memory-sync preview in the ingest contract", () => {
-    expect(source).toContain('"characterAppearanceAndStatus": ["角色名：本章可见的外貌与衣着，当前状态"]')
-    expect(source).toContain("未描写衣着时不要推测")
+    const extractPrompt = buildChapterExtractUserPrompt(2, "正文")
+    expect(extractPrompt).toContain('"characterAppearanceAndStatus": ["角色名：外貌与衣着；当前状态"]')
+    expect(extractPrompt).toContain("不得推测")
 
     const snapshot = normalizeChapterSnapshot({
       chapterId: "chapter-2",
