@@ -1,29 +1,12 @@
 import { create } from "zustand"
 
-export type OutlineTaskStatus = "ingesting" | "done" | "error" | "generated"
-export type OutlineTaskKind = "ingest" | "generate" | "refine"
+export type OutlineTaskStatus = "ingesting" | "done" | "error"
+export type OutlineTaskKind = "ingest"
 
 export interface OutlineGenerationTask {
   id: string
   projectPath: string
   kind: OutlineTaskKind
-  genre: string
-  scale: string
-  premise: string
-  prompt: string
-  channel?: "male" | "female"
-  mainGenre?: string
-  subGenres?: string[]
-  customTags?: string[]
-  modelId?: string
-  userRequest: string
-  selectedChapterMemory: string
-  selectedOutlineContext: string
-  selectedSectionKey: string | null
-  displayTitle: string | null
-  writeMode: string | null
-  targetPath: string | null
-  requireOutline: boolean
   outlinePath: string | null
   status: OutlineTaskStatus
   message: string
@@ -35,23 +18,6 @@ export interface OutlineGenerationTask {
 interface CreateOutlineTaskInput {
   projectPath: string
   kind?: OutlineTaskKind
-  genre?: string
-  scale?: string
-  premise?: string
-  prompt?: string
-  channel?: "male" | "female"
-  mainGenre?: string
-  subGenres?: string[]
-  customTags?: string[]
-  modelId?: string
-  userRequest?: string
-  selectedChapterMemory?: string
-  selectedOutlineContext?: string
-  selectedSectionKey?: string | null
-  displayTitle?: string | null
-  writeMode?: string | null
-  targetPath?: string | null
-  requireOutline?: boolean
   outlinePath?: string | null
   status?: OutlineTaskStatus
   message?: string
@@ -81,25 +47,8 @@ export const useOutlineGenerationStore = create<OutlineGenerationState>((set) =>
       tasks: [
         {
           id,
-          ...input,
+          projectPath: input.projectPath,
           kind: input.kind ?? "ingest",
-          genre: input.genre ?? "",
-          scale: input.scale ?? "",
-          premise: input.premise ?? "",
-          prompt: input.prompt ?? "",
-          channel: input.channel,
-          mainGenre: input.mainGenre,
-          subGenres: input.subGenres,
-          customTags: input.customTags,
-          modelId: input.modelId,
-          userRequest: input.userRequest ?? "",
-          selectedChapterMemory: input.selectedChapterMemory ?? "",
-          selectedOutlineContext: input.selectedOutlineContext ?? "",
-          selectedSectionKey: input.selectedSectionKey ?? null,
-          displayTitle: input.displayTitle ?? null,
-          writeMode: input.writeMode ?? null,
-          targetPath: input.targetPath ?? null,
-          requireOutline: input.requireOutline ?? true,
           outlinePath: input.outlinePath ?? null,
           status: input.status ?? "ingesting",
           message: input.message ?? "",
