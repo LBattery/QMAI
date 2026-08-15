@@ -177,14 +177,9 @@ export class DataSourceRegistry {
       revisionFeedback: [],
       cognitionText: "",
       soulDoc: "",
+      characterAuras: "",
       sectionBriefing: "",
       storyFrameworkBinding: "",
-      retrieval: {
-        recentSummaries: [],
-        characterStates: "",
-        foreshadowingSignals: [],
-        timeline: "",
-      },
     }
     return defaults[sourceName] ?? null
   }
