@@ -102,6 +102,16 @@ async function assertAllowed(rawPath) {
   throw new Error(`Path is outside opened projects: ${rawPath}`)
 }
 
+async function assertDeletable(rawPath) {
+  const resolved = await assertAllowed(rawPath)
+  for (const root of allowedRoots) {
+    if (path.relative(root, resolved) === "") {
+      throw new Error("不能删除已打开项目的根目录")
+    }
+  }
+  return resolved
+}
+
 function validateProjectName(name) {
   const trimmed = String(name || "").trim()
   if (!trimmed) throw new Error("Project name is required")
@@ -315,10 +325,13 @@ async function handleApi(req, res, route) {
       return
     }
     case "/api/fs/delete-file": {
-      const absPath = await assertAllowed(body.path)
-      const stat = await fs.stat(absPath)
-      if (!stat.isFile()) throw new Error("Only single-file deletion is supported in Web mode")
-      await fs.unlink(absPath)
+      const absPath = await assertDeletable(body.path)
+      const stat = await fs.lstat(absPath)
+      if (stat.isDirectory()) {
+        await fs.rm(absPath, { recursive: true, force: false })
+      } else {
+        await fs.unlink(absPath)
+      }
       sendJson(res, 200, { ok: true })
       return
     }
