@@ -63,6 +63,11 @@ const StorySimulationView = lazy(async () => {
   return { default: mod.StorySimulationView };
 });
 
+const DirectorRoomView = lazy(async () => {
+  const mod = await import("@/components/novel/director-room/director-room-view");
+  return { default: mod.DirectorRoomView };
+});
+
 function LoadingView() {
   return (
     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -150,6 +155,13 @@ export function ContentArea() {
         content = (
           <Suspense fallback={<LoadingView />}>
             <StorySimulationView />
+          </Suspense>
+        );
+        break;
+      case "directorRoom":
+        content = (
+          <Suspense fallback={<LoadingView />}>
+            <DirectorRoomView />
           </Suspense>
         );
         break;

@@ -18,6 +18,7 @@ describe("sidebar nav preferences", () => {
       "bookAnalysis",
       "reviewCenter",
       "storySimulation",
+      "directorRoom",
       "search",
       "trash",
     ])
@@ -41,6 +42,7 @@ describe("sidebar nav preferences", () => {
       "bookAnalysis",
       "reviewCenter",
       "storySimulation",
+      "directorRoom",
     ])
   })
 

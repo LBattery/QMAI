@@ -20,6 +20,7 @@ import { TrashPanel } from "./trash-panel"
 import { GraphSidebarPanel } from "./graph-sidebar-panel"
 import { ReviewCenterSidebarPanel } from "./review-center-sidebar-panel"
 import { FrameworkList } from "@/components/novel/story-simulation/framework-list"
+import { DirectorRoomSidebarPanel } from "@/components/novel/director-room/director-room-sidebar-panel"
 
 import { useWikiStore } from "@/stores/wiki-store"
 import { useChatStore } from "@/stores/chat-store"
@@ -982,6 +983,10 @@ export function SidebarPanel() {
 
   if (activeView === "storySimulation") {
     return <StorySimulationSidebarPanel />
+  }
+
+  if (activeView === "directorRoom") {
+    return <DirectorRoomSidebarPanel />
   }
 
   if (activeView === "graph") {

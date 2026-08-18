@@ -85,6 +85,7 @@ const SIDEBAR_NAV_LABEL_KEYS: Record<SidebarNavItemId, string> = {
   bookAnalysis: "novel.nav.dismantling",
   reviewCenter: "novel.nav.reviewCenter",
   storySimulation: "novel.nav.storySimulation",
+  directorRoom: "novel.nav.directorRoom",
   search: "novel.nav.search",
   trash: "nav.trash",
 }

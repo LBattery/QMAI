@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from "react"
 import {
-  FileText, FolderOpen, Search, Network, Brain, Settings, ArrowLeftRight, Sun, Moon, SunMoon, Check, Trash2, Sparkles, LayoutDashboard, BookOpen, Drama, WandSparkles,
+  FileText, FolderOpen, Search, Network, Brain, Settings, ArrowLeftRight, Sun, Moon, SunMoon, Check, Trash2, Sparkles, LayoutDashboard, BookOpen, Drama, WandSparkles, Film,
 } from "lucide-react"
 import { createPortal } from "react-dom"
 import {
@@ -51,6 +51,7 @@ const CONFIGURABLE_NAV_ITEMS: ConfigurableNavItem[] = [
   { id: "bookAnalysis", view: "bookAnalysis", icon: BookOpen, labelKey: "novel.nav.dismantling" },
   { id: "reviewCenter", view: "reviewCenter", icon: LayoutDashboard, labelKey: "novel.nav.reviewCenter" },
   { id: "storySimulation", view: "storySimulation", icon: Drama, labelKey: "novel.nav.storySimulation" },
+  { id: "directorRoom", view: "directorRoom", icon: Film, labelKey: "novel.nav.directorRoom" },
   { id: "search", view: "search", icon: Search, labelKey: "novel.nav.search" },
   { id: "trash", view: "trash", icon: Trash2, labelKey: "nav.trash" },
 ]

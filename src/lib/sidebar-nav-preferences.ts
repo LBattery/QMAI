@@ -8,6 +8,7 @@ export const DEFAULT_SIDEBAR_NAV_ORDER = [
   "bookAnalysis",
   "reviewCenter",
   "storySimulation",
+  "directorRoom",
   "search",
   "trash",
 ] as const
