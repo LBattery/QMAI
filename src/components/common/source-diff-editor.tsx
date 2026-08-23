@@ -108,6 +108,7 @@ export function SourceDiffEditor({
           aria-label="逐行差异"
           className="min-h-0 flex-1 overflow-auto py-2 font-mono text-xs leading-relaxed"
         >
+          <pre className="sr-only" aria-label="原始源码内容">{originalForDiff}</pre>
           {hasContent ? (
             <ReactDiffViewer
               oldValue={originalForDiff}

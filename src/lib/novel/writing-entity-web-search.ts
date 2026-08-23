@@ -270,7 +270,9 @@ export function parseWritingEntitySearchWorkflowResult(
 
     const items = hasItems ? normalizePersistedSearchItems(record.items) : []
     const searchedNames = hasSearchedNames
-      ? record.searchedNames.filter((name): name is string => typeof name === "string" && name.trim().length > 0)
+      ? (record.searchedNames as unknown[]).filter(
+        (name): name is string => typeof name === "string" && name.trim().length > 0,
+      )
       : items.map((item) => item.name)
     const notes = Array.isArray(record.notes)
       ? record.notes.filter((note): note is string => typeof note === "string")
@@ -290,7 +292,10 @@ export function parseWritingEntitySearchWorkflowResult(
 export function displayWritingEntitySearchWorkflowContent(text: string | undefined): string {
   const parsed = parseWritingEntitySearchWorkflowResult(text)
   if (!parsed) return (text ?? "").trim()
-  return parsed.content.trim() || formatWritingEntitySearchWorkflowResult(parsed)
+  return parsed.content.trim() || formatWritingEntitySearchWorkflowResult({
+    ...parsed,
+    markdown: parsed.content,
+  })
 }
 
 export function writingEntitySearchSourceHost(
