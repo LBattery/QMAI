@@ -2,7 +2,7 @@ import type { NovelTaskIntent } from "@/lib/novel/task-router"
 import { OUTLINE_FIND_CHAPTER_INTENTS } from "@/lib/novel/outline-find-protocol"
 import type { AiWorkflowMode } from "./workflow-mode"
 
-export interface RequiredToolsGateInput {
+interface RequiredToolsGateInput {
   requiredToolsOnce?: string[] | null
   availableToolNames: Iterable<string>
   calledToolNames: Iterable<string>
@@ -47,7 +47,17 @@ export class RequiredToolsNotCalledError extends Error {
   }
 }
 
-export interface ResolveRequiredToolsOnceInput {
+export class RequiredToolFallbackError extends Error {
+  readonly toolName: string
+
+  constructor(toolName: string, detail: string) {
+    super(`必选工作流执行失败（${toolName}）：${detail}`)
+    this.name = "RequiredToolFallbackError"
+    this.toolName = toolName
+  }
+}
+
+interface ResolveRequiredToolsOnceInput {
   novelMode: boolean
   intent?: string | null
   mode?: AiWorkflowMode | null
@@ -67,7 +77,8 @@ export function resolveRequiredToolsOnce(
     return undefined
   }
   const mode = input.mode ?? "strict"
-  if (mode === "fast") return undefined
+  // fast 是纯对话；discuss（共创）本轮只做方向推演，都不强制调用章节工作流。
+  if (mode === "fast" || mode === "discuss") return undefined
 
   const enabled = input.enabledToolNames
   if (Array.isArray(enabled) && !enabled.includes("run_chapter_workflow")) {

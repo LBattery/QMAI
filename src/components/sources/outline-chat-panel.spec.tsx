@@ -17,20 +17,159 @@ vi.mock("@/lib/project-store", async (importOriginal) => ({
 }))
 
 import { outlineConversationRunRegistry } from "@/lib/conversation-run-registry"
+import * as ts from "typescript"
 import { AgentRunner } from "@/lib/agent/runner"
 import { toast } from "@/lib/toast"
 import { useWikiStore } from "@/stores/wiki-store"
-import { buildOutlineAgentSystemPrompt, OutlineChatPanel } from "./outline-chat-panel"
+import { useChatStore } from "@/stores/chat-store"
+import { UiTestAiEmpty } from "@/components/uitest/ui-test-ai-parts"
+import {
+  buildOutlineAgentSystemPrompt,
+  buildOutlineReferenceSkillEntries,
+  buildVolumeOutlineRepairPrompt,
+  describeStructuredOnlyAnswer,
+  filterOutlineGeneratedContent,
+  OutlineChatPanel,
+} from "./outline-chat-panel"
+import { getAllDeAiSkills, type DeAiSkillConfig } from "@/lib/novel/de-ai-skill-library"
+import type { UserSkill } from "@/lib/novel/skill-library"
+import type { CharacterSoulOption } from "@/components/chat/use-character-soul-reference"
 import {
   useOutlineChatStore,
   type OutlineChatConversation,
   type OutlineChatMessage,
 } from "../../stores/outline-chat-store"
-import type { AgentMessage } from "@/lib/agent/types"
+import type { AgentConfig, AgentMessage } from "@/lib/agent/types"
 import type { ContextHubSnapshotRef } from "@/lib/context-hub/types"
 
 const source = readFileSync(resolve(__dirname, "outline-chat-panel.tsx"), "utf8")
+
+/*
+ * 去注释后的源码副本。
+ *
+ * ⚠️ 存在的理由是本分支反复栽过的缺陷类：**对整份源码文本做正则，会被注释满足**
+ * （丙-4 的 F4 是注释里的 CSS 片段满足了「真实规则存在」的断言；
+ * 丁-3 第一版是本文件下面那条「本面板的 agent 配置」—— 该短语全文件只出现在注释里，
+ * 于是它只可能因为**注释被改写**而失败，不可能因为行为而失败）。
+ * 所以任何源码形状断言都必须匹配去注释后的副本。
+ *
+ * ⚠️ 已知局限（此处够用即可，不追求通用）：不做词法分析，因此**字符串字面量里**
+ * 的 `//` 或 `/*` 也会被当成注释起点。对本文件够用 —— 断言只看
+ * `subtype:` 赋值与 `runDeepChapterGeneration` / `getWritingStyleIdOverride` 两个符号，
+ * 都不含这类字面量。若将来这条断言挪去别的文件，先复核这一点。
+ */
+function stripComments(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "")
+}
+
+const sourceWithoutComments = stripComments(source)
 const outlineSectionConfigsSource = readFileSync(resolve(__dirname, "../../lib/novel/outline-section-configs.ts"), "utf8")
+
+/*
+ * === 丁-4：源码形状断言改用**语法树**（不是文本匹配）===
+ *
+ * 为什么：本分支已经栽过「源码文本断言被一行注释满足」这个坑（复核批实测
+ * `// await releaseMessageSoulBinding();` + `void releaseMessageSoulBinding;`
+ * 就能让文本钉子变绿，连 tsc 都干净）。**注释不在语法树里**，所以按 AST 找
+ * 「这里真的有一个 await 调用表达式」天然不受注释、缩进、换行影响，
+ * 也不受「保住了标识符但没真的调用」这类写法影响。这比 strip 注释更硬：
+ * strip 之后仍然是在匹配文本，而匹配文本永远要跟格式、引号、空格较劲。
+ *
+ * ⚠️ 代价说清楚：AST 钉子证明的是「这段代码**存在且长这样**」，
+ * 不是「它运行时行为正确」。行为证据在别处（`soul-reference.spec.ts` 的
+ * 产出端↔消费端契约、`message-scoped-soul-binding.spec.ts` 的真读写与还原、
+ * 以及 `chat-panel.mount.spec.tsx` 里**能跑起来**的那份等价 finally）。
+ */
+const outlineSourceFile = ts.createSourceFile(
+  "outline-chat-panel.tsx",
+  source,
+  ts.ScriptTarget.Latest,
+  /* setParentNodes */ true,
+  ts.ScriptKind.TSX,
+)
+
+/** 遍历整棵树，按顺序收集所有满足断言的节点。 */
+function collectOutlineNodes<T extends ts.Node>(predicate: (node: ts.Node) => node is T): T[] {
+  const found: T[] = []
+  const visit = (node: ts.Node) => {
+    if (predicate(node)) found.push(node)
+    node.forEachChild(visit)
+  }
+  visit(outlineSourceFile)
+  return found
+}
+
+/** 所有 `名字(...)` 形式的调用表达式。 */
+function outlineCalls(name: string): ts.CallExpression[] {
+  return collectOutlineNodes(
+    (node): node is ts.CallExpression =>
+      ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name,
+  )
+}
+
+/** 所有 `某对象.名字(...)` 形式的调用表达式（例：`outlineConversationRunRegistry.remove(...)`）。 */
+function outlineMemberCalls(name: string): ts.CallExpression[] {
+  return collectOutlineNodes(
+    (node): node is ts.CallExpression =>
+      ts.isCallExpression(node)
+      && ts.isPropertyAccessExpression(node.expression)
+      && ts.isIdentifier(node.expression.name)
+      && node.expression.name.text === name,
+  )
+}
+
+/** `node` 是否在 `ancestor` 的子树里（自身也算）。 */
+function outlineIsInside(node: ts.Node, ancestor: ts.Node): boolean {
+  let current: ts.Node | undefined = node
+  while (current) {
+    if (current === ancestor) return true
+    current = current.parent
+  }
+  return false
+}
+
+/** 该调用是否被 `await` 了（`await f()`，而不是裸 `f()` 或 `void f`）。 */
+function outlineIsAwaited(call: ts.CallExpression): boolean {
+  return ts.isAwaitExpression(call.parent)
+}
+
+/**
+ * 该节点（语句、或块）里是否存在「返回一个带指定属性名的对象字面量」。
+ * ⚠️ 入参是 `ts.Node` 而不是 `ts.Block`：`if (x) return {...}` 这种单语句分支
+ * 没有块，直接拿 `thenStatement` 进来即可。
+ */
+function outlineReturnsObjectWith(root: ts.Node | undefined, keys: string[]): boolean {
+  if (!root) return false
+  let hit = false
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isReturnStatement(node)
+      && node.expression
+      && ts.isObjectLiteralExpression(node.expression)
+    ) {
+      const names = node.expression.properties
+        .map((property) => (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) ? property.name.text : ""))
+      if (keys.every((key) => names.includes(key))) hit = true
+    }
+    node.forEachChild(visit)
+  }
+  visit(root)
+  return hit
+}
+
+const GEMINI_OUTLINE_THOUGHT_DUMP = [
+  "I'm currently focused on defining the project scope and following the \"去 AI 味\" skill instructions.",
+  "",
+  "**Examining the Narrative Details**",
+  "",
+  "I'm now diving deep into analyzing the source text and identifying critical plot points.",
+  "",
+  "**Analyzing the Conflict's Dynamics**",
+  "",
+  "I've been mapping out the escalating conflict and the characters' motivations.",
+].join("\n")
 
 const mountedRoots: Array<{ container: HTMLDivElement; root: Root }> = []
 
@@ -65,6 +204,7 @@ function setOutlineConversations(
     runStates: options.runStates ?? {},
     loaded: true,
     pendingReferenceTokens: options.pendingReferenceTokens ?? [],
+    dismissedIntentPromptIds: {},
   })
 }
 
@@ -85,6 +225,23 @@ function getNewConversationButton(container: HTMLElement): HTMLButtonElement {
   )
   expect(button).not.toBeNull()
   return button as HTMLButtonElement
+}
+
+/**
+ * 打开「生成小说大纲」向导。
+ *
+ * 用户要求删掉输入区上方那条常驻的「选择生成你想要的小说」按钮之后，
+ * 向导唯一入口是**空会话**中央的「生成小说大纲」按钮
+ * （`ui-test-ai-parts.tsx` 的 `UiTestAiEmpty`，由 `activeMessages.length === 0` 决定）。
+ * 因此调用它的用例必须让当前会话保持空消息 —— 曾有两个用例还在找那个已删除的按钮，
+ * 结果 `wizardTrigger` 是 undefined、`?.click()` 静默什么都不做，
+ * 表现为「子 Agent 一次都没被调用」这种和真实原因毫不相干的失败。
+ */
+async function openOutlineWizard(container: HTMLElement): Promise<void> {
+  const trigger = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    .find((button) => button.textContent?.includes("\u751f\u6210\u5c0f\u8bf4\u5927\u7eb2"))
+  expect(trigger, "空会话应提供「生成小说大纲」按钮作为向导入口").toBeDefined()
+  await act(async () => { trigger?.click() })
 }
 
 beforeEach(() => {
@@ -122,8 +279,77 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-describe("OutlineChatPanel controls", () => {
+describe("AI 大纲完整结果过滤", () => {
+  it("把 Gemini 普通文本思考摘要识别为无正文", () => {
+    expect(filterOutlineGeneratedContent(GEMINI_OUTLINE_THOUGHT_DUMP)).toEqual({
+      content: "",
+      reasoningOnly: true,
+    })
+  })
 
+  it("只移除前置思考摘要并保留后续大纲正文", () => {
+    const output = filterOutlineGeneratedContent([
+      GEMINI_OUTLINE_THOUGHT_DUMP,
+      "",
+      "# 第27章 地下乱战",
+      "",
+      "## 本章目标",
+      "沈渊必须在增援抵达前夺下中枢。",
+    ].join("\n"))
+
+    expect(output.reasoningOnly).toBe(false)
+    expect(output.content).toContain("# 第27章 地下乱战")
+    expect(output.content).not.toContain("Examining the Narrative Details")
+  })
+})
+
+describe("卷纲自动补全提示词与校验器同契约", () => {
+  /*
+   * 回归：补全提示词曾经手写一份精简要求，只要 pay / p / link / position / roles，
+   * 却漏掉 stage / who / use / range / deliver / gift / hook / climax / beats / line ——
+   * 而校验器（validateVolumeOutlineData）恰恰要求这些。
+   * 结果是「自动补全」被要求产出的东西永远过不了校验：补一轮 → 还是同样的
+   * 「卷纲内容仍不完整（N 项）」。修复方式是直接复用卷纲契约本身，
+   * 这条用例把它钉住：任何一项被漏掉都必须红。
+   */
+  const prompt = buildVolumeOutlineRepairPrompt({
+    fileName: "修真界卷级架构.md",
+    problemsText: "第 1 个故事缺少字段 beats。",
+  })
+
+  it("带上问题清单与待保存文件名", () => {
+    expect(prompt).toContain("修真界卷级架构.md")
+    expect(prompt).toContain("第 1 个故事缺少字段 beats。")
+  })
+
+  it("覆盖校验器要求的每一个故事级字段（漏一个就会「补了还不过」）", () => {
+    for (const field of ["range", "title", "id", "st", "beats"]) {
+      expect(prompt).toContain(field)
+    }
+  })
+
+  it("覆盖环节的每一个必填项与 10 个环节名", () => {
+    for (const field of ["stage", "label", "who", "p"]) expect(prompt).toContain(field)
+    for (const stage of ["起①", "起②", "起③", "承①", "承②", "承③", "转①", "转②", "合①", "合②"]) {
+      expect(prompt).toContain(stage)
+    }
+  })
+
+  it("明令禁止再重复写 MD 与台账面板（两者都在白烧 token）", () => {
+    expect(prompt).toContain("不要再手写一遍 MD 正文")
+    expect(prompt).toContain("只要故事，不要台账")
+    for (const removed of ["position", "escalation", "foreshadows", "rivals", "growth", "places", "debts"]) {
+      expect(prompt).not.toContain(removed)
+    }
+  })
+
+  it("要求完整重出、禁止省略，而不是只补缺项", () => {
+    expect(prompt).toContain("完整重出")
+    expect(prompt).toContain("禁止任何省略写法")
+  })
+})
+
+describe("OutlineChatPanel controls", () => {
   it("上下文圆环使用 AI 大纲选中模型的窗口而不是全局模型窗口", async () => {
     useWikiStore.setState({
       llmConfig: {
@@ -167,7 +393,7 @@ describe("OutlineChatPanel controls", () => {
       surface: "ai-outline",
       createdAt: 10,
       stats: {
-        cacheHits: 3, reloaded: 2, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0,
+        cacheHits: 3, reloaded: 2, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0, cacheableHits: 3, cacheableLoaded: 5,
         stableTokens: 1200,
         summaryTokens: 60,
         dynamicTokens: 420,
@@ -187,8 +413,20 @@ describe("OutlineChatPanel controls", () => {
 
     const container = await renderOutlineChatPanel()
 
-    expect(container.textContent).toContain("上下文中控")
-    expect(container.textContent).toContain("本轮数据源：命中 3，重载 2，无数据 0，fallback 0，失败 0")
+    // 该期望于 26f80ee（全新界面统一、旧版界面移除）随「上下文中控单行数字摘要」变更：
+    // 标题文案与「本地资料复用率 / 估算少发送约」长句已下线，改为用量按钮 + 用时 + 结束时间。
+    const details = container.querySelector<HTMLElement>(".ui-test-context-details")
+    expect(details).not.toBeNull()
+    expect(details?.querySelector('[aria-label="查看本轮用量"]')).not.toBeNull()
+    // 未提供 generationTiming，用时与结束时间都落到占位符
+    expect(details?.querySelector('[aria-label="用时 —"]')).not.toBeNull()
+    await act(async () => {
+      details?.querySelector<HTMLButtonElement>('[aria-label="查看本轮用量"]')?.click()
+    })
+    const usageDialog = details?.querySelector<HTMLElement>('[aria-label="本轮用量"]')
+    expect(usageDialog?.textContent).toContain("缓存命中")
+    // cacheableHits 3 / cacheableLoaded 5 → 本地资料复用率 60%
+    expect(usageDialog?.querySelector("strong")?.textContent).toBe("60%")
   })
 
   it.each([
@@ -213,11 +451,11 @@ describe("OutlineChatPanel controls", () => {
     setOutlineConversations([{
       ...conversation([
         { id: "old-user", role: "user", content: "已有问题" },
-        { id: "old-assistant", role: "assistant", content: "已有回答", nextStepRecommendation: { recommendations: [
+        { id: "old-assistant", role: "assistant", content: "已有回答", nextStepRecommendation: { completedModule: "人物设定", completedScope: "人物设定", recommendations: [
           { id: recId, label, reason: "推荐理由" },
           { id: "other", label: "另一个建议", reason: "其他理由" },
         ] } },
-      ]), modelId: "gpt-4o", contextSummary: "当前会话摘要",
+      ]), modelId: "gpt-4o", contextSummary: { text: "当前会话摘要", updatedAt: 100 },
     }], "outline-active", { pendingReferenceTokens: [reference] })
     const container = await renderOutlineChatPanel()
     const beforeCount = useOutlineChatStore.getState().conversations.length
@@ -252,7 +490,7 @@ describe("OutlineChatPanel controls", () => {
       callbacks.onDone()
       return { toolCalls: [], roundsUsed: 1, finalText: "A done" }
     })
-    const nextStep = { recommendations: [{ id: "next", label: "Continue A", reason: "next" }] }
+    const nextStep = { completedModule: "故事总纲", completedScope: "核心设定", recommendations: [{ id: "next", label: "Continue A", reason: "next" }] }
     setOutlineConversations([
       { id: "conversation-a", title: "A", createdAt: 1, updatedAt: 1, modelId: "gpt-4o", messages: [{ id: "a-assistant", role: "assistant", content: "A answer", nextStepRecommendation: nextStep }] },
       { id: "conversation-b", title: "B", createdAt: 2, updatedAt: 2, modelId: "gpt-4o", messages: [{ id: "b-assistant", role: "assistant", content: "B answer" }] },
@@ -285,7 +523,7 @@ describe("OutlineChatPanel controls", () => {
   })
 
   it("当前会话运行或已达到全局 3 并发上限时禁用下一步按钮并显示与输入区一致的中文原因", async () => {
-    const recommendationMessage = { id: "assistant-next", role: "assistant" as const, content: "已有回答", nextStepRecommendation: { recommendations: [{ id: "A", label: "继续完善", reason: "推荐" }] } }
+    const recommendationMessage = { id: "assistant-next", role: "assistant" as const, content: "已有回答", nextStepRecommendation: { completedModule: "人物设定", completedScope: "主角", recommendations: [{ id: "A", label: "继续完善", reason: "推荐" }] } }
     setOutlineConversations([conversation([recommendationMessage])], "outline-active", { runStates: { "outline-active": { status: "running", updatedAt: 1, runId: "active-run" } } })
     const container = await renderOutlineChatPanel()
     let button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes("继续完善")) as HTMLButtonElement
@@ -301,7 +539,7 @@ describe("OutlineChatPanel controls", () => {
     const reference = { id: "ref-fail", category: "outline" as const, title: "失败引用", displayTitle: "失败引用", path: "大纲/失败.md" }
     vi.spyOn(AgentRunner.prototype, "run").mockRejectedValue(new Error("网络中断"))
     const toastSpy = vi.spyOn(toast, "info")
-    setOutlineConversations([conversation([{ id: "assistant-next", role: "assistant", content: "已有回答", nextStepRecommendation: { recommendations: [{ id: "A", label: "继续完善", reason: "推荐" }] } }])], "outline-active", { pendingReferenceTokens: [reference] })
+    setOutlineConversations([conversation([{ id: "assistant-next", role: "assistant", content: "已有回答", nextStepRecommendation: { completedModule: "人物设定", completedScope: "主角", recommendations: [{ id: "A", label: "继续完善", reason: "推荐" }] } }])], "outline-active", { pendingReferenceTokens: [reference] })
     const container = await renderOutlineChatPanel()
     const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes("继续完善")) as HTMLButtonElement
     await act(async () => { button.click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
@@ -459,9 +697,11 @@ describe("OutlineChatPanel controls", () => {
     expect(source).not.toContain("conversations.map((conv) => (")
   })
 
-  it("标准菜单生成补 forceRefresh，收尾把工具过程留在对话里", () => {
+  it("标准菜单生成不强制清空数据源缓存，收尾把工具过程留在对话里", () => {
     expect(source).toContain("intentPhase: \"intent_analysis\"")
-    expect(source).toContain("forceRefresh: true")
+    // 大纲重新生成/后续生成只透传用户手动触发的强制刷新，不再自己写死 forceRefresh
+    expect(source).toContain("const forceRefresh = options.forceRefresh === true || forceRefreshNext")
+    expect(source).not.toContain("forceRefresh: true")
     expect(source).toContain("workflowMode: outlineMode")
     expect(source).toContain("intentPhase: options.intentPhase")
     expect(source).toContain("标准工作流必须把工具过程留在对话里")
@@ -474,7 +714,8 @@ describe("OutlineChatPanel controls", () => {
     expect(source).toContain("OutlineStandardWorkflowPanel")
     expect(source).toContain("shouldUseOutlineStandardWorkflowCard")
     expect(source).toContain("useStandardWorkflowCard")
-    expect(source).toContain("msg.multiAgentRun ? null")
+    // 意图分析阶段连工具明细一起隐藏，所以这里多了一道 shouldShowOutlineToolCalls 闸门。
+    expect(source).toContain("shouldShowOutlineToolCalls(msg.intentPhase)")
     expect(source).toContain("isRunning={Boolean(msg.isAgentRunning)}")
     expect(source).not.toContain("enableMultiAgent: true")
     expect(source).toContain("enableMultiAgent: !fastMode")
@@ -512,6 +753,31 @@ describe("OutlineChatPanel controls", () => {
     expect(source).toContain("<ConversationHistoryClearDialog")
   })
 
+  it("历史下拉列出当天非当前会话，避免非当前会话在 UI 上不可达", async () => {
+    const today = Date.now()
+    setOutlineConversations(
+      [
+        { id: "conv-b", title: "会话B", createdAt: today, updatedAt: today, messages: [] },
+        { id: "conv-a", title: "会话A", createdAt: today - 1000, updatedAt: today - 1000, messages: [] },
+      ],
+      "conv-b",
+    )
+    const container = await renderOutlineChatPanel()
+    const trigger = container.querySelector<HTMLButtonElement>(".qmai-outline-history-button")
+    expect(trigger).not.toBeNull()
+    await act(async () => {
+      trigger?.click()
+    })
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+    })
+    // 当天会话会被 splitConversationToolbarItems 归入 top（顶栏 chips 在当前 UI 中隐藏），
+    // 因此下拉必须能列出它们，否则会话 A 既不在 chips 也不在历史里。
+    expect(document.body.textContent).toContain("会话A")
+    expect(document.body.textContent).toContain("全部会话 2 条")
+    expect(source).toContain("menuConversations.map((conv) => (")
+  })
+
   it("passes confirm and reject handlers into the outline tool workflow", () => {
     expect(source).toContain("handleConfirmToolSave")
     expect(source).toContain("handleRejectTool")
@@ -533,6 +799,262 @@ describe("OutlineChatPanel controls", () => {
     expect(source).not.toContain('from "@/components/chat/chat-input"')
   })
 
+  /*
+   * 丁-3：大纲面板**不**注入文风条目。
+   *
+   * 这是一条**有意的缺席**，不是漏做 —— 本面板的 `buildAgentConfig` 调用从不传
+   * `runDeepChapterGeneration` / `getWritingStyleIdOverride`，所以
+   * `run_chapter_workflow` 不会注册，`@` 一条文风在生成链上没有任何消费者。
+   * 加进去只会得到一个「弹窗里能选、选了没反应」的死条目。
+   *
+   * ⚠️ 这一条现在是**行为断言**（看 `buildOutlineReferenceSkillEntries` 的产出），
+   * 不再只依赖源码文本 —— 见下一条用例开头的理由。
+   */
+  it("大纲面板产出的技能条目里永远没有文风条目（行为断言，不看源码排版）", () => {
+    const builtInIds = getAllDeAiSkills({
+      version: 1,
+      defaultSkillId: "built-in:comprehensive",
+      disabledSkillIds: [],
+      projectSkills: [],
+      builtInSkillOverrides: [],
+      lastChapterDeAiSkillId: null,
+    }).map((skill) => skill.id)
+    const projectSkill = {
+      id: "project:quiet",
+      name: "沉浸式去AI味",
+      description: "",
+      templateId: "custom",
+      content: "删除协作口吻。",
+      source: "project" as const,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const writingSkill: UserSkill = {
+      id: "skill:three",
+      name: "three-turn",
+      displayName: "三翻四抖",
+      description: "",
+      kind: [],
+      stages: [],
+      modes: [],
+      content: "",
+      source: "project",
+      priority: 50,
+      tags: [],
+      categoryId: "all",
+    }
+    const makeConfig = (disabledSkillIds: string[]): DeAiSkillConfig => ({
+      version: 1,
+      defaultSkillId: "built-in:comprehensive",
+      disabledSkillIds,
+      projectSkills: [],
+      builtInSkillOverrides: [],
+      lastChapterDeAiSkillId: null,
+    })
+    /*
+     * 灵魂条目（丁-4 新增的第三个入参）。⚠️ 这里**故意传非空数组**：
+     * 若传 `[]`，这条用例就只剩「文风缺席」可看，而灵魂与文风是**两类不同的**子类型，
+     * 「灵魂有产出」既不能证明也不能反证「文风缺席」。传非空还能顺带钉住
+     * 「加入第三类条目后，文风仍然不出现」这个更强的性质。
+     */
+    const soulOptions: CharacterSoulOption[] = [
+      {
+        id: "aura-custom-a",
+        name: "李四",
+        description: "自定义 · 主角",
+        builtIn: false,
+        hasPortablePersonality: false,
+      },
+    ]
+
+    // ① 正常配置：去AI味 + 写作Skill 都在，且两种子类型都真的出现了
+    //    （反向对照：不是「函数返回空数组」导致的恒真）
+    const normal = buildOutlineReferenceSkillEntries(makeConfig([]), [writingSkill], soulOptions)
+    expect(normal.some((entry) => entry.subtype === "deai"), "应产出去AI味条目").toBe(true)
+    expect(normal.some((entry) => entry.subtype === "writing"), "应产出写作Skill条目").toBe(true)
+    expect(normal.some((entry) => entry.subtype === "soul"), "应产出角色灵魂条目（丁-4）").toBe(true)
+
+    // ② 生产可达的空 deai 场景：逐技能启停把所有内置去AI味都禁用
+    //    （`skill-library-view.tsx` 提供逐技能启停 ⇒ 用户真的能到这一步）
+    const allDisabled = buildOutlineReferenceSkillEntries(makeConfig(builtInIds), [], [])
+    expect(allDisabled, "禁用全部去AI味且没有写作Skill、也没有灵魂 ⇒ 条目为空").toEqual([])
+
+    // ③ 三种组合都过一遍「没有任何条目的子类型是 style」——这正是不变的性质
+    for (const entries of [
+      normal,
+      allDisabled,
+      buildOutlineReferenceSkillEntries(null, [], soulOptions),
+      buildOutlineReferenceSkillEntries(makeConfig([]), [writingSkill], []),
+    ]) {
+      expect(entries.filter((entry) => entry.subtype === "style")).toEqual([])
+    }
+
+    // ④ 项目自定义去AI味技能也在产出里（证明 ① 的 deai 不是只从内置来的巧合）
+    expect(
+      buildOutlineReferenceSkillEntries(
+        { ...makeConfig([]), projectSkills: [projectSkill] },
+        [],
+        [],
+      ).map((entry) => entry.id),
+    ).toContain("project:quiet")
+  })
+
+  /*
+   * 源码文本的**第二层**钉子（第一层是上面那条行为断言）。
+   *
+   * 行为断言只覆盖 `buildOutlineReferenceSkillEntries` 的产出；若有人在**组件里**
+   * 把别处的文风条目拼到这个 provider 上（`createSkillProvider(() => [...build(…), styleEntry])`），
+   * 行为断言看不见。这条源码钉子补的就是那个位置。
+   *
+   * ⚠️ **已知逃逸面（如实记录，不要读成「不会漏」的保证）**——实测这些写法**不会**被这条抓到：
+   *   (a) `subtype : STYLE_SKILL_SUBTYPE`（冒号前多一个空格；本仓库无 prettier/eslint 配置、
+   *       `ci.yml` 只跑 `vite build` + `cargo build`，没有机器归一化会消掉它）；
+   *   (b) `import { STYLE_SKILL_SUBTYPE as STYLE_SUBTYPE }` 之类的**别名导入**；
+   *   (c) 中转变量（先把条目存进变量、再 spread 回来）。
+   * 收紧正则是军备竞赛（堵了空格还有别名，堵了别名还有中转变量），所以本批**不**继续收紧：
+   * 真正承重的是上面那条行为断言，这条只作为廉价的第二层。
+   * 会被抓到的形态（实测）：值前换行（`\s*` 含 `\n`）、`STYLE_SKILL_SUBTYPE as const`、
+   * 裸 `STYLE_SKILL_SUBTYPE`、`"style" as const`。
+   *
+   * ⚠️ **两层的合取缺口（已知，如实记录）**：两层是**互补**的，不是**互相兜底**的 ——
+   * 「在 builder **之外**注入」+「排版逃逸（空格 / 别名 / 中转变量）」**同时**发生时，
+   * 两层都不报警。实测：把 style 条目 wrap 在组件的 `createSkillProvider(() => [...build(…), …])`
+   * 里、且用中转变量绕过正则 ⇒ **138 passed，两层全绿**。
+   * 要根治只能让「组件实际交出去的 provider 产出」可被断言（接口改动），本批不做。
+   *
+   * ⚠️ 第一版这条用例里还有一句 `toContain("本面板的 agent 配置")`，**已删除**：
+   * 那个短语全文只出现在注释里，所以它只可能因为注释被改写而失败（实测：把注释措辞改成
+   * 「本面板的 agent 设置」，语义一字未变，用例就红了），行为保证为 0，是假阳性发生器。
+   * 现在断言跑在 `stripComments()` 之后，改注释不再影响任何一条。
+   */
+  it("does not offer writing-style entries in the outline reference picker（源码第二层钉子）", () => {
+    expect(sourceWithoutComments).not.toMatch(/subtype:\s*(STYLE_SKILL_SUBTYPE|["']style["'])/)
+    expect(sourceWithoutComments).not.toContain("runDeepChapterGeneration")
+    expect(sourceWithoutComments).not.toContain("getWritingStyleIdOverride")
+    // 反向对照：这条断言的对象确实是「有内容的源码」，不是恒真的空串
+    expect(sourceWithoutComments).toContain('subtype: "deai"')
+  })
+
+  /*
+   * 丁-4：与文风**相反**，角色灵魂在大纲面板**有**消费者
+   * （`contextPack.characterAuras` → `buildContextHubSystemContent` 与
+   * `buildScopedOutlineSubAgentContext`），所以这里必须注入条目。
+   *
+   * ⚠️ 这**是**源码形状钉子，钉的是「注入点与调用点存在、且形状对」，
+   * 不是行为保证。行为面的对照在 `soul-reference.spec.ts`（产出端 ↔ 消费端契约）
+   * 与 `message-scoped-soul-binding.spec.ts`（真绑定的读写与还原）。
+   * 用 AST 而不是文本：见文件顶部那段说明。
+   */
+  it("在引用弹窗里注入角色灵魂条目，并把「只对这一条消息生效」的绑定接上（丁-4）", () => {
+    // ① 条目：`const soulEntries = characterSouls.map(...)`
+    const soulEntriesDeclarations = collectOutlineNodes(
+      (node): node is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(node)
+        && ts.isIdentifier(node.name)
+        && node.name.text === "soulEntries"
+        && !!node.initializer
+        && ts.isCallExpression(node.initializer)
+        && ts.isPropertyAccessExpression(node.initializer.expression)
+        && ts.isIdentifier(node.initializer.expression.name)
+        && node.initializer.expression.name.text === "map",
+    )
+    expect(soulEntriesDeclarations, "应有 soulEntries = characterSouls.map(...)").toHaveLength(1)
+    const soulEntriesCall = soulEntriesDeclarations[0].initializer as ts.CallExpression
+    expect(
+      (soulEntriesCall.expression as ts.PropertyAccessExpression).expression.getText(outlineSourceFile),
+      "灵魂条目必须由 characterSouls 投影出来",
+    ).toBe("characterSouls")
+    expect(
+      soulEntriesCall.arguments[0].getText(outlineSourceFile),
+      "条目必须带上 soul 子类型（消费端靠它认类型）",
+    ).toContain("SOUL_SKILL_SUBTYPE")
+
+    // ② 注入：`[...deAiSkills, ...writingSkillList, ...soulEntries]`
+    const soulEntriesSpreads = collectOutlineNodes(
+      (node): node is ts.SpreadElement =>
+        ts.isSpreadElement(node) && ts.isIdentifier(node.expression) && node.expression.text === "soulEntries",
+    )
+    expect(soulEntriesSpreads, "灵魂条目必须被摊进 provider 列表").toHaveLength(1)
+    const providerArray = soulEntriesSpreads[0].parent
+    expect(ts.isArrayLiteralExpression(providerArray), "摊入点应是一个数组字面量").toBe(true)
+    expect(
+      (providerArray as ts.ArrayLiteralExpression).elements.map((element) => element.getText(outlineSourceFile)),
+      "灵魂条目必须和去AI味 / 写作 Skill 一起交给同一个列表",
+    ).toContain("...writingSkillList")
+
+    // ③ 解析 → 问 → 写：三步都必须是**被 await 的真调用**
+    expect(outlineCalls("collectReferencedSoulAuraIds"), "应解析出本条消息引用的 aura id").toHaveLength(1)
+    const requestCalls = outlineCalls("requestSoulBindingTarget")
+    expect(requestCalls, "发送前必须问「绑给哪个小说人物」").toHaveLength(1)
+    expect(outlineIsAwaited(requestCalls[0]), "问的动作必须被 await（否则拿不到结果就往下走）").toBe(true)
+    const beginCalls = outlineCalls("beginMessageScopedSoulBinding")
+    expect(beginCalls, "必须真的写临时绑定").toHaveLength(1)
+    expect(outlineIsAwaited(beginCalls[0]), "写盘必须被 await").toBe(true)
+
+    // ④ 用户取消 ⇒ 不发送（`null` 直接返回，不许拿默认人物顶上）
+    const cancelGuard = collectOutlineNodes(
+      (node): node is ts.IfStatement =>
+        ts.isIfStatement(node)
+        && node.expression.getText(outlineSourceFile) === "!targetCharacterName"
+        && outlineReturnsObjectWith(node.thenStatement, ["started", "sent"]),
+    )
+    expect(cancelGuard, "取消时必须直接返回「没开始、没发送」，不许继续发送").toHaveLength(1)
+  })
+
+  /*
+   * 丁-4 最重的一条：临时绑定必须在 `finally` 里还原。
+   *
+   * 这条**是**行为面的缺口（大纲面板的生成链在 jsdom 里跑不通），所以只能钉源码形状。
+   * ⚠️ 但**不能**用文本匹配：复核批实测把那一行改成注释
+   * （`// await releaseMessageSoulBinding();` + `void releaseMessageSoulBinding;`）
+   * 之后，文本钉子仍然绿、`tsc` 也干净。所以这里走 AST：
+   * 注释**不在**语法树里，被注释掉的调用根本不存在，钉子必然红。
+   * 断言的是**位置关系**：该调用必须落在某个 `try` 的 `finallyBlock` 里，
+   * 且那个 try 的 `catch` 正是「生成失败」那一条（返回 `{started:true, sent:false}`），
+   * 而且它的 `finally` 里还有本函数原有的运行槽清理（证明块没被缩窄）。
+   */
+  it("在大纲面板的生成块 finally 里还原临时角色灵魂绑定（丁-4）", () => {
+    const releaseCalls = outlineCalls("releaseMessageSoulBinding")
+    expect(
+      releaseCalls.length,
+      "代码里应当**存在**还原临时绑定的调用（被注释掉不算 —— 注释不在语法树里）",
+    ).toBeGreaterThan(0)
+    for (const call of releaseCalls) {
+      expect(outlineIsAwaited(call), "还原必须被 await（否则本轮结束前它可能还没落盘）").toBe(true)
+    }
+
+    // 认准生成块：它的 catch 返回「开始了、但没发送成功」。
+    const generationTries = collectOutlineNodes(
+      (node): node is ts.TryStatement =>
+        ts.isTryStatement(node)
+        && !!node.finallyBlock
+        && outlineReturnsObjectWith(node.catchClause?.block, ["started", "sent"]),
+    )
+    expect(generationTries, "应能认出唯一一个生成块的 try/catch/finally").toHaveLength(1)
+    const finallyBlock = generationTries[0].finallyBlock!
+
+    /*
+     * ① 生成块的 finally 里**必须**有还原调用 —— 落在 try 体内等于「只有生成成功才还原」。
+     * ② 而且所有还原调用都必须在它里面：允许将来为提前 return 另加释放点，
+     *    但不允许出现「某个出口忘了释放」的调用布局。
+     */
+    const insideFinally = releaseCalls.filter((call) => outlineIsInside(call, finallyBlock))
+    expect(
+      insideFinally,
+      "生成块的 finally 里必须有还原调用 —— 只写在 try 体内等于「生成失败就不还原」",
+    ).toHaveLength(1)
+    expect(
+      releaseCalls.length,
+      "所有还原调用都应落在这个 finally 里（提前 return 的出口请也纳入同一处兜底）",
+    ).toBe(insideFinally.length)
+
+    // 块的范围没被缩窄成「只包住还原」：原有的运行槽清理仍在同一个 finally 里。
+    expect(
+      outlineMemberCalls("remove").some((call) => outlineIsInside(call, finallyBlock)),
+      "同一个 finally 里应保留本轮原有的运行槽清理（证明块的范围没被挪动）",
+    ).toBe(true)
+  })
+
   it("keeps outline generation menu in the reference input footer before model selection", () => {
     expect(source).toContain("leftFooterControls={")
     expect(source).not.toContain("qmai-outline-bottom-left-controls")
@@ -551,14 +1073,59 @@ describe("OutlineChatPanel controls", () => {
     expect(modelIndex).toBeGreaterThan(rightControlsIndex)
   })
 
+  it("把生成模块写入输入框，并允许用斜杠打开同一菜单", async () => {
+    const runSpy = vi.spyOn(AgentRunner.prototype, "run")
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="生成大纲模块"]')
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    })
+    const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find((button) => button.textContent?.includes("章节细纲"))
+    await act(async () => {
+      item?.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+    })
+    const input = container.querySelector<HTMLTextAreaElement>('[aria-label="引用输入框"]')
+    expect(input?.value).toBe("/章节细纲 ")
+    expect(runSpy).not.toHaveBeenCalled()
+
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set
+      setValue?.call(input, "/")
+      input?.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    expect(document.querySelector(".qmai-outline-generation-menu")).not.toBeNull()
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      callbacks.onText("已收到")
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: "已收到" }
+    })
+    const request = "/章节细纲 生成关于第三章的细纲内容，结合故事生成"
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set
+      setValue?.call(input, request)
+      input?.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    expect(input?.parentElement?.querySelector(".ui-test-command-overlay")).toBeNull()
+    await act(async () => {
+      input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (container.textContent?.includes(request)) break
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    })
+    expect(container.textContent).toContain(request)
+  })
+
   it("renders outline generation from an icon button and keeps the menu backed by existing configs", () => {
     expect(source).toContain("ListPlus")
     expect(source).toContain('aria-label="生成大纲模块"')
     expect(source).toContain("qmai-outline-generation-menu")
     expect(source).toContain('className="qmai-outline-generation-menu fixed')
     expect(source).toContain("OUTLINE_SECTION_GENERATION_CONFIGS.map")
-    expect(source).toContain("onGenerate(config.title, config.requestHint)")
-    expect(source).toContain("onGenerate={handleGenerateSection}")
+    expect(source).toContain("onSelect(config.title, config.requestHint)")
+    expect(source).toContain("onSelect={(title) => insertOutlineGenerationCommand(title)}")
   })
 
   it("adds selected references to the outline agent request instead of only storing chips", () => {
@@ -688,6 +1255,69 @@ describe("OutlineChatPanel controls", () => {
     expect(source).toContain("最后再生成大纲建议")
   })
 
+  it("主发送完整结果仅含 Gemini 思考摘要时关闭 reasoning 重试一次", async () => {
+    useWikiStore.setState({
+      outlineWorkflowMode: "fast",
+      llmConfig: {
+        ...useWikiStore.getState().llmConfig,
+        reasoning: { mode: "high" },
+      },
+    })
+    const finalOutline = "# 第27章 地下乱战\n\n## 本章目标\n沈渊必须在增援抵达前夺下中枢。"
+    const runSpy = vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      const text = runSpy.mock.calls.length === 1 ? GEMINI_OUTLINE_THOUGHT_DUMP : finalOutline
+      callbacks.onText(text)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: text }
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+    const input = container.querySelector<HTMLTextAreaElement>('[aria-label="引用输入框"]')
+
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set
+      setValue?.call(input, "说明第27章的剧情安排")
+      input?.dispatchEvent(new Event("input", { bubbles: true }))
+      input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (runSpy.mock.calls.length === 2 && useOutlineChatStore.getState().runStates["outline-active"]?.status !== "running") break
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    })
+
+    expect(runSpy).toHaveBeenCalledTimes(2)
+    expect(runSpy.mock.calls[1]?.[0].requestOverrides?.reasoning).toEqual({ mode: "off" })
+    const assistant = useOutlineChatStore.getState().conversations[0].messages.findLast((message) => message.role === "assistant")
+    expect(assistant?.content).toContain("沈渊必须在增援抵达前夺下中枢")
+    expect(assistant?.content).not.toContain("Examining the Narrative Details")
+  })
+
+  it("停止主发送时不会把已流出的 Gemini 思考摘要保存在消息中", async () => {
+    useWikiStore.setState({ outlineWorkflowMode: "fast" })
+    const runSpy = vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      callbacks.onText(GEMINI_OUTLINE_THOUGHT_DUMP)
+      throw new Error("aborted")
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+    const input = container.querySelector<HTMLTextAreaElement>('[aria-label="引用输入框"]')
+
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set
+      setValue?.call(input, "说明当前剧情")
+      input?.dispatchEvent(new Event("input", { bubbles: true }))
+      input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (runSpy.mock.calls.length === 1 && useOutlineChatStore.getState().runStates["outline-active"]?.status !== "running") break
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    })
+
+    const assistant = useOutlineChatStore.getState().conversations[0].messages.findLast((message) => message.role === "assistant")
+    expect(assistant?.content).toBe("已停止生成。")
+    expect(assistant?.content).not.toContain("Examining the Narrative Details")
+  })
+
   it("直接章纲完善请求按意图分析和正文生成两阶段执行，并保留原请求与引用", async () => {
     const reference = {
       id: "chapter-outline-236",
@@ -757,8 +1387,9 @@ describe("OutlineChatPanel controls", () => {
     })
 
     expect(runSpy).toHaveBeenCalledTimes(1)
-    expect(container.textContent).toContain("请确认章节范围")
-    expect(container.textContent).toContain("生成最近章节")
+    // 需求分析浮层挂在面板根节点内（不是 Portal），用 body 文本兜住两种挂载方式。
+    expect(document.body.textContent).toContain("请确认章节范围")
+    expect(document.body.textContent).toContain("生成最近章节")
     expect(useOutlineChatStore.getState().conversations[0].messages.findLast((message) => message.role === "assistant")?.intentClarityResult?.clarity).toBe("needs_input")
   })
 
@@ -781,7 +1412,7 @@ describe("OutlineChatPanel controls", () => {
 
     expect(container.textContent).toContain("继续生成")
     expect(container.textContent).not.toContain('"status":"clear"')
-    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.includes("保存为大纲"))).toBe(false)
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "保存为大纲")).toBe(false)
     expect(runSpy).not.toHaveBeenCalled()
 
     const continueButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
@@ -799,20 +1430,21 @@ describe("OutlineChatPanel controls", () => {
     expect(useOutlineChatStore.getState().conversations[0].messages.at(-1)?.content).toContain("补全远洋投送")
   })
 
-  it("无效意图 JSON 显示协议错误且不提供保存入口", async () => {
+  it("无效意图 JSON 显示协议错误、保留正文且不提供保存入口", async () => {
     setOutlineConversations([conversation([
       { id: "u-invalid", role: "user", content: "完善章纲" },
       { id: "a-invalid", role: "assistant", content: '<!-- intent_clarity -->\n{"clarity":"clear"' },
     ])], "outline-active")
     const container = await renderOutlineChatPanel()
 
-    expect(container.textContent).toContain("意图分析格式无效，尚未开始生成")
+    // 协议坏了不再把整条回复藏起来：错误照报，但正文（剥掉坏 JSON）要留在气泡里。
+    expect(container.textContent).toContain("意图分析格式无效")
+    expect(container.textContent).not.toContain("尚未开始生成")
     expect(container.querySelector('[role="alert"]')).not.toBeNull()
-    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.includes("保存为大纲"))).toBe(false)
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "保存为大纲")).toBe(false)
   })
 
   it("routes every outline generation menu item through the PRD 3.1 content workflow", () => {
-    expect(source).toContain("buildOutlineSectionGenerationPrompt")
     expect(source).toContain("## AI大纲生成工作流")
     expect(source).toContain("提取请求关键词")
     expect(source).toContain("识别用户意图")
@@ -872,6 +1504,37 @@ describe("OutlineChatPanel controls", () => {
     expect(source).toContain("自动回退为单 Agent")
   })
 
+  it("同人提交前编译原作正典，并用编译结果替换原始素材", () => {
+    expect(source).toContain("compileFanficCanon({")
+    expect(source).toContain("stripFanficCanonFrontmatter(compiled.document)")
+    // 编译失败必须中断提交，而不是拿没编译的原文继续
+    expect(source).toContain("原作正典编译失败，请重试。")
+    // 超长原作分片编译时长，进度要透出
+    expect(source).toContain("onProgress:")
+  })
+
+  it("同人提交支持复用已落盘正典，不再重复编译", () => {
+    // 首次提交：编译并落盘
+    expect(source).toContain("compileFanficCanon({")
+    // 后续提交：勾选复用后直接读正典正文，跳过编译
+    expect(source).toContain("request.fanficReuseCanon && !material")
+    expect(source).toContain("loadFanficCanon(fanficProjectPath)")
+    expect(source).toContain("已复用项目里已有的原作正典。")
+    // 复用读的是完整正文，不是给上下文包用的 8000 字截断版
+    expect(source).toContain("await loadFanficCanon(fanficProjectPath)")
+    expect(source).toContain("const existing = stripFanficCanonFrontmatter(")
+    expect(source).not.toContain("loadFanficCanonBody(")
+  })
+
+  it("原创作品残留同人正典时给出提示，但不擅自删文件", () => {
+    // 残留正典仍会参与正文生成，会让模型把外部原作当权威
+    expect(source).toContain("本项目已存在同人正典，它仍会参与正文生成")
+    expect(source).toContain("fanficCanonPath(")
+    expect(source).toContain("!isFanficRequest(request)")
+    // 只提示，不调用删除
+    expect(source).not.toContain("clearFanficCanon(")
+  })
+
   it("快速模式系统提示去掉工作流强制段，仍保留保存协议和 Markdown 约束", () => {
     const prompt = buildOutlineAgentSystemPrompt({ projectName: "测试项目", mode: "fast" })
 
@@ -881,6 +1544,7 @@ describe("OutlineChatPanel controls", () => {
     expect(prompt).toContain("outlineSaveRequest")
     expect(prompt).toContain("Markdown 格式约束：结构化资料使用一级标题")
     expect(prompt).toContain("像普通对话一样直接出结果")
+    expect(prompt).toContain("主动建议分成两章章纲")
     expect(prompt).not.toContain("必须按 PRD 3.1 主流程执行")
     expect(prompt).not.toContain("先提出最少必要澄清问题")
   })
@@ -894,11 +1558,28 @@ describe("OutlineChatPanel controls", () => {
     expect(prompt).toContain("outlineSaveRequest")
     expect(prompt).toContain("必须按 PRD 3.1 主流程执行")
     expect(prompt).toContain("先提出最少必要澄清问题")
+    expect(prompt).toContain("主动建议分成两章章纲")
+  })
+
+  it("快速模式提示分支引用两章章纲建议补丁，讨论轮不注入", () => {
+    expect(source).toContain("TWO_CHAPTER_OUTLINE_SUGGESTION_RULE")
+    expect(source).toMatch(/mode === "fast"[\s\S]{0,500}TWO_CHAPTER_OUTLINE_SUGGESTION_RULE/)
+    const discussPrompt = buildOutlineAgentSystemPrompt({
+      mode: "discuss",
+      discussModule: "章节细纲",
+    })
+    expect(discussPrompt).not.toContain("主动建议分成两章章纲")
+    expect(buildOutlineAgentSystemPrompt({ mode: "discuss" })).toContain("主动建议分成两章章纲")
   })
 
   it("快速模式源码跳过意图分析和多 Agent，人物小传不再降级为 analysis 预算", () => {
-    expect(source).toContain('outlineWorkflowMode === "fast"')
-    expect(source).toContain("enableMultiAgent = Boolean(options.enableMultiAgent) && outlineMode !== \"fast\"")
+    // 这里原本还断言源码含 `outlineWorkflowMode === "fast"`，但那个表达式当时只用于
+    // 挑选输入区上方那句说明文案的措辞；该文案已按用户要求删除，表达式随之消失。
+    // 快速模式真正的门禁在生成路径上（下面两条 `outlineMode !== "fast"`），
+    // 所以去掉那条只剩 UI 措辞意义的断言，不降低对本用例目标（跳过意图分析与多 Agent）的覆盖。
+    expect(source).toMatch(
+      /enableMultiAgent = Boolean\(options\.enableMultiAgent\)\s*\n\s*&& outlineMode !== "fast"/,
+    )
     expect(source).toContain("outlineMode !== \"fast\"")
     expect(source).toMatch(/const charRun = await runOutlineAgentOnce\([\s\S]{0,400}budgetStage: "generation"/)
     expect(source).not.toMatch(/const charRun = await runOutlineAgentOnce\([\s\S]{0,400}budgetStage: "analysis"/)
@@ -911,8 +1592,14 @@ describe("OutlineChatPanel controls", () => {
   it("截断残稿不会自动弹出保存确认", () => {
     expect(source).toContain("!deliverableTruncated")
     expect(source).toContain("isOutlineOutputTruncated")
-    expect(source).toMatch(/if \(intentProtocol\.kind === "none" && !intentProtocolError && !deliverableTruncated\)/)
-    expect(source).toContain("handleAutoSaveOutlineRequests(capturedConvId, finalContent, isCurrentRun)")
+    expect(source).toMatch(
+      /intentProtocol\.kind === "none"\s*\n\s*&& !intentProtocolError\s*\n\s*&& !deliverableTruncated/,
+    )
+    // 这条被截断闸门守着的调用必须存在；允许后面继续追加参数（如 assistantId），
+    // 否则每次给这个函数加参数都要来改守卫，而守卫真正要守的是「调用没有被删掉」。
+    expect(source).toMatch(
+      /handleAutoSaveOutlineRequests\(capturedConvId, finalContent, isCurrentRun[,)]/,
+    )
     expect(source).toContain("isSaveableOutlineDeliverable")
     expect(source).toContain("生成完成后自动保存")
     expect(source).toContain("if (isOutlineOutputTruncated(charRun.error)) deliverableTruncated = true")
@@ -946,7 +1633,24 @@ describe("OutlineChatPanel controls", () => {
     const trigger = container.querySelector<HTMLButtonElement>('[aria-label="AI 大纲执行模式"]')
     expect(trigger).not.toBeNull()
     expect(trigger?.textContent).toContain("标准")
-    expect(container.textContent).toContain("再交给 AI 分析和追问")
+    /*
+     * 模式按钮**只有文字，没有下拉箭头**（用户要求：不需要下拉图标）。
+     *
+     * 判别力：把 `ChevronDown` 加回去 ⇒ 第一条红（它会渲染成一个 `svg`）。
+     * 只断言 `textContent` 是**不够**的 —— 箭头是 svg、不产生文字，
+     * 加了它 textContent 照样是「标准」。（这个坑本轮在「书架」按钮上踩过一次。）
+     * 同时钉住 `aria-haspopup` / `aria-expanded` 还在：去掉的只是视觉提示，
+     * 「点开有列表」这个语义不能跟着丢。
+     */
+    expect(trigger?.querySelector("svg")).toBeNull()
+    expect(trigger?.children).toHaveLength(1)
+    expect(trigger?.getAttribute("aria-haspopup")).toBe("listbox")
+    expect(trigger?.getAttribute("aria-expanded")).toBe("false")
+    // 用户要求删掉输入区上方那两段文案（固定选项说明与重复的「选择生成你想要的小说」）；
+    // 模式本身仍由下拉切换，所以下面继续验下拉的行为。
+    expect(container.textContent).not.toContain("再交给 AI 分析和追问")
+    expect(container.textContent).not.toContain("通过固定选项")
+    expect(container.textContent).not.toContain("选择生成你想要的小说")
 
     await act(async () => {
       trigger?.click()
@@ -964,8 +1668,192 @@ describe("OutlineChatPanel controls", () => {
     expect(useWikiStore.getState().outlineWorkflowMode).toBe("fast")
     expect(outlineModelPreferenceMocks.saveOutlineWorkflowMode).toHaveBeenCalledWith("fast")
     expect(container.querySelector('[aria-label="AI 大纲执行模式"]')?.textContent).toContain("快速")
-    expect(container.textContent).toContain("直接生成大纲正文")
+    // 切模式后那段说明也不再出现（它已被整体删除）。
     expect(container.textContent).not.toContain("再交给 AI 分析和追问")
+    // 显式还原成标准模式：这个用例会切到 fast，而下面共用同一份 wiki store 的
+    // 用例假设的是标准模式 —— 不还原就会把它们一起带红（实测过一次）。
+    await act(async () => { useWikiStore.getState().setOutlineWorkflowMode("standard") })
+  })
+
+  it("执行模式下拉里有互斥的计划模式选项", async () => {
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 10, y: 10, top: 400, left: 20, bottom: 432, right: 120, width: 80, height: 32,
+        toJSON: () => ({}),
+      }),
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="AI 大纲执行模式"]')
+
+    await act(async () => {
+      trigger?.click()
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+    const options = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
+      .filter((button) => button.getAttribute("role") === "option")
+    const menu = document.querySelector<HTMLElement>('[role="listbox"]')
+    expect(menu?.style.maxHeight).toBe("none")
+    expect(options.map((option) => option.textContent)).toHaveLength(4)
+    expect(options.some((option) => option.textContent?.includes("共创"))).toBe(true)
+    const planOption = options.find((option) => option.textContent?.includes("计划"))
+    expect(planOption).toBeDefined()
+
+    await act(async () => { planOption?.click() })
+
+    expect(useWikiStore.getState().outlineWorkflowMode).toBe("plan")
+    expect(outlineModelPreferenceMocks.saveOutlineWorkflowMode).toHaveBeenCalledWith("plan")
+    expect(container.querySelector('[aria-label="AI 大纲执行模式"]')?.textContent).toContain("计划")
+  })
+
+  async function submitOutlineInput(container: HTMLElement, text: string) {
+    const input = container.querySelector<HTMLTextAreaElement>('[aria-label="引用输入框"]')
+    expect(input).not.toBeNull()
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set
+      setValue?.call(input, text)
+      input?.dispatchEvent(new Event("input", { bubbles: true }))
+      input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        if (useOutlineChatStore.getState().runStates["outline-active"]?.status !== "running") break
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    })
+  }
+
+  function outlinePlanBlock(payload: unknown): string {
+    return `<!-- outline_plan -->\n${JSON.stringify(payload)}\n<!-- /outline_plan -->`
+  }
+
+  it("计划模式自由输入先做要素盘点，缺口渲染多问题追问卡片", async () => {
+    useWikiStore.setState({ outlineWorkflowMode: "plan" })
+    const calls: Array<{ system: string; user: string }> = []
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, messages, callbacks) => {
+      calls.push({
+        system: agentMessageContentText(messages.find((message) => message.role === "system")?.content ?? ""),
+        user: agentMessageContentText(messages.findLast((message) => message.role === "user")?.content ?? ""),
+      })
+      const text = outlinePlanBlock({
+        status: "needs_input",
+        module: "章节细纲",
+        elements: [{ key: "chapterRange", value: "第236章", source: "user", satisfied: true }],
+        missing: ["本章目标"],
+        questions: [{
+          id: "q1",
+          key: "chapterGoal",
+          question: "本章目标是什么？",
+          options: [
+            { id: "A", label: "推进主线", description: "" },
+            { id: "B", label: "铺垫伏笔", description: "" },
+            { id: "C", label: "兑现爽点", description: "" },
+          ],
+        }],
+      })
+      callbacks.onText(text)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: text }
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    await submitOutlineInput(container, "把236章大纲补充详细")
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0].system).toContain("## 本轮阶段：计划模式要素盘点")
+    expect(calls[0].system).not.toContain("本轮阶段：意图分析")
+    expect(calls[0].user).toContain("计划模式要素盘点")
+
+    const assistant = useOutlineChatStore.getState().conversations[0].messages
+      .findLast((message) => message.role === "assistant")
+    expect(assistant?.outlinePlanPhase).toBe("element_check")
+    expect(assistant?.outlinePlanProtocol?.status).toBe("needs_input")
+    expect(assistant?.outlinePlanError).toBeUndefined()
+    // 协议 JSON 只走卡片，不能漏进气泡
+    expect(container.textContent).not.toContain("outline_plan")
+    expect(container.textContent).not.toContain("needs_input")
+    expect(container.textContent).toContain("待补要素：本章目标")
+    expect(container.textContent).toContain("推进主线")
+    // 系统自动补齐的自定义输入项
+    expect(container.textContent).toContain("其它（我来补充描述）")
+    // 停机态不被复位，徽章留在收集要素
+    expect(container.textContent).toContain("收集要素")
+    expect(document.body.textContent).not.toContain("请确认要保存的大纲文件")
+  })
+
+  it("计划模式要素齐备才渲染计划卡片，未齐的 ready 被闸门打回追问", async () => {
+    useWikiStore.setState({ outlineWorkflowMode: "plan" })
+    const readyPlan = {
+      summary: "补齐三位主角小传",
+      steps: [{ id: "s1", title: "读取已有大纲", detail: "确认人物出场" }],
+      files: [{
+        targetFolder: "人物小传",
+        fileName: "角色-林风.md",
+        fileType: "character",
+        writeMode: "create",
+        elements: ["moduleRequirement"],
+      }],
+      order: "先主角后配角",
+      risks: [],
+      openQuestions: [],
+    }
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      const text = outlinePlanBlock({
+        status: "ready",
+        module: "人物小传",
+        elements: [],
+        missing: [],
+        questions: [],
+        plan: readyPlan,
+      })
+      callbacks.onText(text)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: text }
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    await submitOutlineInput(container, "生成人物小传")
+
+    // 要素全空：ready 被强制降级为追问，不给确认按钮
+    expect(container.querySelector('[aria-label="确认生成计划"]')).toBeNull()
+    expect(container.querySelector('[aria-label="提交补充要素"]')).not.toBeNull()
+    const downgraded = useOutlineChatStore.getState().conversations[0].messages
+      .findLast((message) => message.role === "assistant")
+    expect(downgraded?.outlinePlanProtocol?.status).toBe("needs_input")
+    expect(downgraded?.outlinePlanProtocol?.plan).toBeUndefined()
+
+    vi.restoreAllMocks()
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      const text = outlinePlanBlock({
+        status: "ready",
+        module: "人物小传",
+        elements: [
+          { key: "generationScope", value: "全部缺失项", source: "user", satisfied: true },
+          { key: "existingBaseline", value: "已有主角设定", source: "project", satisfied: true },
+          { key: "moduleRequirement", value: "补三位主角", source: "user", satisfied: true },
+          { key: "storyConstraints", value: "遵守总纲设定", source: "project", satisfied: true },
+        ],
+        missing: [],
+        questions: [],
+        plan: readyPlan,
+      })
+      callbacks.onText(text)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: text }
+    })
+
+    await submitOutlineInput(container, "生成人物小传")
+
+    expect(container.querySelector('[aria-label="确认生成计划"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="修改生成计划"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="补充生成要素"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="取消生成计划"]')).not.toBeNull()
+    expect(container.textContent).toContain("人物小传/角色-林风.md")
+    expect(container.textContent).toContain("等待确认计划")
+    // 计划仍未确认，不能进入保存确认
+    expect(document.body.textContent).not.toContain("请确认要保存的大纲文件")
   })
 
   it("快速模式自由输入跳过意图分析，直接单轮生成", async () => {
@@ -999,6 +1887,38 @@ describe("OutlineChatPanel controls", () => {
     expect(calls[0].system).not.toContain("本轮阶段：意图分析")
     expect(calls[0].system).toContain("像普通对话一样直接出结果")
     expect(calls[0].user).toContain("把236章大纲补充详细")
+  })
+
+  it("网络断流后显示并保留已接收设定，已有保存协议也不自动弹出确认", async () => {
+    useWikiStore.setState({ outlineWorkflowMode: "fast" })
+    const body = "# 金手指设定：回响\n\n## 能力概述\n已收到的触发条件：接触旧物。"
+    const text = body + '\n\n```json\n' + JSON.stringify({outlineSaveRequest:{targetFolder:"金手指设定",fileName:"回响.md",fileType:"setting",writeMode:"create",referencedSkills:[],sourceIntent:"金手指设定",content:""}}) + '\n```'
+    const runSpy = vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      callbacks.onText(text)
+      callbacks.onError(new Error("error decoding response body"))
+      return { toolCalls: [], roundsUsed: 1, finalText: text }
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+    const input = container.querySelector<HTMLTextAreaElement>('[aria-label="引用输入框"]')
+    expect(input).toBeInstanceOf(HTMLTextAreaElement)
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set
+      setValue?.call(input, "随便写点设定")
+      input?.dispatchEvent(new Event("input", { bubbles: true }))
+      input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+      for (let attempt = 0; attempt < 200; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 5))
+        if (runSpy.mock.calls.length && useOutlineChatStore.getState().runStates["outline-active"]?.status !== "running") break
+      }
+    })
+    expect(runSpy).toHaveBeenCalledTimes(1)
+    const assistant = useOutlineChatStore.getState().conversations.find(item => item.id === "outline-active")?.messages.filter(item => item.role === "assistant").at(-1)
+    expect(assistant?.content).toContain("已收到的触发条件")
+    expect(assistant?.content).toContain("生成中断")
+    expect(assistant?.content).not.toContain("生成失败：")
+    expect(assistant?.isAgentRunning).toBe(false)
+    expect(document.body.textContent).not.toContain("请确认要保存的大纲文件")
   })
 
   it("单 Agent 输出被截断时不自动弹出保存确认", async () => {
@@ -1038,6 +1958,468 @@ describe("OutlineChatPanel controls", () => {
     expect(container.textContent).toContain("输出被截断")
     expect(container.textContent).not.toContain("请确认要保存的大纲文件")
     expect(document.body.textContent).not.toContain("请确认要保存的大纲文件")
+  })
+
+  it("计划模式系统提示注入要素盘点规则并去掉意图分析段", () => {
+    const planningPrompt = buildOutlineAgentSystemPrompt({
+      projectName: "测试项目",
+      mode: "plan",
+      planModule: "章节细纲",
+    })
+
+    expect(planningPrompt).toContain("## AI大纲固定分析流程")
+    expect(planningPrompt).toContain("## 计划模式总则")
+    expect(planningPrompt).toContain("## 本轮阶段：计划模式要素盘点")
+    expect(planningPrompt).toContain("<!-- outline_plan -->")
+    expect(planningPrompt).toContain("chapterRange")
+    expect(planningPrompt).not.toContain("## 意图清晰度分析阶段")
+    // 盘点轮只允许输出协议块，不能再要求附加下一步推荐
+    expect(planningPrompt).not.toContain("## 下一步推荐输出")
+
+    const generationPrompt = buildOutlineAgentSystemPrompt({
+      projectName: "测试项目",
+      mode: "plan",
+    })
+
+    expect(generationPrompt).toContain("## 计划模式总则")
+    expect(generationPrompt).not.toContain("## 本轮阶段：计划模式要素盘点")
+    expect(generationPrompt).toContain("## 下一步推荐输出")
+    expect(generationPrompt).toContain("outlineSaveRequest")
+  })
+
+  it("共创讨论轮系统提示必须输出 outline_discuss，且不含计划/意图闸门", () => {
+    const discussPrompt = buildOutlineAgentSystemPrompt({
+      projectName: "测试项目",
+      mode: "discuss",
+      discussModule: "章节细纲",
+    })
+
+    expect(discussPrompt).toContain("## 共创讨论模式总则")
+    expect(discussPrompt).toContain("未经作者确认定稿前，不要输出完整大纲正文")
+    expect(discussPrompt).toContain("1-3 个需要作者拍板的具体分歧点")
+    expect(discussPrompt).toContain("禁止只抛开放式问题让作者自己想")
+    expect(discussPrompt).toContain("必须输出 outline_discuss")
+    expect(discussPrompt).toContain("## 本轮阶段：共创讨论")
+    expect(discussPrompt).toContain("禁止输出 intent_clarity 和 outline_plan")
+    expect(discussPrompt).not.toContain("## 意图清晰度分析阶段")
+    expect(discussPrompt).not.toContain("## 计划模式总则")
+    expect(discussPrompt).not.toContain("## 下一步推荐输出")
+    expect(discussPrompt).not.toContain("必须按 PRD 3.1 主流程执行")
+    expect(discussPrompt).not.toContain("## AI 大纲输出协议")
+
+    const generationPrompt = buildOutlineAgentSystemPrompt({
+      projectName: "测试项目",
+      mode: "discuss",
+    })
+    expect(generationPrompt).toContain("作者已经确认定稿")
+    expect(generationPrompt).toContain("outlineSaveRequest")
+    expect(generationPrompt).not.toContain("## 本轮阶段：共创讨论")
+  })
+
+  /**
+   * 回归：讨论轮提示词里**不能**再出现「生成并保存正文」的契约。
+   *
+   * 实测故障：这两套契约同时出现时，模型挑了生成那套照做 ——
+   * 直接返回完整卷纲 + 写回清单，一个 outline_discuss 标记都没有，
+   * 于是被协议闸门判成「共创协议格式无效，尚未开始生成」，整轮作废。
+   *
+   * 起因有两处：①「## AI大纲生成工作流」整段（含「生成章纲后必须列出新增设定
+   * 写回清单」，正是模型输出的那个「写回清单」）被讨论轮沿用；
+   * ②「## Markdown 格式强制要求」只把**标题**放进了排除数组，
+   * 正文与整段大纲示例留在外面，等于一边禁止输出正文、一边给了正文格式与范例。
+   */
+  it("讨论轮不得携带任何生成/保存契约，否则模型会直接产出正文而不给协议", () => {
+    const discussPrompt = buildOutlineAgentSystemPrompt({
+      projectName: "测试项目",
+      mode: "discuss",
+      discussModule: "卷纲",
+    })
+
+    const generationOnlyRules = [
+      "## AI大纲生成工作流",
+      "生成章纲后必须列出新增设定写回清单",
+      "生成章纲时必须使用章纲标准结构",
+      "结构节点必须包含 CBN、CPNs、CEN",
+      "## Markdown 格式强制要求",
+      "所有大纲正文必须使用标准 Markdown 格式输出",
+      "# 五、主要人物设定",
+      "当本轮要交付可保存的大纲正文时",
+      "需要保存大纲时只输出 outlineSaveRequest",
+    ]
+    for (const rule of generationOnlyRules) {
+      expect(discussPrompt, `讨论轮不该出现生成契约：「${rule}」`).not.toContain(rule)
+    }
+
+    // 反过来：讨论轮该有的都在，删干净不能连带把协议要求删掉
+    expect(discussPrompt).toContain("必须输出 outline_discuss 协议块")
+    expect(discussPrompt).toContain("## 本轮阶段：共创讨论")
+    expect(discussPrompt).toContain("## AI大纲固定分析流程")
+    // 讨论轮排除生成工作流，但不能连「先读资料」的纪律一起删掉
+    expect(discussPrompt).toContain("list_outlines")
+
+    // 生成轮必须原样保留这些契约（排除逻辑只能作用于讨论轮）
+    const generationTurn = buildOutlineAgentSystemPrompt({ projectName: "测试项目", mode: "discuss" })
+    expect(generationTurn).toContain("## AI 大纲输出协议")
+    expect(generationTurn).toContain("## Markdown 格式强制要求")
+    expect(generationTurn).toContain("生成章纲后必须列出新增设定写回清单")
+    expect(generationTurn).toContain("当本轮要交付可保存的大纲正文时")
+  })
+
+  it("讨论轮不再被「只输出正文」规则压制，且质疑必须带替代方案", () => {
+    const standardPrompt = buildOutlineAgentSystemPrompt({
+      projectName: "测试项目",
+      mode: "standard",
+    })
+
+    expect(standardPrompt).toContain("## 输出边界（按本轮性质区分）")
+    expect(standardPrompt).toContain("当本轮要交付可保存的大纲正文时")
+    expect(standardPrompt).toContain("不要用「只输出正文」的规则压制讨论")
+    expect(standardPrompt).toContain("## 主动性要求")
+    expect(standardPrompt).toContain("每轮最多提出 1 条对用户已有设定的质疑")
+    expect(standardPrompt).toContain("必须同时给出替代方案")
+
+    // 盘点轮只允许输出协议块，主动性要求不能挤进来
+    expect(buildOutlineAgentSystemPrompt({ mode: "plan", planModule: "章节细纲" }))
+      .not.toContain("## 主动性要求")
+  })
+
+  it("共创模式三个入口都不进意图分析和多 Agent", () => {
+    expect(source).toContain("function buildOutlineDiscussionPrompt(")
+    expect(source).toContain('&& outlineMode !== "discuss"')
+    expect(source).toContain("insertOutlineGenerationCommand")
+    expect(source).toMatch(/if \(outlineMode === "discuss"\) \{\s*\n\s*void handleSend\(buildOutlineDiscussionPrompt\(title, requestHint\)/)
+    expect(source).toContain("// 共创模式把向导需求当讨论起点：先对齐方案再产出，不直接开写")
+    expect(source).toContain('outlineModeForBudget === "discuss" && options.intentPhase !== "generation"')
+    expect(source).toContain("isOutlineDiscussFinalizeRequest")
+  })
+
+  function outlineDiscussBlock(payload: unknown): string {
+    return `判断如下。\n<!-- outline_discuss -->\n${JSON.stringify(payload)}\n<!-- /outline_discuss -->\n下一步先定钩子。`
+  }
+
+  it("共创模式自由输入渲染决策点卡片，协议 JSON 不进气泡", async () => {
+    useWikiStore.setState({ outlineWorkflowMode: "discuss" })
+    const calls: Array<{ system: string; user: string }> = []
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, messages, callbacks) => {
+      calls.push({
+        system: agentMessageContentText(messages.find((message) => message.role === "system")?.content ?? ""),
+        user: agentMessageContentText(messages.findLast((message) => message.role === "user")?.content ?? ""),
+      })
+      const text = outlineDiscussBlock({
+        status: "needs_decision",
+        module: "章节细纲",
+        judgment: "第45章还缺一个开场选择",
+        nextStep: "先定钩子",
+        decisions: [{
+          id: "d1",
+          question: "这章用什么钩子？",
+          options: [
+            { id: "A", label: "仇人登门", description: "更狠" },
+            { id: "B", label: "旧信重现", description: "更慢" },
+          ],
+          preferenceId: "A",
+          preferenceReason: "冲突来得更快",
+        }],
+        agreed: [],
+      })
+      callbacks.onText(text)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: text }
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    await submitOutlineInput(container, "我们来写第45章")
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0].system).toContain("## 本轮阶段：共创讨论")
+    expect(calls[0].system).not.toContain("本轮阶段：意图分析")
+    expect(calls[0].system).not.toContain("## 本轮阶段：计划模式要素盘点")
+
+    const assistant = useOutlineChatStore.getState().conversations[0].messages
+      .findLast((message) => message.role === "assistant")
+    expect(assistant?.outlineDiscussPhase).toBe("decision")
+    expect(assistant?.outlineDiscussProtocol?.status).toBe("needs_decision")
+    expect(assistant?.outlineDiscussError).toBeUndefined()
+    expect(container.textContent).not.toContain("outline_discuss")
+    expect(container.textContent).not.toContain("needs_decision")
+    expect(container.textContent).toContain("需要你拍板")
+    expect(container.textContent).toContain("仇人登门")
+    expect(container.textContent).toContain("AI 倾向")
+    expect(container.textContent).toContain("等待拍板")
+    expect(container.textContent).not.toContain("缺少要素")
+    expect(document.body.textContent).not.toContain("请确认要保存的大纲文件")
+  })
+
+  it("共创轮正文像卷纲但带了 outline_discuss 块时，仍按讨论协议渲染拍板卡", async () => {
+    useWikiStore.setState({ outlineWorkflowMode: "discuss" })
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      const text = [
+        "# 卷纲共创判断",
+        "",
+        "我把第1、2章正文和伏笔追踪都重新读了一遍，卷纲的代价阶梯与主角目标还没对齐，需要你先拍板。",
+        "",
+        "## 依据",
+        "第1章是 final 状态，主角目标已经写成「寻找父亲、守护妻子」；但现有卷纲的代价阶梯仍围绕「修复丹田」展开，",
+        "第三个故事的转①因此失去了动机支撑。令牌机制在第2章已经建立，血脉线索只在伏笔表里出现过一次。",
+        "<!-- outline_discuss -->",
+        "```json",
+        JSON.stringify({
+          status: "needs_decision",
+          module: "卷纲",
+          judgment: "代价阶梯需要重排",
+          nextStep: "先定代价来源",
+          decisions: [{
+            id: "d1",
+            question: "代价来源选哪个",
+            options: [
+              { id: "A", label: "令牌吞噬", description: "与金手指绑定" },
+              { id: "B", label: "血脉反噬", description: "与身世绑定" },
+            ],
+            preferenceId: "A",
+            preferenceReason: "与已建立的令牌机制一致",
+          }],
+          agreed: [],
+        }),
+        "```",
+        "请拍板后我再继续。",
+      ].join("\n")
+      callbacks.onText(text)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: text }
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    await submitOutlineInput(container, "我们来讨论卷纲")
+
+    const assistant = useOutlineChatStore.getState().conversations[0].messages
+      .findLast((message) => message.role === "assistant")
+    expect(assistant?.outlineDiscussError).toBeUndefined()
+    expect(assistant?.outlineDiscussProtocol?.status).toBe("needs_decision")
+    expect(container.textContent).toContain("令牌吞噬")
+    expect(container.textContent).not.toContain("needs_decision")
+  })
+
+  it("共创轮直接交付卷纲时不再判「未返回 outline_discuss」作废", async () => {
+    useWikiStore.setState({ outlineWorkflowMode: "discuss" })
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      // 模型没走讨论协议，而是直接交付了卷纲：MD 正文 + volumeOutlineData + outlineSaveRequest。
+      const output = [
+        "# 修真界卷级架构",
+        "",
+        "## 总体定位",
+        "整体基调先抑后扬，围绕守护展开。",
+        "",
+        "```json",
+        JSON.stringify({ volumeOutlineData: { position: { level: "volume-outline", scope: "修真界部分（共三卷）" }, subVolumes: ["卷一"] } }),
+        "```",
+        "```json",
+        JSON.stringify({ outlineSaveRequest: { targetFolder: "卷纲", fileName: "修真界卷级架构.md", fileType: "volume-outline", writeMode: "create", referencedSkills: [], sourceIntent: "生成完成后自动保存", content: "# 修真界卷级架构\n\n## 总体定位\n\n整体基调先抑后扬。" } }),
+        "```",
+      ].join("\n")
+      callbacks.onText(output)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: output }
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    await submitOutlineInput(container, "帮我把修真界的卷级架构定下来")
+
+    const assistant = useOutlineChatStore.getState().conversations[0].messages
+      .findLast((message) => message.role === "assistant")
+    // 回归核心：直接交付的卷纲不得被判成「模型未返回 outline_discuss 协议块」而整轮作废
+    expect(assistant?.outlineDiscussError).toBeUndefined()
+    expect(container.textContent).not.toContain("模型未返回 outline_discuss 协议块")
+    // 内容没有被藏起来：正文可见
+    expect(container.textContent).toContain("修真界卷级架构")
+    expect(container.textContent).toContain("整体基调先抑后扬")
+  })
+
+  it("共创轮直接交付可保存大纲时进入保存确认链路（内容未丢）", async () => {
+    useWikiStore.setState({ outlineWorkflowMode: "discuss" })
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      const output = [
+        "# 修真界卷级架构",
+        "",
+        "## 总体定位",
+        "整体基调先抑后扬，三卷递进。",
+        "",
+        "```json",
+        JSON.stringify({ outlineSaveRequest: { targetFolder: "大纲", fileName: "修真界卷级架构.md", fileType: "outline", writeMode: "create", referencedSkills: [], sourceIntent: "生成完成后自动保存", content: "# 修真界卷级架构\n\n## 总体定位\n\n整体基调先抑后扬。" } }),
+        "```",
+      ].join("\n")
+      callbacks.onText(output)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: output }
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    await submitOutlineInput(container, "把这版卷级架构整理出来")
+
+    const assistant = useOutlineChatStore.getState().conversations[0].messages
+      .findLast((message) => message.role === "assistant")
+    expect(assistant?.outlineDiscussError).toBeUndefined()
+    // 交付物被真正产出：弹出保存确认（而不是只把源码截断/隐藏）
+    expect(document.body.textContent).toContain("请确认要保存的大纲文件")
+    // 气泡里能看到正文
+    expect(container.textContent).toContain("三卷递进")
+  })
+
+  /*
+   * 端到端：卷纲结构化数据不完整时，
+   *   ① 校验问题必须挂在**生成结果下方**那条消息上（而不是只弹浮层）；
+   *   ② 自动补全提示词必须复用卷纲契约，否则补了也过不了校验。
+   */
+  it("卷纲不完整时，校验问题挂在生成结果下方，且补全提示词带上完整契约", async () => {
+    const repairPrompts: string[] = []
+    let callIndex = 0
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, messages, callbacks) => {
+      const lastUser = agentMessageContentText(
+        messages.findLast((message) => message.role === "user")?.content ?? "",
+      )
+      if (callIndex > 0) repairPrompts.push(lastUser)
+      callIndex += 1
+      // 两轮都返回「故事数不足 + 环节缺失」的不完整卷纲：第一轮触发自动补全，
+      // 第二轮补完仍不完整 → 挂报告 + 提示可保存当前内容。
+      const output = [
+        "# 修真界卷级架构",
+        "",
+        "## 总体定位",
+        "整体基调先抑后扬。",
+        "",
+        "```json",
+        JSON.stringify({
+          volumeOutlineData: {
+            title: "修真界卷级架构",
+            stories: [{ id: 1, title: "故事一", st: [{ stage: "起①", p: ["a", "b", "c"] }] }],
+          },
+        }),
+        "```",
+        "```json",
+        JSON.stringify({
+          outlineSaveRequest: {
+            targetFolder: "卷纲",
+            fileName: "修真界卷级架构.md",
+            fileType: "volume-outline",
+            writeMode: "create",
+            referencedSkills: [],
+            sourceIntent: "生成完成后自动保存",
+            content: "# 修真界卷级架构\n\n## 总体定位\n\n整体基调先抑后扬。",
+          },
+        }),
+        "```",
+      ].join("\n")
+      callbacks.onText(output)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: output }
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    await submitOutlineInput(container, "把这一卷的卷纲写出来")
+    // 自动补全那一轮是 effect 触发的，等它跑完
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    // ① 报告挂在消息上，并显示在生成结果下方
+    const reported = useOutlineChatStore.getState().conversations[0].messages
+      .filter((message) => message.role === "assistant" && message.outlineSaveReport)
+      .at(-1)
+    expect(reported?.outlineSaveReport?.fileType).toBe("volume-outline")
+    expect(reported!.outlineSaveReport!.problems.length).toBeGreaterThan(0)
+    expect(container.textContent).toContain("卷纲内容不完整（")
+    expect(container.textContent).toContain("待保存文件：修真界卷级架构.md")
+    // 明细逐条可读，且保留「照样保存」的出口
+    expect(container.textContent).toContain(reported!.outlineSaveReport!.problems[0])
+    expect(container.textContent).toContain("可以保存当前内容，或让 AI 重新生成")
+
+    // ② 补全提示词复用卷纲契约（否则「补一轮→还是同样的 N 项」）
+    expect(repairPrompts.length).toBeGreaterThan(0)
+    const repairPrompt = repairPrompts[0]
+    for (const field of ["range", "title", "st", "beats", "stage", "label", "who"]) {
+      expect(repairPrompt).toContain(field)
+    }
+  })
+
+  it("共创模式定稿后才进入正文生成", async () => {
+    useWikiStore.setState({ outlineWorkflowMode: "discuss" })
+    const calls: Array<{ system: string; user: string }> = []
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, messages, callbacks) => {
+      calls.push({
+        system: agentMessageContentText(messages.find((message) => message.role === "system")?.content ?? ""),
+        user: agentMessageContentText(messages.findLast((message) => message.role === "user")?.content ?? ""),
+      })
+      const text = outlineDiscussBlock({
+        status: "ready",
+        module: "章节细纲",
+        judgment: "冲突和人物动机已经对齐",
+        nextStep: "确认后开写",
+        decisions: [],
+        agreed: [{ id: "a1", question: "开场钩子", value: "仇人登门" }],
+      })
+      callbacks.onText(text)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: text }
+    })
+    setOutlineConversations([conversation()], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    await submitOutlineInput(container, "继续讨论第45章")
+
+    expect(container.textContent).toContain("可以定稿")
+    expect(container.textContent).toContain("开场钩子：仇人登门")
+    expect(container.textContent).toContain("等待定稿")
+
+    const confirm = container.querySelector<HTMLButtonElement>('[aria-label="定稿开始生成"]')
+    expect(confirm).not.toBeNull()
+
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, messages, callbacks) => {
+      calls.push({
+        system: agentMessageContentText(messages.find((message) => message.role === "system")?.content ?? ""),
+        user: agentMessageContentText(messages.findLast((message) => message.role === "user")?.content ?? ""),
+      })
+      const text = "# 第45章\n\n章纲正文"
+      callbacks.onText(text)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: text }
+    })
+
+    await act(async () => {
+      confirm?.click()
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        if (useOutlineChatStore.getState().runStates["outline-active"]?.status !== "running") break
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    })
+
+    expect(calls.length).toBeGreaterThanOrEqual(2)
+    expect(calls[1].system).toContain("作者已经确认定稿")
+    expect(calls[1].system).not.toContain("## 本轮阶段：共创讨论")
+    expect(calls[1].user).toContain("已经定稿")
+  })
+
+  it("三个入口在计划模式下都走要素盘点，不直接进生成", () => {
+    expect(source).toContain("const startOutlinePlanElementCheck = useCallback")
+    expect(source).toContain('planPhase: "element_check"')
+    expect(source).toContain("buildOutlinePlanElementCheckPrompt")
+    // 分项菜单
+    expect(source).toMatch(/if \(outlineMode === "plan"\) \{\s*\n\s*void startOutlinePlanElementCheck\(capturedConvId, \{\s*\n\s*module: title,/)
+    // 自由输入仍用生成类意图闸门
+    expect(source).toContain("const directRequest = classifyDirectOutlineGenerationRequest(text)")
+    expect(source).toMatch(/if \(outlineMode === "plan"\) \{\s*\n\s*return startOutlinePlanElementCheck\(capturedConvId, \{\s*\n\s*module: directRequest\.module,/)
+    // 向导不再短路到 generation
+    expect(source).toContain("// 计划模式不直接短路到生成：向导需求先当作要素输入做盘点")
+  })
+
+  it("计划模式盘点轮跳过自动保存并把停机态留在界面上", () => {
+    expect(source).toContain("&& !options.planPhase")
+    expect(source).toMatch(/advanceCapturedWorkflowStages\(\[\s*"sufficiency_check",/)
+    expect(source).toContain('if (stage === "collecting_requirements" || stage === "waiting_user_confirm") return stages')
+    // 成功收尾和 finally 都必须走带守卫的复位，否则停机态会被立刻抹掉
+    expect(source).toMatch(/saveToDisk\(\);\s*\n\s*resetCapturedWorkflowStageToIdle\(\);/)
+    expect(source).toMatch(/outlineConversationRunRegistry\.remove\(capturedConvId, controller\);\s*\n\s*resetCapturedWorkflowStageToIdle\(\);/)
   })
 
   it("AI 大纲多 Agent 过程写入消息状态并渲染结构化面板", () => {
@@ -1082,6 +2464,21 @@ describe("OutlineChatPanel controls", () => {
     expect(source).toContain("built.request")
     expect(source).toContain("保存大纲文件")
     expect(source).toContain("手动保存 AI 大纲结果")
+  })
+
+  it("历史消息中的 Gemini 思考摘要不会再次展示或进入手动保存", async () => {
+    setOutlineConversations([conversation([{
+      id: "thought-only-outline",
+      role: "assistant",
+      content: GEMINI_OUTLINE_THOUGHT_DUMP,
+    }])], "outline-active")
+    const container = await renderOutlineChatPanel()
+    const saveButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.getAttribute("aria-label") === "保存为大纲")
+
+    expect(saveButton).toBeUndefined()
+    expect(container.textContent).not.toContain("Examining the Narrative Details")
+    expect(document.body.textContent).not.toContain("请确认要保存的大纲文件")
   })
 
   it("parses structured AI outline save requests and requires user confirmation before writing", () => {
@@ -1147,7 +2544,11 @@ describe("OutlineChatPanel controls", () => {
 
 
   async function chooseOutlineModel(container: HTMLElement, label: string) {
-    const trigger = container.querySelector<HTMLButtonElement>(".h-8.w-32") ?? undefined
+    // 触发器样式于 5388348（调整大纲章节编辑与对话界面）由 .h-8.w-32 改为 h-8 w-fit max-w-40，
+    // 改用模型区容器定位：该区域内只有模型选择按钮没有 aria-label（思考深度按钮带 aria-label）。
+    const trigger = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".ui-test-ai-model button"),
+    ).find((button) => !button.hasAttribute("aria-label"))
     expect(trigger).toBeDefined()
     await act(async () => {
       trigger?.click()
@@ -1371,7 +2772,7 @@ describe("OutlineChatPanel controls", () => {
       }),
       "<!-- /next_step -->",
     ].join("\n")
-    const fallbackCalls: Array<{ modelId: string; messages: Array<{ role: string; content: string }> }> = []
+    const fallbackCalls: Array<{ modelId: AgentConfig["modelId"]; messages: AgentMessage[] }> = []
     vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (config, _registry, messages, callbacks) => {
       const system = agentMessageContentText(
         messages.find((message) => message.role === "system")?.content ?? "",
@@ -1391,12 +2792,12 @@ describe("OutlineChatPanel controls", () => {
       pendingReferenceTokens: [reference],
     })
     const container = await renderOutlineChatPanel()
-    const wizardTrigger = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent?.includes("\u9009\u62e9\u751f\u6210\u4f60\u60f3\u8981\u7684\u5c0f\u8bf4"))
-    expect(wizardTrigger).toBeDefined()
+    await openOutlineWizard(container)
 
-    await act(async () => wizardTrigger?.click())
-    const inspiration = document.querySelector<HTMLTextAreaElement>("#outline-wizard-inspiration")
+    // 该期望于 26f80ee（全新界面统一、旧版界面移除）随之变更：旧版向导的
+    // #outline-wizard-inspiration / 「确定生成」分支被删除，只留新版向导的
+    // aria-label="故事灵感/处理要求" 与「提交需求」按钮。
+    const inspiration = document.querySelector<HTMLTextAreaElement>('[aria-label="故事灵感/处理要求"]')
     expect(inspiration).not.toBeNull()
     await act(async () => {
       if (!inspiration) return
@@ -1405,7 +2806,7 @@ describe("OutlineChatPanel controls", () => {
       inspiration.dispatchEvent(new Event("input", { bubbles: true }))
     })
     const submit = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent?.includes("\u786e\u5b9a\u751f\u6210"))
+      .find((button) => button.textContent?.includes("提交需求"))
     expect(submit).toBeDefined()
     await act(async () => {
       submit?.click()
@@ -1422,8 +2823,8 @@ describe("OutlineChatPanel controls", () => {
     const assistant = current?.messages.findLast((message) => message.role === "assistant")
     expect(fallbackCalls).toHaveLength(1)
     expect(fallbackCalls[0].modelId).toBe("openai/gpt-4o")
-    expect(fallbackCalls[0].messages.some((message) => message.role === "user" && message.content.includes(inspirationText))).toBe(true)
-    expect(fallbackCalls[0].messages.some((message) => message.role === "user" && message.content.includes("\u65e2\u6709\u4e16\u754c\u89c2"))).toBe(true)
+    expect(fallbackCalls[0].messages.some((message) => message.role === "user" && agentMessageContentText(message.content).includes(inspirationText))).toBe(true)
+    expect(fallbackCalls[0].messages.some((message) => message.role === "user" && agentMessageContentText(message.content).includes("\u65e2\u6709\u4e16\u754c\u89c2"))).toBe(true)
     expect(state.activeConversationId).toBe("outline-active")
     expect(current?.modelId).toBe("openai/gpt-4o")
     expect(userMessages).toHaveLength(1)
@@ -1433,7 +2834,7 @@ describe("OutlineChatPanel controls", () => {
     expect(assistant?.content).toContain("\u6cbf\u7528\u65e2\u6709\u4e16\u754c\u89c2\u5b8c\u6210\u666e\u901a\u751f\u6210\u7ed3\u679c\u3002")
     expect(container.textContent).toContain("\u591a Agent \u751f\u6210\u5931\u8d25\uff0c\u5df2\u81ea\u52a8\u5207\u6362\u4e3a\u666e\u901a\u751f\u6210\u3002")
     const saveButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent?.includes("\u4fdd\u5b58\u4e3a\u5927\u7eb2"))
+      .find((button) => button.getAttribute("aria-label") === "保存为大纲")
     const nextButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
       .find((button) => button.textContent?.includes("\u7ee7\u7eed\u5b8c\u5584\u4eba\u7269\u5173\u7cfb"))
     expect(saveButton?.disabled).toBe(false)
@@ -1483,17 +2884,15 @@ describe("OutlineChatPanel controls", () => {
     })
     setOutlineConversations([{ ...conversation(), modelId: "openai/gpt-4o" }], "outline-active")
     const container = await renderOutlineChatPanel()
-    const wizardTrigger = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent?.includes("\u9009\u62e9\u751f\u6210\u4f60\u60f3\u8981\u7684\u5c0f\u8bf4"))
-    await act(async () => wizardTrigger?.click())
-    const inspiration = document.querySelector<HTMLTextAreaElement>("#outline-wizard-inspiration")
+    await openOutlineWizard(container)
+    const inspiration = document.querySelector<HTMLTextAreaElement>('[aria-label="故事灵感/处理要求"]')
     await act(async () => {
       const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set
       if (inspiration) setValue?.call(inspiration, "\u89e6\u53d1\u5408\u5e76\u5931\u8d25\u56de\u9000")
       inspiration?.dispatchEvent(new Event("input", { bubbles: true }))
     })
     const submit = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent?.includes("\u786e\u5b9a\u751f\u6210"))
+      .find((button) => button.textContent?.includes("提交需求"))
     await act(async () => {
       submit?.click()
       for (let attempt = 0; attempt < 300; attempt += 1) {
@@ -1531,11 +2930,48 @@ describe("OutlineChatPanel controls", () => {
       { id: "a1", role: "assistant", content: "# \u65e7\u7ed3\u679c\n\n## \u4e3b\u89d2\n\u65e7\u5185\u5bb9" },
     ])], "outline-active")
     const container = await renderOutlineChatPanel()
-    const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent?.includes("\u91cd\u65b0\u751f\u6210"))
+    const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.getAttribute("aria-label") === "重新生成")
     await act(async () => { button?.click(); for (let i = 0; i < 100 && useOutlineChatStore.getState().runStates["outline-active"]?.status === "running"; i += 1) await new Promise((resolve) => setTimeout(resolve, 5)) })
     const answer = useOutlineChatStore.getState().conversations[0].messages.at(-1)?.content ?? ""
     expect(answer).toContain("# \u4eba\u7269\u8bbe\u5b9a")
     expect(answer).not.toContain("```markdown")
+  })
+
+  it("重新生成完整结果仅含 Gemini 思考摘要时关闭 reasoning 重试一次", async () => {
+    useWikiStore.setState({
+      llmConfig: {
+        ...useWikiStore.getState().llmConfig,
+        reasoning: { mode: "high" },
+      },
+    })
+    const regenerated = "# 第27章 地下乱战\n\n## 核心事件\n沈渊截断敌方增援。"
+    const runSpy = vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      const text = runSpy.mock.calls.length === 1 ? GEMINI_OUTLINE_THOUGHT_DUMP : regenerated
+      callbacks.onText(text)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: text }
+    })
+    setOutlineConversations([conversation([
+      { id: "u-retry", role: "user", content: "生成第27章章纲" },
+      { id: "a-retry", role: "assistant", content: "# 旧章纲", intentPhase: "generation" },
+    ])], "outline-active")
+    const container = await renderOutlineChatPanel()
+    const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((item) => item.getAttribute("aria-label") === "重新生成")
+
+    await act(async () => {
+      button?.click()
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (runSpy.mock.calls.length === 2 && useOutlineChatStore.getState().runStates["outline-active"]?.status !== "running") break
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    })
+
+    expect(runSpy).toHaveBeenCalledTimes(2)
+    expect(runSpy.mock.calls[1]?.[0].requestOverrides?.reasoning).toEqual({ mode: "off" })
+    const answer = useOutlineChatStore.getState().conversations[0].messages.at(-1)?.content ?? ""
+    expect(answer).toContain("沈渊截断敌方增援")
+    expect(answer).not.toContain("Analyzing the Conflict's Dynamics")
   })
 
   it("生成阶段重新生成若再次返回意图标记则报错并阻止循环", async () => {
@@ -1551,7 +2987,7 @@ describe("OutlineChatPanel controls", () => {
     ])], "outline-active")
     const container = await renderOutlineChatPanel()
     const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((item) => item.textContent?.includes("重新生成"))
+      .find((item) => item.getAttribute("aria-label") === "重新生成")
     await act(async () => {
       button?.click()
       for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -1573,7 +3009,7 @@ describe("OutlineChatPanel controls", () => {
       callbacks.onText(text); callbacks.onDone()
       return { toolCalls: [], roundsUsed: 1, finalText: text }
     })
-    setOutlineConversations([conversation([{ id: "u0", role: "user", content: "\u751f\u6210\u5927\u7eb2", novelGenerationRequest: { version: 1, summary: "\u751f\u6210\u5927\u7eb2", details: [], modelContent: "\u751f\u6210\u5927\u7eb2" } }, { id: "a1", role: "assistant", content: "# \u5927\u7eb2\n\n## \u7ed3\u679c\n\u5df2\u5b8c\u6210", nextStepRecommendation: { recommendations: [{ id: "A", label, reason: "\u7ee7\u7eed" }] } }])], "outline-active")
+    setOutlineConversations([conversation([{ id: "u0", role: "user", content: "\u751f\u6210\u5927\u7eb2", novelGenerationRequest: { version: 1, summary: "\u751f\u6210\u5927\u7eb2", details: [], modelContent: "\u751f\u6210\u5927\u7eb2" } }, { id: "a1", role: "assistant", content: "# \u5927\u7eb2\n\n## \u7ed3\u679c\n\u5df2\u5b8c\u6210", nextStepRecommendation: { completedModule: "\u5927\u7eb2", completedScope: "\u5f53\u524d\u5927\u7eb2", recommendations: [{ id: "A", label, reason: "\u7ee7\u7eed" }] } }])], "outline-active")
     const container = await renderOutlineChatPanel()
     const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent?.includes(label))
     await act(async () => { button?.click(); for (let i = 0; i < 100 && useOutlineChatStore.getState().runStates["outline-active"]?.status === "running"; i += 1) await new Promise((resolve) => setTimeout(resolve, 5)) })
@@ -1587,7 +3023,7 @@ describe("OutlineChatPanel controls", () => {
       return { toolCalls: [], roundsUsed: 1, finalText: text }
     })
     const label = "\u89e3\u91ca\u4e00\u4e0b\u8fd9\u4e2a\u8bbe\u5b9a"
-    setOutlineConversations([conversation([{ id: "a1", role: "assistant", content: "\u5df2\u56de\u7b54", nextStepRecommendation: { recommendations: [{ id: "A", label, reason: "\u8bf4\u660e" }] } }])], "outline-active")
+    setOutlineConversations([conversation([{ id: "a1", role: "assistant", content: "\u5df2\u56de\u7b54", nextStepRecommendation: { completedModule: "\u4eba\u7269\u8bbe\u5b9a", completedScope: "\u4e3b\u89d2", recommendations: [{ id: "A", label, reason: "\u8bf4\u660e" }] } }])], "outline-active")
     const container = await renderOutlineChatPanel()
     const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent?.includes(label))
     await act(async () => { button?.click(); for (let i = 0; i < 100 && useOutlineChatStore.getState().runStates["outline-active"]?.status === "running"; i += 1) await new Promise((resolve) => setTimeout(resolve, 5)) })
@@ -1596,7 +3032,7 @@ describe("OutlineChatPanel controls", () => {
 
   it("structured next step forwards references to Agent and clears them after successful send", async () => {
     const reference = { id: "next-ref", category: "outline" as const, title: "\u4eba\u7269\u8bbe\u5b9a", displayTitle: "\u4eba\u7269\u8bbe\u5b9a", path: "\u5927\u7eb2/\u4eba\u7269.md" }
-    let sentMessages: Array<{ role: string; content: string }> = []
+    let sentMessages: AgentMessage[] = []
     vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, messages, callbacks) => {
       sentMessages = messages
       callbacks.onText("# \u4eba\u7269\u5173\u7cfb\n\n## \u7ed3\u679c\n\u5b8c\u6210"); callbacks.onDone()
@@ -1607,7 +3043,7 @@ describe("OutlineChatPanel controls", () => {
     const container = await renderOutlineChatPanel()
     const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent?.includes(label))
     await act(async () => { button?.click(); for (let i = 0; i < 100 && useOutlineChatStore.getState().runStates["outline-active"]?.status === "running"; i += 1) await new Promise((resolve) => setTimeout(resolve, 5)) })
-    expect(sentMessages.some((message) => message.role === "user" && message.content.includes("\u4eba\u7269\u8bbe\u5b9a"))).toBe(true)
+    expect(sentMessages.some((message) => message.role === "user" && agentMessageContentText(message.content).includes("\u4eba\u7269\u8bbe\u5b9a"))).toBe(true)
     expect(container.querySelector("[aria-label=\"\u79fb\u9664\u5f15\u7528\u0020\u4eba\u7269\u8bbe\u5b9a\"]")).toBeNull()
   })
 
@@ -1622,4 +3058,1021 @@ describe("OutlineChatPanel controls", () => {
     expect(container.querySelector("[aria-label=\"\u79fb\u9664\u5f15\u7528\u0020\u4e16\u754c\u89c2\"]")).not.toBeNull()
   })
 
+})
+
+describe("需求分析浮层不被无关操作弄丢", () => {
+  /** 直接造一条「需要用户定范围」的助手消息，不经模型，避免依赖输入框先挂载。 */
+  function needsInputMessage(): OutlineChatMessage {
+    return {
+      id: "a-needs-input",
+      role: "assistant",
+      content: "已读取总纲，范围不足。",
+      intentClarityResult: {
+        clarity: "needs_input",
+        module: "卷纲",
+        analysis: "已读取总纲，范围不足。",
+        detectedScope: "",
+        missingItems: ["未明确要生成哪一卷的折叠树卷纲"],
+        options: [{ id: "A", label: "第二卷归墟寄魂", description: "已有设定" }],
+        question: "请选择本次要生成哪一卷的折叠树卷纲",
+      },
+    }
+  }
+
+  function intentDialog(container: HTMLElement) {
+    return container.querySelector('[data-testid="outline-intent-dialog"]')
+  }
+
+  /**
+   * 条件轮询：整套测试并行、CPU 紧张时，面板可能要先跑完一段异步副作用才把浮层提交出来。
+   * 每次轮询都单独走一次 act 再退出，让 React 有机会提交；若把整个循环塞进一个 act，
+   * 提交会被推迟到 act 退出之后，轮询永远看不到浮层（曾在整套运行里假失败）。
+   */
+  async function waitFor<T>(probe: () => T | null | undefined, label: string): Promise<T> {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      const found = probe()
+      if (found) return found
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      })
+    }
+    const found = probe()
+    if (found) return found
+    throw new Error(`等待超时：${label}`)
+  }
+
+  /** 渲染面板并等到需求分析浮层出现。 */
+  async function renderPanelWithNeedsInput() {
+    setOutlineConversations([conversation([needsInputMessage()])], "outline-active")
+    const container = await renderOutlineChatPanel()
+    await waitFor(() => intentDialog(container), "需求分析浮层")
+    return container
+  }
+
+  /** 模拟切换到其他功能：卸载当前面板（store 是模块级单例，状态照旧保留）。 */
+  async function unmountLatestPanel() {
+    const mounted = mountedRoots.pop()
+    if (!mounted) return
+    await act(async () => {
+      mounted.root.unmount()
+    })
+    mounted.container.remove()
+  }
+
+  it("拖动窗口不再关掉浮层（回归：点外部曾把它永久关掉）", async () => {
+    const container = await renderPanelWithNeedsInput()
+
+    const dragRegion = document.createElement("header")
+    dragRegion.setAttribute("data-tauri-drag-region", "deep")
+    document.body.appendChild(dragRegion)
+    // 用同步 act 包住派发：修复后这里不该产生 React 更新，
+    // 一旦回归成旧的「点外部就关闭」，下面的断言立刻失败。
+    act(() => {
+      dragRegion.dispatchEvent(new Event("pointerdown", { bubbles: true }))
+    })
+    dragRegion.remove()
+
+    expect(intentDialog(container)).not.toBeNull()
+  })
+
+  it("点其他功能不再关掉浮层", async () => {
+    const container = await renderPanelWithNeedsInput()
+
+    const otherFeature = document.createElement("button")
+    otherFeature.textContent = "其他功能"
+    document.body.appendChild(otherFeature)
+    act(() => {
+      otherFeature.dispatchEvent(new Event("pointerdown", { bubbles: true }))
+      otherFeature.dispatchEvent(new Event("click", { bubbles: true }))
+    })
+    otherFeature.remove()
+
+    expect(intentDialog(container)).not.toBeNull()
+  })
+
+  it("没关闭时，切到其他功能再回来浮层依然存在", async () => {
+    const first = await renderPanelWithNeedsInput()
+    expect(intentDialog(first)).not.toBeNull()
+
+    await unmountLatestPanel()
+    const second = await renderOutlineChatPanel()
+
+    await waitFor(() => intentDialog(second), "重挂后的需求分析浮层")
+    expect(second.textContent).toContain("请选择本次要生成哪一卷的折叠树卷纲")
+  })
+
+  it("显式关闭后，切到其他功能再回来也不重复弹出", async () => {
+    const first = await renderPanelWithNeedsInput()
+    await act(async () => {
+      first.querySelector<HTMLButtonElement>('button[aria-label="关闭需求分析"]')?.click()
+    })
+    expect(intentDialog(first)).toBeNull()
+
+    await unmountLatestPanel()
+    const second = await renderOutlineChatPanel()
+    // 先确认面板确实重新渲染了内容，再断言浮层没有跟着回来
+    // （避免把「还没渲染」误判成「没弹出」）。
+    await waitFor(
+      () => (second.textContent?.includes("已读取总纲") ? true : null),
+      "重挂后的会话内容",
+    )
+    expect(intentDialog(second)).toBeNull()
+  })
+})
+
+describe("事件细纲接线", () => {
+  /*
+   * 用例之间必须互不影响的两样状态：
+   *   · `activeView`：交接用例（「用这份细纲写这一章」）会断言视图被切到写作面；
+   *   · 写作会话：交接用例会往里填草稿、甚至新建会话。
+   *
+   * ⚠️ 这里原本还有一行 `fileTree: []`，注释写的是「fileTree 决定『下一章』探测结果」。
+   * 那是向导还在时的事：向导与它依赖的 `resolveNextChapterNumber` / `pickChapterLibraryFiles`
+   * 已整体搬去章节区标题栏，本面板现在**一次都不读** `fileTree`（全文件 0 处引用），
+   * 本块也没有任何用例种过非空的树 —— 那行是死设置，本批删掉，注释同时更正。
+   */
+  beforeEach(() => {
+    useWikiStore.setState({ activeView: "wiki" })
+    useChatStore.setState({ conversations: [], activeConversationId: null })
+  })
+
+  /** 空会话中央引导区的按钮文案。 */
+  function emptyStateLabels(container: HTMLElement): Array<string | null> {
+    return Array.from(container.querySelectorAll<HTMLButtonElement>(".ui-test-ai-empty button"))
+      .map((button) => button.textContent)
+  }
+
+  /** 表头与正文都对齐的事件细纲数据：validateEventOutlineData 必须判 ok，卡片才给「用这份细纲写这一章」。 */
+  function validEventOutlineData() {
+    return {
+      version: 1,
+      chapterNumber: 2,
+      title: "第2章 · 灵石认主",
+      targetWords: 3000,
+      events: [
+        { id: 1, title: "拍卖场外偶遇", points: ["关键台词：别回头。", "神情动作：指节发白"] },
+        { id: 2, title: "深夜潜入后山", points: ["环境物件：雨夜灯笼", "这一步推进：拿到灵石"] },
+        { id: 3, title: "令牌骤然显威", points: ["关键台词：原来是你。", "神情动作：连退半步"] },
+        { id: 4, title: "断崖上的对峙", points: ["环境物件：半截断崖", "留下钩子：师父的脚步声"] },
+      ],
+      endingHook: "师父的脚步声从雨里传来。",
+    }
+  }
+
+  /** 造一条带 eventOutlineData 围栏的助手回复。 */
+  function assistantEventOutlineMessage(): OutlineChatMessage {
+    return {
+      id: "a-event-outline",
+      role: "assistant",
+      content: [
+        "第2章 · 灵石认主",
+        "",
+        "1. 拍卖场外偶遇",
+        "",
+        "```json",
+        JSON.stringify({ eventOutlineData: validEventOutlineData() }),
+        "```",
+      ].join("\n"),
+    }
+  }
+
+  /*
+   * 丙-2c：方向反转。
+   *
+   * 丙-2a 时这条用例断言的是「空会话同时提供两个入口」，因为那一批只是**新增**
+   * 章节区入口，大纲面板的入口按约定要原样留着。
+   * 用户随后明确要求去掉大纲面板那一侧（「我们不放在大纲那里了，只用一个按钮就可以了」），
+   * 且前置条件已满足（章节区链路 丙-2a 落地、丙-2b 验证可用）——
+   * 于是这一批把这个入口删掉，用例随之反转。
+   *
+   * 它同时是前置分析 §5 步骤 7 要核对的那条「空白态只提供『生成小说大纲』」。
+   */
+  it("空会话只提供「生成小说大纲」一个入口，不再提供「生成章节细纲」", async () => {
+    const container = await renderOutlineChatPanel()
+
+    const labels = emptyStateLabels(container)
+    expect(labels).toContain("生成小说大纲")
+    expect(labels, "事件细纲入口已搬去章节区标题栏，大纲面板不再提供")
+      .not.toContain("生成章节细纲")
+  })
+
+  /*
+   * ── 丙-2c：以下两条用例已**删除**（连同它们的驱动方「向导」一起）──
+   *
+   * 不写成空壳 `it`：一条永远不会红的用例只会虚增用例数、还让下一个人以为
+   * 这里仍有覆盖。覆盖去了哪里写在下面，两处都**可执行**、都还在跑。
+   *
+   * · 「点『生成章节细纲』打开向导，目标章节默认取下一章」
+   *   → 入口与向导本身搬去了章节区标题栏，由
+   *     `preview-panel.event-outline.spec.tsx` 的
+   *     「工具栏入口点击后弹出向导，且向导的默认章号来自章节库而不是写死」继续钉住
+   *     （那条用例同样种下第001/第003章，同样断言唯一正确答案是 4）。
+   *
+   * · 「提交事件细纲向导直接进生成腿，消息里只带事件细纲、不再带保存协议」
+   *   → 提示词契约由 `src/lib/novel/event-outline.spec.ts` 的
+   *     「要求产出 eventOutlineData，且不再要求保存请求」钉住
+   *     （断言提示词里既没有 `outlineSaveRequest` 也没有 `event-outline`）；
+   *     提交接线由 `preview-panel.event-outline.spec.tsx` 的
+   *     「提交向导会真的发起生成，并把向导里的要求原样带过去」钉住。
+   */
+
+  /*
+   * ── 丙-2c：驱动方式换了，断言没换 ──
+   *
+   * 这一组下面那些用例（卡片渲染、「用这份细纲写这一章」、保存闸门）此前是靠
+   * 点空会话里的「生成章节细纲」按钮 → 填向导 → 提交来驱动的。入口删掉之后
+   * 那个驱动方没了 —— 但**被测行为一条都没消失**：
+   *
+   * · 保存闸门挂在 `handleSend`（`handleAutoSaveOutlineRequests` 调用点）与
+   *   `handleRegenerate` 上，跟「谁触发这一轮」无关；
+   * · 助手气泡下方的 `EventOutlineCard` 服务的是**已持久化的旧会话**
+   *   （`.qmai/outline-chats.json` 里已有的助手消息仍要能正常显示卡片）。
+   *
+   * 所以驱动换成**普通发送**：往大纲输入框发一条普通消息，让 mock 的模型回
+   * 事件细纲内容。断言逐条保持原样（哪条改过、为什么改，都在各用例自己的注释里）。
+   *
+   * ⚠️ 这句话是**纯提问**，刻意不含生成动词、也不含任何大纲模块名：
+   * `classifyDirectOutlineGenerationRequest` 会判它「不是直接生成请求」，
+   * `handleDirectSubmit` 于是直接走 `handleSend`（不先插一轮意图分析）。
+   * 若写成「生成第2章细纲」，面板会先跑一轮 `intent_analysis`，
+   * 闸门根本不在那一轮上 —— 那样测试会绿得很可疑。
+   */
+  const PLAIN_OUTLINE_QUESTION = "第2章的事件该怎么安排？"
+
+  /** 发一条普通消息并等这一轮跑完；`reply` 就是这一轮模型吐回的全部内容。 */
+  async function sendPlainOutlineMessage(container: HTMLElement, reply: string) {
+    vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      callbacks.onText(reply)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: reply }
+    })
+    const input = container.querySelector<HTMLTextAreaElement>('[aria-label="引用输入框"]')
+    expect(input, "大纲面板应渲染输入框").not.toBeNull()
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set
+      setValue?.call(input, PLAIN_OUTLINE_QUESTION)
+      input?.dispatchEvent(new Event("input", { bubbles: true }))
+      input?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const state = useOutlineChatStore.getState()
+        const finished = state.runStates["outline-active"]?.status !== "running"
+        const generated = state.conversations[0]?.messages
+          .some((message) => message.role === "assistant" && Boolean(message.content))
+        if (finished && generated) break
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    })
+  }
+
+  /**
+   * 丙-1 转交来的接线（实施计划 §1 步骤 5）：消息上记的要求必须**确定地**到达扩写提示词。
+   *
+   * 「确定地」是这条用例的全部意义：模型这次**没有**把要求回抄进 eventOutlineData，
+   * 要求仍必须出现在扩写提示词里。所以断言里同时钉住两件事 ——
+   * 消息正文里没有那段要求（证明不是模型抄回来的），而扩写提示词里有。
+   *
+   * ── 丙-2c：驱动方从「向导」换成「已持久化的旧会话」──
+   *
+   * 此前这条用例从空会话点向导、把要求填进「本章想法/硬要求」来产生
+   * `eventOutlineRequirement`。向导删掉之后，大纲面板里不再有**从输入新建**这个字段的
+   * 路径（章节区那条链路不经大纲面板、也不写大纲会话，它那一端的传递由
+   * `preview-panel.event-outline.spec.tsx` 的
+   * 「提交向导会真的发起生成，并把向导里的要求原样带过去」钉住）。
+   *
+   * ⚠️ 但「不再从输入新建」**不等于**「没有任何路径会再产生这个字段」——
+   * 最初的注释就是在这里把话说过头的，而那句话恰好掩盖了本批修掉的真缺口：
+   * 两条重发路径（`handleRegenerate`，以及 `handleContinueStopped` →
+   * `handleSendMessage` → `handleSend`）仍会把它**从旧消息抄到新消息**上，
+   * 而这两处抄写此前**一条守卫都没有**（实测：整段删掉，本文件全绿）。
+   * 它们现由本 describe 下面的
+   * 「重新生成把旧消息上的事件细纲要求抄到新消息上」与
+   * 「继续把被停止那条消息上的事件细纲要求抄到新消息上」两条**行为**用例钉住。
+   *
+   * 但**消费**这一端仍然完全是活代码，而且正是为老会话存在的：
+   * `requirementFor(msg)` → `extractEventOutlineData(content, requirement)` →
+   * `eventOutlineToProsePrompt`，读的就是消息自己身上的字段
+   * （`.qmai/outline-chats.json` 里盘上已有的旧会话）。
+   * 所以这里直接**种一条带 `eventOutlineRequirement` 的已持久化助手消息**当驱动，
+   * 断言保持原样：要求必须出现在交到写作模型手上的那份提示词里。
+   *
+   * ⚠️ 种子的正文刻意**不含**要求（与「模型没回抄」的前提一致）：
+   * 于是提示词里出现要求这件事只可能来自消息字段，而不是从正文里抄的。
+   */
+  it("消息上记的要求不靠模型回抄，也确定地进入扩写提示词", async () => {
+    const requirement = "必须交代骆轻竹为什么失望"
+    const generated = [
+      "# 事件细纲 · 第1章 雨夜令牌",
+      "",
+      "## 事件1 院子里的哭声",
+      "- 关键台词：「别回头。」",
+      "",
+      "```json",
+      JSON.stringify({
+        eventOutlineData: {
+          ...validEventOutlineData(),
+          chapterNumber: 1,
+          title: "第1章 · 雨夜令牌",
+        },
+      }),
+      "```",
+    ].join("\n")
+    setOutlineConversations([conversation([
+      { id: "u-old", role: "user", content: "生成第 1 章事件细纲（4 个事件）" },
+      {
+        id: "a-old",
+        role: "assistant",
+        content: generated,
+        eventOutlineRequirement: requirement,
+      },
+    ])], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    const assistant = useOutlineChatStore.getState().conversations[0].messages
+      .findLast((message) => message.role === "assistant")
+    // 前提：消息正文里没有那段要求 —— 否则下面那条断言就证明不了任何东西。
+    expect(assistant?.content).not.toContain(requirement)
+    // 要求跟着消息落盘（.qmai/outline-chats.json 往返靠它，见 outline-chat-store）。
+    expect(assistant?.eventOutlineRequirement).toBe(requirement)
+
+    const writeButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "用这份细纲写这一章")
+    expect(writeButton, "事件卡片应提供「用这份细纲写这一章」按钮").toBeDefined()
+    await act(async () => { writeButton?.click() })
+
+    const chat = useChatStore.getState()
+    const draft = chat.conversations.find((item) => item.id === chat.activeConversationId)?.inputDraft ?? ""
+    // 交到写作模型手上的那份提示词：要求必须已经在小节里（这条用例的真正落点）。
+    expect(draft).toContain("请根据下面这份「事件细纲」写出第 1 章正文")
+    expect(draft).toContain("## 用户对本章的要求")
+    expect(draft).toContain(requirement)
+  })
+
+  /*
+   * ── 丙-2c 修复批：把「要求」的**产生方**重新钉住（F1）──
+   *
+   * 上面那条用例种下的消息**已经带**字段，它驱动的是**消费**端
+   * （`requirementFor` → `extractEventOutlineData` → 扩写提示词）。
+   * 它能证明「字段在 ⇒ 要求进提示词」，但**证明不了字段还在被写出来**：
+   * 实测把 `handleSend` 里盖章的那三行
+   * （`...(options.eventOutlineRequirement?.trim() ? …)`）整段删掉，
+   * 上面那条用例照样全绿；删掉 `handleRegenerate` 里的同名拷贝也照样全绿。
+   *
+   * 那两处正是用户这条硬要求在面板里的**唯一产生方**。向导删掉（丙-2c）之后，
+   * 字段不会再从任何输入框里被新建，只能靠「从旧消息抄到新消息」：
+   *   · 「重新生成」：`handleRegenerate` 读 `targetAssistantMessage` 上的字段；
+   *   · 「继续」：`onContinueStopped` 把被停止那条消息上的字段交给
+   *     `handleContinueStopped` → `handleSendMessage` → `handleSend`（盖在新助手消息上）。
+   * 所以下面两条用例的驱动一律是**一条带字段的旧助手消息**，断言一律是
+   * **新助手消息上仍有这个字段**，并各自加了两条排除性前提：
+   *   · 新消息正文里**没有**那段要求 ⇒ 断言不可能靠「模型回抄」满足；
+   *   · 新消息 id **不同**于被重发/被续写的那条 ⇒ 断言不可能靠「根本没重发」满足。
+   */
+  it("重新生成把旧消息上的事件细纲要求抄到新消息上，不靠模型回抄", async () => {
+    const requirement = "必须让骆轻竹当场问出「令牌哪来的」"
+    const regenerated = [
+      "# 事件细纲 · 第1章 雨夜令牌",
+      "",
+      "## 事件1 院子里的哭声",
+      "- 关键台词：「别回头。」",
+    ].join("\n")
+    const runSpy = vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      callbacks.onText(regenerated)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: regenerated }
+    })
+    setOutlineConversations([conversation([
+      { id: "u-old", role: "user", content: "生成第 1 章事件细纲" },
+      {
+        id: "a-old",
+        role: "assistant",
+        content: "# 旧事件细纲\n\n## 事件1 旧内容",
+        intentPhase: "generation",
+        eventOutlineRequirement: requirement,
+      },
+    ])], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((item) => item.getAttribute("aria-label") === "重新生成")
+    expect(button, "带内容的助手回复上应有「重新生成」").toBeDefined()
+    await act(async () => {
+      button?.click()
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const state = useOutlineChatStore.getState()
+        if (runSpy.mock.calls.length > 0 && state.runStates["outline-active"]?.status !== "running") break
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    })
+
+    const fresh = useOutlineChatStore.getState().conversations[0].messages.at(-1)
+    expect(fresh?.role).toBe("assistant")
+    // 前提一：真的重发了一轮（否则「字段还在」可能只是那条旧消息自己）
+    expect(fresh?.id, "重新生成必须落一条新的助手消息").not.toBe("a-old")
+    expect(fresh?.content).toContain("第1章 雨夜令牌")
+    // 前提二：正文里没有那段要求 ⇒ 下面那条断言只可能由消息字段满足
+    expect(fresh?.content).not.toContain(requirement)
+    expect(
+      fresh?.eventOutlineRequirement,
+      "「重新生成」必须把旧消息上的要求抄到新消息上（handleRegenerate 的 addMessage 分支）",
+    ).toBe(requirement)
+  })
+
+  it("继续把被停止那条消息上的事件细纲要求抄到新消息上，不靠模型回抄", async () => {
+    const requirement = "续写时也要交代骆轻竹为什么失望"
+    const continuation = [
+      "# 事件细纲 · 第1章 雨夜令牌",
+      "",
+      "## 事件2 深夜潜入后山",
+      "- 环境物件：雨夜灯笼",
+    ].join("\n")
+    const runSpy = vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async (_config, _registry, _messages, callbacks) => {
+      callbacks.onText(continuation)
+      callbacks.onDone()
+      return { toolCalls: [], roundsUsed: 1, finalText: continuation }
+    })
+    setOutlineConversations([conversation([
+      { id: "u-old", role: "user", content: "生成第 1 章事件细纲" },
+      {
+        id: "a-stopped",
+        role: "assistant",
+        content: [
+          "# 事件细纲 · 第1章 雨夜令牌",
+          "",
+          "## 事件1 院子里的哭声",
+          "",
+          "---",
+          "",
+          "⚠️ 生成已停止，以上为已生成的内容。",
+        ].join("\n"),
+        intentPhase: "generation",
+        eventOutlineRequirement: requirement,
+      },
+    ])], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    const continueButton = container.querySelector<HTMLButtonElement>(
+      '[data-ui-stopped-generation-actions] button[aria-label^="继续"]',
+    )
+    expect(continueButton, "被停止的回复下方应有「继续」").not.toBeNull()
+    await act(async () => {
+      continueButton?.click()
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const state = useOutlineChatStore.getState()
+        if (runSpy.mock.calls.length > 0 && state.runStates["outline-active"]?.status !== "running") break
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    })
+
+    const fresh = useOutlineChatStore.getState().conversations[0].messages.at(-1)
+    expect(fresh?.role).toBe("assistant")
+    // 前提一：真的续写出一轮新回复（「继续」是新一轮发送，不是改旧消息）
+    expect(fresh?.id, "「继续」必须落一条新的助手消息").not.toBe("a-stopped")
+    expect(fresh?.content).toContain("事件2")
+    // 前提二：正文里没有那段要求 ⇒ 下面那条断言只可能由消息字段满足
+    expect(fresh?.content).not.toContain(requirement)
+    expect(
+      fresh?.eventOutlineRequirement,
+      "「继续」必须把被停止那条消息上的要求带进新一轮（handleContinueStopped → handleSend 的盖章）",
+    ).toBe(requirement)
+  })
+
+  it("生成结果里带事件细纲保存请求时也不弹保存确认框，卡片照常渲染", async () => {
+    const outlineBody = [
+      "# 事件细纲 · 第1章 雨夜令牌",
+      "",
+      "## 事件1 院子里的哭声",
+      "- 关键台词：「别回头。」",
+      "- 神情动作：指节发白",
+    ].join("\n")
+    const generated = [
+      outlineBody,
+      "",
+      "```json",
+      JSON.stringify({
+        outlineSaveRequest: {
+          targetFolder: "事件细纲",
+          fileName: "事件细纲-第001章.md",
+          fileType: "event-outline",
+          writeMode: "create",
+          referencedSkills: [],
+          sourceIntent: "生成第1章事件细纲",
+          content: outlineBody,
+        },
+      }),
+      "```",
+      "",
+      "```json",
+      JSON.stringify({
+        eventOutlineData: { ...validEventOutlineData(), chapterNumber: 1, title: "第1章 · 雨夜令牌" },
+      }),
+      "```",
+    ].join("\n")
+    setOutlineConversations([conversation()], "outline-active", {
+      streamingContents: { "outline-active": "" },
+    })
+    const container = await renderOutlineChatPanel()
+
+    await sendPlainOutlineMessage(container, generated)
+
+    // 自动通道：模型（或旧会话重放）递来事件细纲保存请求时，不弹空的确认框。
+    expect(document.body.textContent).not.toContain("请确认要保存的大纲文件")
+    expect(document.body.textContent).not.toContain("请确认要保存的人物角色")
+    // 但内容没被丢掉：卡片照常渲染（事件细纲只作为消息 + 卡片存在）。
+    expect(Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .some((button) => button.textContent === "用这份细纲写这一章")).toBe(true)
+  })
+
+  it("事件细纲消息上不再显示「保存为大纲」按钮（手动通道）", async () => {
+    setOutlineConversations([conversation([assistantEventOutlineMessage()])], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    const labels = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .map((button) => button.getAttribute("aria-label"))
+    expect(labels, "事件细纲不进大纲列表，所以没有「保存为大纲」").not.toContain("保存为大纲")
+    // 反向控制：同一批动作按钮里的其它按钮仍在（这条用例不是靠「整块没渲染」通过的）。
+    expect(labels).toContain("复制")
+    expect(labels).toContain("重新生成")
+  })
+
+  it("卡片「用这份细纲写这一章」只填写作输入框并切到写作现场，不自动发送", async () => {
+    const runSpy = vi.spyOn(AgentRunner.prototype, "run").mockImplementation(async () => ({
+      toolCalls: [],
+      roundsUsed: 1,
+      finalText: "",
+    }))
+    const infoSpy = vi.spyOn(toast, "info").mockImplementation(() => {})
+    useWikiStore.setState({ activeView: "sources" })
+    setOutlineConversations([conversation([assistantEventOutlineMessage()])], "outline-active")
+    const container = await renderOutlineChatPanel()
+
+    const writeButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "用这份细纲写这一章")
+    expect(writeButton, "事件卡片应提供「用这份细纲写这一章」按钮").toBeDefined()
+    await act(async () => { writeButton?.click() })
+
+    const chat = useChatStore.getState()
+    const targetConversationId = chat.activeConversationId
+    expect(targetConversationId, "写入前应先确保有一个写作会话").not.toBeNull()
+    const writingConversation = chat.conversations.find((item) => item.id === targetConversationId)
+    expect(writingConversation?.inputDraft ?? "").toContain("请根据下面这份「事件细纲」写出第 2 章正文")
+    expect(useWikiStore.getState().activeView).toBe("wiki")
+    // 交接的全部内容就是这两步：填草稿 + 切视图，绝不自动发车。
+    expect(runSpy).not.toHaveBeenCalled()
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("写作输入框"),
+      { dedupeKey: "event-outline-to-prose" },
+    )
+  })
+
+  /*
+   * 丙-2c：这条从「接入卡片与下一章探测」收窄成「只留卡片那半」。
+   *
+   * 面板仍然要做的：把旧会话里的 eventOutlineData 渲染成卡片
+   * （`EventOutlineCard` + `extractEventOutlineData`）—— 这两条**保留**。
+   *
+   * 面板不再做的：新建事件细纲。向导组件与其依赖的「下一章」探测
+   * （`flattenMdFiles`/`pickChapterLibraryFiles`/`resolveNextChapterNumber`）
+   * 已整体搬去章节区标题栏那条链路，现在由
+   * `preview-panel.event-outline.spec.tsx` 的行为用例覆盖
+   * （包括「默认章号来自章节库而不是写死」）。留在大纲面板里的任何一处
+   * 都是死代码，所以这里反过来钉。
+   */
+  it("面板源码仍接入事件细纲卡片渲染，但不再接入向导与「下一章」探测", () => {
+    expect(source).toContain("EventOutlineCard")
+    expect(source).toContain("extractEventOutlineData")
+    expect(source, "向导已搬去章节区，面板里不得再留引用").not.toContain("EventOutlineWizardDialog")
+    expect(source).not.toContain("onGenerateEventOutline")
+    expect(source, "「下一章」探测是向导的依赖，随向导一起搬走").not.toContain("resolveNextChapterNumber")
+    expect(source).not.toContain("pickChapterLibraryFiles")
+  })
+
+  it("交接时展开写作面：草稿不能落进被折叠的输入框", () => {
+    /*
+     * 交接逻辑已从面板里内联的那一段抽成共享模块 `event-outline-handoff.ts`：
+     * 同一张卡片在写作助手（chat-message.tsx）里也有宿主，两处必须落在**同一个**
+     * 写作输入框上，各写一份必然漂移。所以这条断言跟着搬了两处：
+     * 面板确实调用那个共享函数 + 共享函数里确实展开了写作面。
+     */
+    expect(source).toContain("onWriteChapter={handoffEventOutlineToProse}")
+    const handoff = readFileSync(resolve(__dirname, "../../lib/novel/event-outline-handoff.ts"), "utf8")
+    expect(handoff, "不展开写作面，草稿会落进一个看不见的输入框").toMatch(/setChatExpanded\(true\)/)
+  })
+
+  it("交接时追加已有草稿而不是覆盖，并如实提示「追加」", async () => {
+    const infoSpy = vi.spyOn(toast, "info").mockImplementation(() => {})
+    useWikiStore.setState({ activeView: "sources", chatExpanded: false })
+    setOutlineConversations([conversation([assistantEventOutlineMessage()])], "outline-active")
+    // 用户已经在写作输入框里打了一半的想法：交接不能把它替换掉。
+    const targetConversationId = useChatStore.getState().createConversation()
+    useChatStore.getState().setConversationInputDraft(targetConversationId, "我自己已经打了一半的想法：")
+    const container = await renderOutlineChatPanel()
+
+    const writeButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "用这份细纲写这一章")
+    expect(writeButton, "事件卡片应提供「用这份细纲写这一章」按钮").toBeDefined()
+    await act(async () => { writeButton?.click() })
+
+    const writing = useChatStore.getState().conversations.find((item) => item.id === targetConversationId)
+    const draft = writing?.inputDraft ?? ""
+    expect(draft).toContain("我自己已经打了一半的想法：")
+    expect(draft).toContain("请根据下面这份「事件细纲」写出第 2 章正文")
+    // 已有草稿在前，细纲提示词追加在后。
+    expect(draft.indexOf("我自己已经打了一半的想法："))
+      .toBeLessThan(draft.indexOf("请根据下面这份「事件细纲」"))
+    expect(useWikiStore.getState().chatExpanded).toBe(true)
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("追加"),
+      { dedupeKey: "event-outline-to-prose" },
+    )
+  })
+
+  it("UiTestAiEmpty 只传 onGenerateOutline 时仍渲染「生成小说大纲」", async () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    mountedRoots.push({ container, root })
+    await act(async () => {
+      root.render(<UiTestAiEmpty kind="outline" onGenerateOutline={() => {}} />)
+    })
+
+    const labels = Array.from(container.querySelectorAll<HTMLButtonElement>(".ui-test-ai-empty button"))
+      .map((button) => button.textContent)
+    expect(labels).toEqual(["生成小说大纲"])
+  })
+
+  /*
+   * ── 事件细纲保存闸门的**行为**回归 ──
+   *
+   * 为什么必须写成行为用例：两道闸门（自动通道的兜底、手动「保存为大纲」）
+   * 原本是组件里的 `if (… === "event-outline") return`，而把 `return` 删掉之后
+   * 全仓 295 条测试仍然全绿 —— 对 `excludeEventOutlineSaveRequests` /
+   * `droppedEventOutlineCount` 的引用只落在原函数自己的 spec 上，
+   * 而本文件里原有的两条（「请确认要保存的大纲文件」源码文本断言）与本次新增的闸门
+   * 毫无关系。所以这里断言**可观察效果**：确认框不出现、该出现的 toast 出现。
+   *
+   * 判据本身另有直喂已分类 event-outline 的单测（outline-save.spec.ts 的
+   * 「事件细纲保存闸门判据」），两边合起来才既钉判据又钉接线。
+   */
+  describe("事件细纲保存闸门（行为）", () => {
+    /** 一份「结构合法」的事件细纲保存请求：它必须被自动通道摘掉，而不是弹确认框。 */
+    function eventOutlineOnlyReply(content = eventOutlineMarkdown()): string {
+      return [
+        content,
+        "",
+        "```json",
+        JSON.stringify({
+          outlineSaveRequest: {
+            targetFolder: "事件细纲",
+            fileName: "事件细纲-第001章.md",
+            fileType: "event-outline",
+            writeMode: "create",
+            referencedSkills: [],
+            sourceIntent: "生成第1章事件细纲",
+            content,
+          },
+        }),
+        "```",
+      ].join("\n")
+    }
+
+    /**
+     * 纯 markdown 的事件细纲（无任何 JSON 围栏，用于「按正文分类」那条腿）。
+     *
+     * ⚠️ 必须**够长**：`isSaveableOutlineDeliverable` 对「首行是 # 且前 400 字含
+     * 类型词」这一支要求 length ≥ 80，不达标会直接在分类之前 return ——
+     * 那样「不弹确认框」在删掉闸门后照样成立，用例就成了假绿。
+     */
+    function eventOutlineMarkdown(): string {
+      return [
+        "# 事件细纲 · 第1章 雨夜令牌",
+        "",
+        "## 事件1 院子里的哭声",
+        "- 关键台词：「别回头。」",
+        "- 神情动作：指节发白",
+        "- 环境物件：雨夜的灯笼",
+        "",
+        "## 事件2 巷口的截杀",
+        "- 关键台词：「把令牌留下。」",
+        "- 神情动作：楚白按刀后退半步",
+        "- 这一步推进：骆轻竹暴露身份",
+        "",
+        "## 事件3 令牌认主",
+        "- 关键动作：血滴落在令牌上",
+        "- 环境物件：暴雨中的断墙",
+      ].join("\n")
+    }
+
+    function confirmDialogVisible(): boolean {
+      return (document.body.textContent ?? "").includes("请确认要保存")
+    }
+
+    /*
+     * ⚠️ 这条**只**钉「结构合法的事件细纲请求会被摘掉、不弹确认框」。
+     * 它**钉不住** `if (gateAction === "drop-event-outline") return` 那行守卫：
+     * 请求被摘光后，后面的零请求路径与末尾的报错分支都要求 `parsed.errors.length > 0`，
+     * 而本 fixture 的 errors 是空的 —— 删掉那行 return 它照样绿（已实测）。
+     * 钉那行 return 的是下面那条 mix 了真实解析错误的用例。
+     */
+    it("自动通道：模型递来结构合法的事件细纲保存请求时，不弹确认框、也不要求重出", async () => {
+      const errorSpy = vi.spyOn(toast, "error").mockImplementation(() => {})
+      const text = eventOutlineOnlyReply()
+      setOutlineConversations([conversation()], "outline-active", {
+        streamingContents: { "outline-active": "" },
+      })
+      const container = await renderOutlineChatPanel()
+
+      await sendPlainOutlineMessage(container, text)
+      await act(async () => { await Promise.resolve() })
+
+      expect(confirmDialogVisible(), "事件细纲不进大纲列表，不该弹确认框").toBe(false)
+      // 反向控制：也不该退化成「让模型重出一遍」——重出一次还是会被丢掉。
+      expect(errorSpy.mock.calls.map((call) => String(call[0])).join("\n"))
+        .not.toContain("重新输出 outlineSaveRequest")
+    })
+
+    it("自动通道：事件细纲请求与真实解析错误同时出现时，drop 分支先返回（如实钉住既有顺序，非期望行为）", async () => {
+      /*
+       * 这条专门钉 `if (gateAction === "drop-event-outline") return` 那行 `return`：
+       * 上面那条「不弹确认框」的用例**删掉这行也照样绿**（请求被摘光后落进后面
+       * 零请求的路径是个 no-op）。这里让 parsed.errors 非空 —— 一旦漏掉 return，
+       * 代码会走到末尾的 `if (parsed.errors.length > 0 && …)` 并弹出解析错误，
+       * 于是这条用例变红。
+       *
+       * ⚠️ 标题与这段注释都如实说明它钉住的是**现状**而不是期望行为：本 fixture
+       * **故意混进**一条真正解析失败的章纲请求（content 不像章纲），所以它钉的是
+       * 「合法事件细纲与真实解析错误共存时，真实错误被连坐吞掉」这条**既有顺序**
+       * （`650400f` 原文就是一字不差的
+       * `if (droppedEventOutlineCount > 0 && saveRequests.length === 0) return`）。
+       *
+       * 本批**有意不修**它（改动会改变「什么时候弹确认框/错误」的语义，是独立的
+       * 行为变更，见设计 §4.2.1）。因此这条用例是「防静默漂移」的哨兵：
+       * 删掉那行 return 后用户反而会看到那条提示（对这条错误来说是更正确的），
+       * 但用例会红 —— 它**不代表**「真实错误被吞掉是对的」。
+       */
+      const showErrorSpy = vi.spyOn(toast, "error").mockImplementation(() => {})
+      const broken = {
+        targetFolder: "章纲",
+        fileName: "章纲-第001章.md",
+        fileType: "chapter-outline",
+        writeMode: "create",
+        referencedSkills: [],
+        sourceIntent: "生成章纲",
+        // 内容不像章纲 ⇒ 结构闸门拒掉，只进 errors、不进 requests
+        content: "好的，我已完成本章细纲。",
+      }
+      const text = [
+        eventOutlineMarkdown(),
+        "",
+        "```json",
+        JSON.stringify({
+          outlineSaveRequests: [
+            {
+              targetFolder: "事件细纲",
+              fileName: "事件细纲-第001章.md",
+              fileType: "event-outline",
+              writeMode: "create",
+              referencedSkills: [],
+              sourceIntent: "生成第1章事件细纲",
+              content: eventOutlineMarkdown(),
+            },
+            broken,
+          ],
+        }),
+        "```",
+      ].join("\n")
+      setOutlineConversations([conversation()], "outline-active", {
+        streamingContents: { "outline-active": "" },
+      })
+      const container = await renderOutlineChatPanel()
+
+      await sendPlainOutlineMessage(container, text)
+      await act(async () => { await Promise.resolve() })
+
+      expect(confirmDialogVisible()).toBe(false)
+      const errorText = showErrorSpy.mock.calls.map((call) => String(call[0])).join("\n")
+      // 如实断言现状：这条**真实**解析错误也被 drop 分支一起吞掉了（既有顺序，非期望行为）
+      expect(errorText, "drop 分支早于报错分支：本条钉的是既有顺序，不是「错误该被吞」").toBe("")
+    })
+
+    it("自动通道：正文自身就是事件细纲（没有保存请求）时，也不弹确认框", async () => {
+      // 这条走的是「按正文分类」那条腿：分类结果是 event-outline 时必须同样拦下。
+      const text = eventOutlineMarkdown()
+      setOutlineConversations([conversation()], "outline-active", {
+        streamingContents: { "outline-active": "" },
+      })
+      const container = await renderOutlineChatPanel()
+
+      await sendPlainOutlineMessage(container, text)
+      await act(async () => { await Promise.resolve() })
+
+      expect(confirmDialogVisible(), "按正文分类出的 event-outline 同样不该弹确认框").toBe(false)
+    })
+
+    it("自动通道：错误全是事件细纲被拒时，给可见的 info 说明（不再是死代码）", async () => {
+      /*
+       * 内容过不了 hasEventOutlineStructure ⇒ 请求被拒、只进 errors。
+       * 这里若沿用 setSaveStatus（开头要求文案含「失败/错误/不支持/无法」），
+       * 用户会「点了没反应」——本用例钉的就是那个可见效果。
+       */
+      const infoSpy = vi.spyOn(toast, "info").mockImplementation(() => {})
+      const text = eventOutlineOnlyReply("好的，我已完成本章细纲。")
+      setOutlineConversations([conversation()], "outline-active", {
+        streamingContents: { "outline-active": "" },
+      })
+      const container = await renderOutlineChatPanel()
+
+      await sendPlainOutlineMessage(container, text)
+      await act(async () => { await Promise.resolve() })
+
+      expect(infoSpy).toHaveBeenCalledWith("事件细纲只作为对话消息保留，不写入大纲列表。")
+      expect(confirmDialogVisible()).toBe(false)
+    })
+
+    it("手动通道：JSON 围栏坏掉时不显示保存按钮的老路已被闸门堵住（点下去有反馈、不弹框）", async () => {
+      /*
+       * 复现闸门存在的那条真实路径：按钮靠 extractEventOutlineData 解析成功才隐藏，
+       * 而**JSON 围栏被截断时解析结果是 null** ⇒ 按钮照样显示。用户点下去，
+       * 手动通道的闸门必须拦下它并给出可见反馈。
+       */
+      const infoSpy = vi.spyOn(toast, "info").mockImplementation(() => {})
+      const truncated = [
+        eventOutlineMarkdown(),
+        "",
+        "```json",
+        '{"eventOutlineData": {"version": 1, "chapterNumber": 1, "title": "第1章',
+      ].join("\n")
+      setOutlineConversations([conversation([{
+        id: "a-broken-event-outline",
+        role: "assistant",
+        content: truncated,
+      }])], "outline-active")
+      const container = await renderOutlineChatPanel()
+
+      const saveButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.getAttribute("aria-label") === "保存为大纲")
+      expect(saveButton, "围栏坏掉时「保存为大纲」按钮仍会渲染（这正是要堵的路径）").toBeDefined()
+      await act(async () => { saveButton?.click() })
+      await act(async () => { await Promise.resolve() })
+
+      expect(confirmDialogVisible(), "闸门必须拦下，不弹确认框").toBe(false)
+      expect(infoSpy).toHaveBeenCalledWith("事件细纲只作为对话消息保留，不写入大纲列表。")
+    })
+  })
+})
+
+describe("只有结构化数据的回复：气泡不空着", () => {
+  const stages = ["起①", "起②", "起③", "承①", "承②", "承③", "转①", "转②", "合①", "合②"]
+
+  it("卷纲：报出故事数、环节数与去处，不把 JSON 塞回气泡", () => {
+    const reply = "```json\n" + JSON.stringify({
+      volumeOutlineData: {
+        title: "卷一 无我绝响",
+        stories: Array.from({ length: 3 }, (_, i) => ({
+          id: i + 1,
+          range: `第 ${i * 12 + 1}–${i * 12 + 12} 章`,
+          title: `故事${i + 1}`,
+          st: stages.map((stage) => ({ stage, p: ["a", "b", "c"] })),
+        })),
+      },
+    }) + "\n```"
+    const text = describeStructuredOnlyAnswer(reply)
+    expect(text).toContain("已生成卷纲《卷一 无我绝响》")
+    expect(text).toContain("3 个故事")
+    expect(text).toContain("30 个环节")
+    expect(text).not.toContain("volumeOutlineData")
+  })
+
+  it("章纲：报出章号区间与章数", () => {
+    const reply = "```json\n" + JSON.stringify({
+      chapterOutlineData: {
+        title: "章纲-第01–02章",
+        story: { index: 1, name: "故事一", range: "第 1–12 章", beats: "平升起紧落缓升紧顶缓顶悬" },
+        words: "6000",
+        chapters: [
+          { n: 1, title: "雨夜" },
+          { n: 2, title: "断电" },
+        ],
+      },
+    }) + "\n```"
+    const text = describeStructuredOnlyAnswer(reply)
+    expect(text).toContain("第 1–2 章")
+    expect(text).toContain("共 2 章")
+  })
+
+  it("章纲：节数按实际产出报，不写死 17 节", () => {
+    /*
+     * 反推会跳过全空的分区，模型少给几节就少几节。写死「每章 17 节」等于替软件
+     * 保证一件没发生的事 —— 用户打开 .md 只有 8 节，会以为软件吞了内容。
+     */
+    const reply = "```json\n" + JSON.stringify({
+      chapterOutlineData: {
+        title: "章纲-第03章",
+        story: { index: 1, name: "故事一", range: "第 1–12 章" },
+        chapters: [{ n: 3, title: "落水", digest: "楚白落水，被捞起。" }],
+      },
+    }) + "\n```"
+    const text = describeStructuredOnlyAnswer(reply)
+    expect(text).toContain("共 1 章")
+    expect(text, "数据只有一两节时说「每章 17 节」是谎报").not.toContain("17 节")
+    expect(text).toMatch(/每章 \d+ 节/)
+  })
+
+  it("人物小传：报出角色名与分区数", () => {
+    const reply = "```json\n" + JSON.stringify({
+      characterProfileData: {
+        name: "楚白",
+        tag: "主角",
+        sections: [
+          { kind: "kv", heading: "基本信息", items: [{ label: "职业", text: "掮客" }] },
+          { kind: "kv", heading: "角色定位", items: [{ label: "功能", text: "带路" }] },
+        ],
+      },
+    }) + "\n```"
+    const text = describeStructuredOnlyAnswer(reply)
+    expect(text).toContain("楚白")
+    expect(text).toContain("2 个分区")
+    expect(text).not.toContain("characterProfileData")
+  })
+
+  it("七类设定：报出对象名与分区数，不把 JSON 塞回气泡", () => {
+    const reply = "```json\n" + JSON.stringify({
+      factionProfileData: {
+        name: "青云商会",
+        tag: "商户",
+        sections: [
+          { kind: "kv", heading: "基本信息", items: [{ label: "据点", text: "霜河渡口" }] },
+          { kind: "kv", heading: "组织使命", items: [{ label: "公开宗旨", text: "保证雪线补给" }] },
+        ],
+      },
+    }) + "\n```"
+    const text = describeStructuredOnlyAnswer(reply)
+    expect(text).toContain("青云商会")
+    expect(text).toContain("2 个分区")
+    expect(text).toContain(".md / .html")
+    expect(text).not.toContain("factionProfileData")
+  })
+
+  it("七类设定：多份档案报数量与前三个名字", () => {
+    const reply = "```json\n" + JSON.stringify({
+      locationProfiles: [
+        { name: "霜河渡口", sections: [{ kind: "kv", heading: "地点定位", items: [] }] },
+        { name: "黑水湾", sections: [{ kind: "kv", heading: "地点定位", items: [] }] },
+      ],
+    }) + "\n```"
+    const text = describeStructuredOnlyAnswer(reply)
+    expect(text).toContain("2 份地点设定")
+    expect(text).toContain("霜河渡口、黑水湾")
+  })
+
+  it("七类设定：同一条回复里出现多类时逐类报数，不只报第一类", () => {
+    /*
+     * 「一键生成全部设定」那一轮，模型常把两类档案塞进同一条回复（八类共用
+     * fileType=setting，批量是常态）。旧实现命中第一类就 return，气泡只提
+     * 力量体系、一个字都不提地点 —— 用户会以为地点那几份没生成。
+     */
+    const reply = "```json\n" + JSON.stringify({
+      powerProfileData: {
+        name: "九转玄功",
+        sections: [{ kind: "kv", heading: "体系定位", items: [{ label: "类型", text: "内功" }] }],
+      },
+      locationProfiles: [
+        { name: "竹屋", sections: [{ kind: "kv", heading: "地点定位", items: [] }] },
+      ],
+    }) + "\n```"
+    const text = describeStructuredOnlyAnswer(reply)
+    expect(text).toContain("力量体系《九转玄功》")
+    expect(text).toContain("地点设定《竹屋》")
+    // 两类之间用分号串起来，读起来是一句完整的话
+    expect(text).toContain("；")
+    // 结构化键名一律不许漏到气泡里
+    expect(text).not.toContain("powerProfileData")
+    expect(text).not.toContain("locationProfiles")
+  })
+
+  it("事件细纲：报出章号、事件数与目标字数（否则面板气泡是空的）", () => {
+    const reply = "```json\n" + JSON.stringify({
+      eventOutlineData: {
+        version: 1,
+        chapterNumber: 7,
+        title: "第7章 · 断线",
+        targetWords: 2600,
+        events: [
+          { title: "楚白摸到井口", points: ["试探", "回声"] },
+          { title: "井底有人应答", points: ["反转"] },
+          { title: "竹哨裂开", points: ["代价"] },
+        ],
+        endingHook: "井底的人叫出他的旧名",
+      },
+    }) + "\n```"
+    const text = describeStructuredOnlyAnswer(reply)
+    expect(text).toContain("第 7 章事件细纲")
+    expect(text).toContain("3 个事件")
+    expect(text).toContain("2600 字")
+    // 结构化键名不能漏到气泡里
+    expect(text).not.toContain("eventOutlineData")
+  })
+
+  it("既没有正文也没有结构化数据时返回空串（不凭空说话）", () => {
+    expect(describeStructuredOnlyAnswer("好的，我明白了。")).toBe("")
+  })
 })

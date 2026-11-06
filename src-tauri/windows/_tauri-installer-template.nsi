@@ -22,6 +22,7 @@ ManifestDPIAwareness PerMonitorV2
 !include MUI2.nsh
 !include FileFunc.nsh
 !include x64.nsh
+!include WinVer.nsh
 !include WordFunc.nsh
 !include "utils.nsh"
 !include "FileAssociation.nsh"
@@ -30,6 +31,26 @@ ManifestDPIAwareness PerMonitorV2
 !include "StrFunc.nsh"
 ${StrCase}
 ${StrLoc}
+; 卸载时清理随包字体要用到（读记录文件后剥掉行尾 CRLF）。
+;
+; ── 必须用 `Un` 前缀的那个变体 ──
+; StrFunc 每个函数都生成两份，调用方式不同：
+;   ${StrTrimNewLines}   → Function StrTrimNewLines   + `Call StrTrimNewLines`
+;   ${UnStrTrimNewLines} → Function un.StrTrimNewLines + `Call un.StrTrimNewLines`
+; 而 NSIS **禁止**在 `Section Uninstall` 里 `Call` 不以 `un.` 开头的函数：
+;   `Call must be used with function names starting with "un." in the
+;    uninstall section.`
+; 清理段完全位于卸载区，所以必须用 `Un` 变体。
+;
+; 这个缺陷曾经真实存在：模板用了非 `Un` 变体，`makensis` 直接编译失败，
+; 于是**整个安装包都打不出来**。一直没被发现是因为：
+;   ① `npm run build:portable` 走 `tauri build --no-bundle`，根本不跑 NSIS；
+;   ② 原先的验收脚本把这段代码抽出来放进一个**普通 `Section`** 编译 ——
+;      同一片段在普通 Section 里完全合法，"编译通过"于是成了假绿。
+; 现在验收脚本的骨架改用 `Section Uninstall`（见 verify-nsis-font-cleanup.mjs），
+; 与生产上下文一致，这类错误不会再被隐藏。
+; 另注意与 TextFunc 的 `TrimNewlines` 无关 —— 那是文件级的，且 TextFunc.nsh 没被 include。
+${UnStrTrimNewLines}
 
 {{#if installer_hooks}}
 !include "{{installer_hooks}}"
@@ -63,6 +84,114 @@ ${StrLoc}
 !define WEBVIEW2BOOTSTRAPPERPATH "{{webview2_bootstrapper_path}}"
 !define WEBVIEW2INSTALLERPATH "{{webview2_installer_path}}"
 !define MINIMUMWEBVIEW2VERSION "{{minimum_webview2_version}}"
+; 随包字体写进/清理的 HKCU 键。
+;
+; ── 为什么抽成 !define ──
+; 卸载清理段必须能被执行一遍才算验证过。只"编译通过"证明不了
+; FileRead / StrTrimNewLines / DeleteRegValue 在运行时的实际行为 ——
+; 而这段代码用户装完就再也不会跑到，出错也只会表现为"卸载后字体库里多出十几个
+; 字体"。抽成 define 后，验收脚本可以把整段代码放进一个**一次性键**里真跑一遍
+; （见 docs/font-scaling-fix-20261007/verify-nsis-font-cleanup.mjs 的端到端部分），
+; 而不必污染用户真实的字体注册表。
+; 验收脚本会断言这里的值等于生产路径，防止有人把它改错。
+!define QMAIFONTKEY "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
+
+; 随包字体的安装目录（每用户，无需提权）。与 Rust 侧
+; `font_install::user_font_dir()` 的 `%LOCALAPPDATA%\Microsoft\Windows\Fonts`
+; 必须一致 —— 验收脚本会断言这一点。
+;
+; ── 为什么清理段要**自己拼**这个目录，而不是从记录里读绝对路径 ──
+; NSIS 的 `FileRead` 按系统 ANSI 代码页解码、且不认 BOM，而记录文件是 Rust 用
+; UTF-8 写的。内容全是 ASCII 时两者字节相同所以"碰巧"能跑；一旦路径里出现非
+; ASCII（中文 Windows 用户名 → `C:\Users\张三\AppData\Local`）就会读成乱码，
+; 而 `Delete` 对不存在的路径**静默成功**，字体永久残留且没有任何报错。
+; 所以记录里只存纯 ASCII 的文件名，目录在这里拼 —— `$LOCALAPPDATA` 是原生
+; Unicode，中文用户名不受影响。
+!define QMAIFONTDIR "$LOCALAPPDATA\Microsoft\Windows\Fonts"
+
+; 卸载记录文件所在目录。生产路径即 `$APPDATA\<bundle id>`，与 Rust 侧
+; `font_install::remove_installed_fonts` 读的那个目录必须一致。
+;
+; 抽成 !define 的理由同 `QMAIFONTKEY`：端到端验收脚本可以把它指向临时目录，
+; 于是整段清理代码能被真跑一遍，而不必往用户真实的 %APPDATA% 里写东西。
+; 验收脚本会断言这里的默认值与 Rust 侧常量一致。
+!define QMAIFONTRECORDDIR "$APPDATA\${BUNDLEID}"
+
+; ═══════════════════════════════════════════════════════════════════════════
+; 随包字体表（阶段 4）：安装时按用户安装，卸载时兜底清理
+; ═══════════════════════════════════════════════════════════════════════════
+;
+; ── 为什么安装器也要装字体（Rust 侧启动时明明已经会装）──
+; Rust 的 `ensure_fonts_installed` 在每次启动时幂等"确保"安装，覆盖便携版与更新
+; 自愈。但它有个天生的空档：**装上之后一次都没启动过**。那时字体不在机器上，
+; 而用户的原话是"在安装软件时…自动安装到电脑中"。安装器本来就把这 11 个文件
+; 拷进了 `$INSTDIR\fonts\`，再拷一份到用户字体目录只是同一次安装里多搬一遍，
+; 却让"装完即用"（含其它软件与导出的 HTML/PDF 按名引用）成立。
+; 两条路径写的是**同一组**目标（同一目录、同一值名规则），互相幂等，不是两套逻辑。
+;
+; ── 权限 ──
+; 目标是 `%LOCALAPPDATA%\Microsoft\Windows\Fonts` 与 `HKCU`，都属当前用户，
+; 因此**不触发 UAC**（安装器本身是 `RequestExecutionLevel user`）。
+;
+; ── 为什么这份表写死在 NSIS 里，而不是运行时读清单 ──
+; NSIS 没有 JSON 解析能力，而它在编译期就知道要装哪些文件。代价是这张表与
+; `src-tauri/fonts/fonts-manifest.json` 存在重复，所以有三道守卫钉住一致性：
+;   ① Rust 测试 `NSIS_模板里的字体表必须与随包清单逐字一致`（自动，进 cargo test）；
+;   ② 验收脚本 verify-nsis-font-cleanup.mjs 的阶段三：真跑一遍"安装 → 卸载"往返；
+;   ③ scripts/check-nsis-font-table.mjs（手动，独立于 Rust 的复核）。
+; 任一守卫变红都意味着"安装器装的字体与随包清单脱节" —— 那会让用户看到
+; 字体装了却选不到（或反过来），且**不会有任何报错**。
+;
+; ── 值名规则 ──
+; 值名 = `<族名>[ <字重后缀>] (TrueType)`，与 Rust 侧 `registry_value_name`
+; 唯一对应。同族的 Regular 与 Bold 必须是**不同**的值名，否则后写的覆盖先写的，
+; 表现为"磁盘上多一个文件、系统里少一档字重"。守卫 ① 会逐条比对。
+;
+; ── 关于 `.otf` 也写 `(TrueType)` ──
+; 这不是笔误：Windows 自身对本机思源黑体/宋体（.otf）就是用 `(TrueType)`，
+; 见本机基线 `Noto Sans SC (TrueType)`。照抄系统惯例，不"纠正"。
+
+; 单条字体：按 `mode` 展开为安装或卸载动作。
+; mode = `install`（装 + 记进卸载记录）/ `install-norecord`（只装）/ `uninstall`。
+; `install-norecord` 用于记录文件打不开时的降级：**字体可用性优先于可卸载性**，
+; 而且 Rust 启动时会重写记录，所以那一次降级是暂时的。
+; $R5 只在安装段用（打开的记录文件句柄），$R0–$R3 只在卸载段用，互不干扰。
+!macro QMAI_FONT_ENTRY mode file valueName
+  !if "${mode}" == "uninstall"
+    Delete /REBOOTOK "${QMAIFONTDIR}\${file}"
+    DeleteRegValue HKCU "${QMAIFONTKEY}" "${valueName}"
+  !else
+    ; 已存在就跳过拷贝：Rust 启动时会按文件大小自愈（见 install_into），
+    ; 所以不必为了修一个坏文件而每次安装/更新都重拷 200MB。
+    ${IfNot} ${FileExists} "${QMAIFONTDIR}\${file}"
+      CopyFiles /SILENT "$INSTDIR\fonts\${file}" "${QMAIFONTDIR}\"
+    ${EndIf}
+    ; 注册表值每次都写：值可能被注册表清理工具单独清掉，写一次是廉价的，
+    ; 漏写则表现为"字体文件在、但任何字体列表里都没有它"。
+    WriteRegStr HKCU "${QMAIFONTKEY}" "${valueName}" "${QMAIFONTDIR}\${file}"
+    ; 记进卸载记录：第 1 行完整值名、第 2 行纯文件名，两者都必须是纯 ASCII。
+    ; 格式由 Rust 侧 write_uninstall_record 定义，且由 Rust 测试钉住。
+    !if "${mode}" == "install"
+      FileWrite $R5 "${valueName}$\r$\n"
+      FileWrite $R5 "${file}$\r$\n"
+    !endif
+  !endif
+!macroend
+
+; 整张表。**顺序不重要**，但必须与 fonts-manifest.json 的集合逐字一致。
+!macro QMAI_FONT_TABLE mode
+  !insertmacro QMAI_FONT_ENTRY "${mode}" "SourceHanSerifSC-Regular.otf" "Source Han Serif SC (TrueType)"
+  !insertmacro QMAI_FONT_ENTRY "${mode}" "SourceHanSerifSC-Bold.otf" "Source Han Serif SC Bold (TrueType)"
+  !insertmacro QMAI_FONT_ENTRY "${mode}" "SourceHanSansSC-Regular.otf" "Source Han Sans SC (TrueType)"
+  !insertmacro QMAI_FONT_ENTRY "${mode}" "SourceHanSansSC-Bold.otf" "Source Han Sans SC Bold (TrueType)"
+  !insertmacro QMAI_FONT_ENTRY "${mode}" "LXGWWenKai-Regular.ttf" "LXGW WenKai (TrueType)"
+  !insertmacro QMAI_FONT_ENTRY "${mode}" "WenJinMincho-Regular.ttf" "WenJin Mincho Plane 0 (TrueType)"
+  !insertmacro QMAI_FONT_ENTRY "${mode}" "ChillKai-Regular.ttf" "ChillKai (TrueType)"
+  !insertmacro QMAI_FONT_ENTRY "${mode}" "SmileySans-Regular.ttf" "Smiley Sans (TrueType)"
+  !insertmacro QMAI_FONT_ENTRY "${mode}" "ZhuqueFangsong-Regular.ttf" "Zhuque Fangsong (technical preview) (TrueType)"
+  !insertmacro QMAI_FONT_ENTRY "${mode}" "SarasaGothicSC-Regular.ttf" "Sarasa Gothic SC (TrueType)"
+!macroend
+
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}"
 !define MANUKEY "Software\${MANUFACTURER}"
 !define MANUPRODUCTKEY "${MANUKEY}\${PRODUCTNAME}"
@@ -476,6 +605,16 @@ FunctionEnd
 {{/each}}
 
 Function .onInit
+  ${IfNot} ${RunningX64}
+    MessageBox MB_OK|MB_ICONSTOP "青幕AI写作仅支持 64 位 Windows，不支持 32 位系统。"
+    Abort
+  ${EndIf}
+
+  ${IfNot} ${AtLeastBuild} 19041
+    MessageBox MB_OK|MB_ICONSTOP "青幕AI写作需要 Windows 10 2004 (20H1) 或更高版本。"
+    Abort
+  ${EndIf}
+
   ${GetOptions} $CMDLINE "/P" $PassiveMode
   ${IfNot} ${Errors}
     StrCpy $PassiveMode 1
@@ -753,6 +892,54 @@ Section Install
     Call CreateOrUpdateDesktopShortcut
   ${EndIf}
 
+  ; ── 随包字体：按用户安装（阶段 4）──
+  ;
+  ; 与 Rust 侧 `ensure_fonts_installed` 指向**同一组**目标（同一目录、同一值名
+  ; 规则），两者互相幂等，是刻意的冗余：
+  ;   装好了 → Rust 启动时按大小跳过拷贝、再幂等注册一次（无副作用）；
+  ;   没装上（安装器被杀、拷贝失败）→ Rust 启动时补上。
+  ; 任何一边单独存在都不会让字体缺失。
+  ;
+  ; 更新（$UpdateMode = 1）时**跳过**，两个理由：
+  ;   ① 字体早已在机器上，重拷 200MB 没有意义；
+  ;   ② 记录文件此刻由 Rust 维护，里面可能含"本次清单已移除、但仍留在机器上"的
+  ;      旧字体条目（见 font_install.rs 里"本次构建不再随包的字体"那段）。
+  ;      用安装器的表重写记录会把那些条目抹掉，于是它们**永远不会被清理**。
+  ${If} $UpdateMode <> 1
+    ; ── 必须显式切到 current 上下文（实测过，不是想当然）──
+    ; 随包字体**永远是按用户装的**（HKCU + 用户自己的 %LOCALAPPDATA%），与 Rust 侧
+    ; `user_font_dir()` / `app_data_dir()` 指向同一处。而 NSIS 的 `$LOCALAPPDATA`
+    ; 会随 `SetShellVarContext` 变 —— 本机实测：
+    ;     current → C:\Users\<用户>\AppData\Local
+    ;     all     → C:\ProgramData        ← 与 HKCU 指的不是同一个用户
+    ; `.onInit` 里的 `SetContext` 按 INSTALLMODE 设（perMachine ⇒ all）。今天
+    ; INSTALLMODE 是 currentUser，所以不加也能跑；但只要有人把它改成 perMachine
+    ; 或 both，字体就会被拷进 C:\ProgramData\... 而 HKCU 值指向那里，表现是
+    ; "装完了却一个字体都用不了"，且不会有任何报错。这里显式钉死。
+    ; HKCU 本身不受 SetShellVarContext 影响，所以 forcing current 才是正确配对。
+    SetShellVarContext current
+    ; 目标目录可能还不存在：Windows 只在第一次有每用户字体时才创建它
+    CreateDirectory "${QMAIFONTDIR}"
+    CreateDirectory "${QMAIFONTRECORDDIR}"
+    ; 记录文件以 "w" 清空重建：此刻机器上的随包字体就等于这张表。
+    ; 旧版本遗留的条目不会因此丢失 —— Rust 启动时会读旧记录并把它并回新记录。
+    ClearErrors
+    FileOpen $R5 "${QMAIFONTRECORDDIR}\installed-fonts.txt" w
+    ${If} ${Errors}
+      ; 记录打不开也要把字体装上：可用性优先于可卸载性，
+      ; 且 Rust 启动时每次都会重写这两份记录，这次降级是暂时的。
+      DetailPrint "无法写入字体卸载记录，字体仍会安装（应用启动时会补写）"
+      !insertmacro QMAI_FONT_TABLE "install-norecord"
+    ${Else}
+      !insertmacro QMAI_FONT_TABLE "install"
+      FileClose $R5
+    ${EndIf}
+  ${EndIf}
+  ; 结束标签：验收脚本靠它把这一整段**原样**切出来、放进 Section 里真跑一遍
+  ; （见 verify-nsis-font-cleanup.mjs 的阶段三）。切不出来时脚本会失败而不是
+  ; 跳过 —— 否则"没测到"会伪装成"通过"。
+  qmai_fonts_install_done:
+
   !ifmacrodef NSIS_HOOK_POSTINSTALL
     !insertmacro NSIS_HOOK_POSTINSTALL
   !endif
@@ -844,6 +1031,75 @@ Section Uninstall
 
   ; Remove shortcuts if not updating
   ${If} $UpdateMode <> 1
+
+  ; ── 清理随包字体（阶段 4）──
+  ;
+  ; 随包字体被安装到**本用户**的字体目录，并写进了 HKCU：
+  ;   %LOCALAPPDATA%\Microsoft\Windows\Fonts\<file>
+  ;   HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts : "<值名>" = <绝对路径>
+  ; 其中**值名已含 `(TrueType)` 后缀与字重**（如 `Source Han Serif SC Bold (TrueType)`），
+  ; 由 src-tauri/src/font_install.rs 的 registry_value_name 唯一决定。
+  ; 这两处**都不在 $INSTDIR 里**，所以下面那些 Delete/RMDir 一个都碰不到它们，
+  ; 连"删除应用数据"选项也只清 $APPDATA/$LOCALAPPDATA 下的应用目录。
+  ; 不显式清理的后果：用户卸载后字体库里永久多出十几个字体，而且没有任何提示。
+  ;
+  ; 必须在**另一个** $UpdateMode <> 1 里做：更新时旧卸载器会带 /UPDATE 运行，
+  ; 不保护就会在更新过程中把字体删掉（更新完应用还得重装一遍，且用户会看到
+  ; 字体短暂消失）。
+  ;
+  ; 记录文件是**交替两行**的纯文本（完整值名一行、**纯文件名**一行），
+  ; 没有注释行 —— 一行注释就会让后面全部错位、删错文件。
+  ; 第 2 行是文件名而不是绝对路径：见上面 `QMAIFONTDIR` 处的说明
+  ; （NSIS 按 ANSI 解码 UTF-8 记录，非 ASCII 路径会读成乱码）。
+  ; 格式由 src-tauri/src/font_install.rs 的 write_uninstall_record 定义，
+  ; 并由 Rust 侧同名测试 parse_uninstall_record 钉住。
+  ;
+  ; 注意：这一段必须排在下面"删除应用数据"里 RmDir /r "$APPDATA\${BUNDLEID}"
+  ; **之前** —— 否则记录文件先被删掉，字体就再也清不掉了。
+  ;
+  ; 上下文必须与安装段一致：字体是按用户装的，所以 `$APPDATA` 必须是**该用户**的
+  ; roaming（Rust 的 `app_data_dir()` 写的就是那里）。`SetContext` 在 perMachine
+  ; 下会设成 all，那样这里会去 C:\ProgramData 找记录、永远找不到，字体永久残留。
+  ; 与安装段一样显式钉死 current（理由与实测数据见安装段）。
+  SetShellVarContext current
+    StrCpy $R0 "${QMAIFONTRECORDDIR}\installed-fonts.txt"
+    ; 记录在 → 按记录**精确**清理：只删真正装过的东西，包括"已从本次清单移除、
+    ; 但仍留在机器上"的旧字体（那些只有记录里才有）。
+    ; 记录不在 → 走下面的兜底表。记录由 Rust 在**启动时**写出，所以"记录不在"
+    ; 只可能是"安装完之后从未启动过应用"；那种情况下字体是本安装器按
+    ; QMAI_FONT_TABLE 装的，表里的名字与实际装的逐一对应。
+    IfFileExists "$R0" 0 qmai_fonts_no_record
+    FileOpen $R1 "$R0" r
+  qmai_fonts_loop:
+    FileRead $R1 $R2 ; 第 1 行：完整注册表值名（已含后缀与字重）
+    IfErrors qmai_fonts_close
+    ${UnStrTrimNewLines} $R2 $R2
+    StrCmp $R2 "" qmai_fonts_close ; 空行 = 读完了
+    FileRead $R1 $R3 ; 第 2 行：纯文件名（不含目录，全 ASCII）
+    IfErrors qmai_fonts_close
+    ${UnStrTrimNewLines} $R3 $R3
+    StrCmp $R3 "" qmai_fonts_close
+    ; 目录在这里拼，而不是用记录里的绝对路径：$LOCALAPPDATA 是原生 Unicode，
+    ; 中文用户名不会像"按 ANSI 解码 UTF-8 记录"那样被读成乱码。
+    StrCpy $R3 "${QMAIFONTDIR}\$R3"
+    ; 从字体文件里删掉。被占用时 /REBOOTOK 保证重启后仍会删掉，
+    ; 而不是静默留下一个孤儿字体文件。
+    Delete /REBOOTOK "$R3"
+    ; 值名原样使用：**不要**在这里拼 " (TrueType)"。
+    ; 拼接规则若分散到 NSIS 里，加字重时必然有一处忘记改，
+    ; 结果是卸载后 HKCU 里留下一批指向已删文件的悬空值。
+    DeleteRegValue HKCU "${QMAIFONTKEY}" "$R2"
+    Goto qmai_fonts_loop
+  qmai_fonts_close:
+    FileClose $R1
+    Goto qmai_fonts_done
+  qmai_fonts_no_record:
+    ; 兜底：按编译期的表清理。与记录路径清理的是同一组目标，所以重复执行、
+    ; 或与记录路径重叠都不会出错（`Delete` / `DeleteRegValue` 对不存在的东西
+    ; 是静默成功的）。只有在"装完从未启动"这条分支里才会走到这里。
+    !insertmacro QMAI_FONT_TABLE "uninstall"
+  qmai_fonts_done:
+
     !insertmacro DeleteAppUserModelId
 
     ; Remove start menu shortcut

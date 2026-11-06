@@ -1,85 +1,189 @@
 import { useState } from "react"
-import { ChevronDown, ChevronUp, Feather, Loader2 } from "lucide-react"
+import { ChevronDown, ChevronUp, Feather, Loader2, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import type { BookAnalysisLibraryBook } from "@/lib/novel/book-analysis/library-state"
-import { STYLE_DIMENSIONS } from "@/lib/novel/book-analysis/style-prompts"
+import {
+  INTEGRATED_DNA_CHAR_LIMIT,
+  WRITING_DNA_LAYERS,
+  needsReextraction,
+} from "@/lib/novel/book-analysis/style-profile-schema"
+import type { StyleMetrics } from "@/lib/novel/book-analysis/style-metrics"
+import type { LegacyPanelVariant } from "./legacy-panel-variant"
 
 interface BookAnalysisStyleCardProps {
   book: BookAnalysisLibraryBook
-  extracting: boolean
-  onExtractStyle: () => void
-  onToggleStyle: () => void
+  /**
+   * embedded：嵌进新版页签时使用，去掉卡片自身的边框、背景与内边距（页签已提供留白）。
+   * 管理类按钮是否出现由各自回调是否存在决定，与 variant 无关。
+   */
+  variant?: LegacyPanelVariant
+  extracting?: boolean
+  onExtractStyle?: () => void
+  onToggleStyle?: () => void
+  onDeleteStyle?: () => void
 }
 
-export function BookAnalysisStyleCard({ book, extracting, onExtractStyle, onToggleStyle }: BookAnalysisStyleCardProps) {
+const percent = (value: number): string => `${(value * 100).toFixed(1)}%`
+
+/** 统计数字面板：这些是脚本算出来的确定值，不是模型的主观判断，值得单独摆出来。 */
+function MetricsPanel({ metrics }: { metrics: StyleMetrics }) {
+  const { counts, derived } = metrics
+  const items: Array<[string, string]> = [
+    ["样本", `${counts.chapters} 章 / ${counts.chars} 字`],
+    ["平均句长", `${derived.avgSentenceChars} 字`],
+    ["短句占比", percent(derived.shortSentenceRatio)],
+    ["长句占比", percent(derived.longSentenceRatio)],
+    ["平均段落", `${derived.avgParagraphChars} 字 / ${derived.avgParagraphSentences} 句`],
+    ["一句一段", percent(derived.oneSentenceParagraphRatio)],
+    ["含对白段落", percent(derived.dialogueParagraphRatio)],
+    ["破折号 / 千字", String(derived.punctuationPerThousand.dash)],
+    ["省略号 / 千字", String(derived.punctuationPerThousand.ellipsis)],
+  ]
+  return (
+    <div className="rounded-md bg-muted/40 p-3 text-xs">
+      <div className="font-medium">脚本统计（L1 / L6 确定性指标）</div>
+      <div className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-3">
+        {items.map(([label, value]) => (
+          <div key={label} className="flex items-baseline justify-between gap-2">
+            <span className="text-muted-foreground">{label}</span>
+            <span className="font-mono text-foreground">{value}</span>
+          </div>
+        ))}
+      </div>
+      {metrics.topWords.length > 0 && (
+        <div className="mt-2 text-muted-foreground leading-5">
+          <span className="text-foreground">高频实词：</span>
+          {metrics.topWords.slice(0, 12).map((item) => `${item.word}(${item.count})`).join("、")}
+        </div>
+      )}
+      {!metrics.segmenterAvailable && (
+        <div className="mt-2 text-amber-600 dark:text-amber-500">
+          当前环境缺少中文分词能力，词频表为相邻汉字二元窗口的近似结果。
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function BookAnalysisStyleCard({
+  book,
+  variant = "full",
+  extracting = false,
+  onExtractStyle,
+  onToggleStyle,
+  onDeleteStyle,
+}: BookAnalysisStyleCardProps) {
+  const embedded = variant === "embedded"
   const profile = book.styleProfile
   const enabled = book.styleStatus === "enabled"
   const [expanded, setExpanded] = useState(false)
+  const stale = profile ? needsReextraction(profile) : false
+  const integratedLength = profile?.integratedDna?.trim().length ?? 0
 
   return (
-    <section className="rounded-lg border bg-background p-4">
+    <section className={embedded ? undefined : "rounded-lg border bg-background p-4"}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <Feather className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-semibold">作品文风</h3>
+            <h3 className="text-sm font-semibold">作品文风 · Writing DNA</h3>
             {enabled && (
               <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">已启用</span>
             )}
           </div>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            {profile?.narrativeDensity || "尚未提取叙事文风。作品文风只约束叙事写法，不等同于角色说话方式。"}
+            {!profile
+              ? "尚未蒸馏 Writing DNA。作品文风只约束叙事写法，不等同于角色说话方式。"
+              : stale
+                ? "这份画像来自旧版单轮提取，没有分层产物与统计指标，建议重新提取。"
+                : `已蒸馏 ${profile.sampledChapterIds.length} 章样本，整合文档 ${integratedLength} 字。`}
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
-          {profile && (
+          {onToggleStyle && profile && (
             <Button size="sm" variant={enabled ? "outline" : "default"} onClick={onToggleStyle}>
               {enabled ? "取消启用" : "启用此文风"}
             </Button>
           )}
-          <Button size="sm" variant="outline" onClick={onExtractStyle} disabled={extracting}>
-            {extracting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {extracting ? "提取中..." : profile ? "重新提取文风" : "提取文风"}
-          </Button>
+          {onExtractStyle && (
+            <Button size="sm" variant="outline" onClick={onExtractStyle} disabled={extracting}>
+              {extracting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {extracting ? "提取中..." : profile ? "重新提取文风" : "提取文风"}
+            </Button>
+          )}
+          {onDeleteStyle && profile && (
+            <Button size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10" onClick={onDeleteStyle}>
+              <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+              删除文风
+            </Button>
+          )}
         </div>
       </div>
       {profile && (
         <>
-          {/* 始终显示的维度摘要 */}
+          {/* 六层蒸馏状态一览 */}
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
-            {STYLE_DIMENSIONS.slice(0, 4).map((d) => (
-              <div key={d.key} className="rounded-md bg-muted/40 p-3 text-xs">
-                <div className="font-medium">{d.label}</div>
-                <div className="mt-1 text-muted-foreground line-clamp-2">{(profile[d.key] as string) || "\u2014"}</div>
-              </div>
-            ))}
+            {WRITING_DNA_LAYERS.map((layer) => {
+              const text = profile.layers?.[layer.key]?.trim() ?? ""
+              return (
+                <div key={layer.key} className="rounded-md bg-muted/40 p-3 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{layer.level} {layer.label}</span>
+                    <span className={text ? "text-primary" : "text-muted-foreground"}>
+                      {text ? `${text.length} 字` : "未提取"}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-muted-foreground line-clamp-2">{text || layer.summary}</div>
+                </div>
+              )
+            })}
           </div>
-          {/* 展开/收起 */}
+          {profile.metrics && profile.metrics.counts.chapters > 0 && (
+            <div className="mt-2">
+              <MetricsPanel metrics={profile.metrics} />
+            </div>
+          )}
           <button
             type="button"
             className="mt-2 flex items-center gap-1 text-xs text-primary hover:underline"
             onClick={() => setExpanded((v) => !v)}
           >
             {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-            {expanded ? "收起详情" : "查看全部维度、风格宪法与代表样本"}
+            {expanded ? "收起详情" : "查看分层产物、整合文档与代表样本"}
           </button>
           {expanded && (
             <div className="mt-3 space-y-4">
-              {/* 剩余维度 */}
-              {STYLE_DIMENSIONS.slice(4).map((d) => (
-                <div key={d.key} className="rounded-md bg-muted/40 p-3 text-xs">
-                  <div className="font-medium">{d.label}</div>
-                  <div className="mt-1 text-muted-foreground leading-5">{(profile[d.key] as string) || "\u2014"}</div>
+              {WRITING_DNA_LAYERS.map((layer) => {
+                const text = profile.layers?.[layer.key]?.trim()
+                if (!text) return null
+                return (
+                  <div key={layer.key} className="rounded-md bg-muted/40 p-3 text-xs">
+                    <div className="font-medium">{layer.level} {layer.label}</div>
+                    <div className="mt-1 text-muted-foreground leading-5 whitespace-pre-line">{text}</div>
+                  </div>
+                )
+              })}
+              {integratedLength > 0 && (
+                <div className="rounded-md bg-muted/40 p-3 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">整合文档 Writing-DNA.md（注入生成）</span>
+                    {integratedLength > INTEGRATED_DNA_CHAR_LIMIT && (
+                      <span className="text-amber-600 dark:text-amber-500">
+                        超过 {INTEGRATED_DNA_CHAR_LIMIT} 字上限，建议重新提取
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-muted-foreground leading-5 whitespace-pre-line">
+                    {profile.integratedDna}
+                  </div>
                 </div>
-              ))}
-              {/* 风格宪法 */}
+              )}
               {profile.constitution && (
                 <div className="rounded-md bg-muted/40 p-3 text-xs">
-                  <div className="font-medium">风格宪法（注入生成）</div>
+                  <div className="font-medium">风格硬约束</div>
                   <div className="mt-1 text-muted-foreground leading-5 whitespace-pre-line">{profile.constitution}</div>
                 </div>
               )}
-              {/* 代表样本 */}
               {profile.samples && profile.samples.length > 0 && (
                 <div className="rounded-md bg-muted/40 p-3 text-xs">
                   <div className="font-medium">代表原文样本</div>

@@ -579,7 +579,7 @@ export function DismantlingView() {
                               <span className="font-medium text-foreground">
                                 {fw.title}
                               </span>
-                              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[0.625rem] text-primary">
                                 {fw.pacing === "tight"
                                   ? "紧凑"
                                   : fw.pacing === "loose"
@@ -618,22 +618,22 @@ export function DismantlingView() {
                               </div>
                             </div>
                             {fw.reusableTemplate && (
-                              <div className="mt-1 text-[10px] text-muted-foreground italic">
+                              <div className="mt-1 text-[0.625rem] text-muted-foreground italic">
                                 模板：{fw.reusableTemplate}
                               </div>
                             )}
                             {fw.characters.length > 0 && (
-                              <div className="mt-1 text-[10px] text-muted-foreground">
+                              <div className="mt-1 text-[0.625rem] text-muted-foreground">
                                 涉及角色：{fw.characters.map((c) => `${c.name}（${c.role || "未标注"}）`).join("、")}
                               </div>
                             )}
                             {fw.directionHints && (
-                              <div className="mt-1 text-[10px] text-muted-foreground">
+                              <div className="mt-1 text-[0.625rem] text-muted-foreground">
                                 方向指引：{fw.directionHints.slice(0, 80)}{fw.directionHints.length > 80 ? "…" : ""}
                               </div>
                             )}
                             {fw.handcraftHints && (
-                              <div className="mt-1 text-[10px] text-muted-foreground">
+                              <div className="mt-1 text-[0.625rem] text-muted-foreground">
                                 发挥空间：{fw.handcraftHints.slice(0, 80)}{fw.handcraftHints.length > 80 ? "…" : ""}
                               </div>
                             )}
@@ -666,7 +666,7 @@ export function DismantlingView() {
                               <span className="font-medium text-foreground">
                                 {fw.title}
                               </span>
-                              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[0.625rem] text-primary">
                                 {fw.pacing === "tight"
                                   ? "紧凑"
                                   : fw.pacing === "loose"
@@ -705,22 +705,22 @@ export function DismantlingView() {
                               </div>
                             </div>
                             {fw.reusableTemplate && (
-                              <div className="mt-1 text-[10px] text-muted-foreground italic">
+                              <div className="mt-1 text-[0.625rem] text-muted-foreground italic">
                                 模板：{fw.reusableTemplate}
                               </div>
                             )}
                             {fw.characters.length > 0 && (
-                              <div className="mt-1 text-[10px] text-muted-foreground">
+                              <div className="mt-1 text-[0.625rem] text-muted-foreground">
                                 涉及角色：{fw.characters.map((c) => `${c.name}（${c.role || "未标注"}）`).join("、")}
                               </div>
                             )}
                             {fw.directionHints && (
-                              <div className="mt-1 text-[10px] text-muted-foreground">
+                              <div className="mt-1 text-[0.625rem] text-muted-foreground">
                                 方向指引：{fw.directionHints.slice(0, 80)}{fw.directionHints.length > 80 ? "…" : ""}
                               </div>
                             )}
                             {fw.handcraftHints && (
-                              <div className="mt-1 text-[10px] text-muted-foreground">
+                              <div className="mt-1 text-[0.625rem] text-muted-foreground">
                                 发挥空间：{fw.handcraftHints.slice(0, 80)}{fw.handcraftHints.length > 80 ? "…" : ""}
                               </div>
                             )}

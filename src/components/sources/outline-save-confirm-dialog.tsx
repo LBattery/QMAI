@@ -15,6 +15,7 @@ const OUTLINE_SAVE_FOLDER_OPTIONS = [
   "大纲",
   "卷纲",
   "章纲",
+  "材料",
   "人物小传",
   "设定",
   "伏笔",
@@ -22,9 +23,13 @@ const OUTLINE_SAVE_FOLDER_OPTIONS = [
   "质量检查",
 ]
 
+const MATERIAL_FOLDER_HINT = "只在某一章或某一卷使用的台账、发言稿、讨论，保存到「材料」。放进「大纲」或「设定」会在每次写作时整篇进入上下文。"
+
 export interface OutlineSaveConfirmPayload {
   requests: OutlineSaveRequest[]
   characterDrafts: CharacterSaveDraft[]
+  /** 保存格式选择（默认 md + html 都保存；html 仅当请求含 htmlContent 时生效） */
+  formats?: { md: boolean; html: boolean }
 }
 
 interface OutlineSaveConfirmDialogProps {
@@ -49,9 +54,17 @@ export function OutlineSaveConfirmDialog({
   const [drafts, setDrafts] = useState<CharacterSaveDraft[]>(characterDrafts)
   const [normalRequests, setNormalRequests] = useState<OutlineSaveRequest[]>(requests)
   const [deselectedFiles, setDeselectedFiles] = useState<Set<string>>(new Set())
+  const [formats, setFormats] = useState<{ md: boolean; html: boolean }>({ md: true, html: true })
   const selectedDrafts = useMemo(
     () => drafts.filter((draft) => draft.selected),
     [drafts],
+  )
+  const hasHtmlContent = useMemo(
+    () =>
+      // 人物小传多 Agent 路径的 HTML 由软件侧在保存时生成，这里直接放行 HTML 选项
+      mode === "character" ||
+      normalRequests.some((request) => Boolean(request.htmlContent?.trim())),
+    [mode, normalRequests],
   )
   const folderOptions = useMemo(
     () => Array.from(new Set([...OUTLINE_SAVE_FOLDER_OPTIONS, ...normalRequests.map((request) => request.targetFolder)])),
@@ -63,6 +76,7 @@ export function OutlineSaveConfirmDialog({
     setDrafts(characterDrafts)
     setNormalRequests(requests)
     setDeselectedFiles(new Set())
+    setFormats({ md: true, html: true })
   }, [characterDrafts, open, requests])
 
   if (!open) return null
@@ -158,17 +172,16 @@ export function OutlineSaveConfirmDialog({
                     className="mt-1 h-4 w-4 shrink-0 accent-primary"
                   />
                   <span className="min-w-0 flex-1">
-                    <div className="font-medium">{request.fileName}</div>
-                    <div className="mt-1 grid gap-0.5 text-xs text-muted-foreground">
-                      <div>类型：{request.fileType}</div>
-                      <div>写入方式：{request.writeMode}</div>
-                      <div>来源：{request.sourceIntent || "未标注"}</div>
-                      <div>
-                        引用 skill：{request.referencedSkills.length > 0
-                          ? request.referencedSkills.join("、")
-                          : "无"}
-                      </div>
-                    </div>
+                    <input
+                      aria-label={`修改 ${request.fileName} 的文件名`}
+                      value={request.fileName.replace(/\.md$/i, "")}
+                      onClick={(event) => event.preventDefault()}
+                      onChange={(event) => {
+                        const fileName = `${event.target.value.replace(/[\\/:*?"<>|]/g, "").trim() || "未命名"}.md`
+                        setNormalRequests((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, fileName } : item))
+                      }}
+                      className="h-8 w-full rounded-md border bg-background px-2 text-sm font-medium"
+                    />
                     <div className="mt-2 grid gap-1.5 text-xs text-muted-foreground">
                       <label htmlFor={`outline-save-folder-${index}`}>
                         保存文件夹
@@ -193,12 +206,44 @@ export function OutlineSaveConfirmDialog({
                           </option>
                         ))}
                       </select>
+                      {request.targetFolder === "材料" ? (
+                        <p>{MATERIAL_FOLDER_HINT}</p>
+                      ) : null}
                     </div>
                   </span>
                 </label>
               ))}
             </div>
           )}
+          <div className="mt-3 rounded-md border border-border bg-muted/20 px-3 py-2 text-sm">
+            <div className="mb-1.5 font-medium">保存格式</div>
+            <div className="flex flex-wrap items-center gap-4">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  aria-label="保存 MD 形式"
+                  type="checkbox"
+                  checked={formats.md}
+                  onChange={(event) => setFormats((f) => ({ ...f, md: event.target.checked }))}
+                  className="h-4 w-4 shrink-0 accent-primary"
+                />
+                MD 形式（.md）
+              </label>
+              <label className={`flex cursor-pointer items-center gap-2 ${hasHtmlContent ? "" : "pointer-events-none opacity-50"}`}>
+                <input
+                  aria-label="保存 HTML 形式"
+                  type="checkbox"
+                  checked={formats.html}
+                  disabled={!hasHtmlContent}
+                  onChange={(event) => setFormats((f) => ({ ...f, html: event.target.checked }))}
+                  className="h-4 w-4 shrink-0 accent-primary"
+                />
+                HTML 形式（.html）
+              </label>
+              {!hasHtmlContent ? (
+                <span className="text-xs text-muted-foreground">本轮未生成 HTML 版本，无法保存 HTML。</span>
+              ) : null}
+            </div>
+          </div>
         </div>
 
         <DialogFooter className="mx-0 mb-0">
@@ -207,7 +252,13 @@ export function OutlineSaveConfirmDialog({
           </Button>
           <Button
             type="button"
+            /*
+             * 新手引导「保存这份大纲」一步的第二候选靶点：弹窗打开后就高亮这里，
+             * 用户点它即真正落盘。属性对生产逻辑无影响，删掉引导也不会留死代码。
+             */
+            data-guide="outline.save.confirm"
             disabled={
+              (!formats.md && !formats.html) ||
               (mode === "character" && selectedDrafts.length === 0) ||
               (mode !== "character" && normalRequests.length - deselectedFiles.size === 0)
             }
@@ -218,6 +269,7 @@ export function OutlineSaveConfirmDialog({
               onConfirm({
                 requests: mode === "character" ? requests : filteredRequests,
                 characterDrafts: selectedDrafts,
+                formats: { md: formats.md, html: formats.html },
               })
             }}
           >

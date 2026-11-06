@@ -1,5 +1,6 @@
 import { readFile, writeFile, writeFileAtomic } from "@/commands/fs"
 import { joinPath } from "@/lib/path-utils"
+import { corpusStatSkillContent } from "@/lib/novel/de-ai-skills/corpus-stat-content"
 import { DEFAULT_SKILL_PRIORITY, type UserSkill } from "@/lib/novel/skill-library"
 
 export type DeAiSkillSource = "built-in" | "project" | "legacy"
@@ -25,8 +26,8 @@ export interface DeAiSkillConfig {
 }
 
 export const DEFAULT_DE_AI_SKILL_ID = "built-in:comprehensive"
-export const DE_AI_SKILL_CONFIG_FILE = "de-ai-skills.json"
-export const DE_AI_SKILL_BACKUP_FILE = "de-ai-skills.backup.json"
+const DE_AI_SKILL_CONFIG_FILE = "de-ai-skills.json"
+const DE_AI_SKILL_BACKUP_FILE = "de-ai-skills.backup.json"
 
 const configSaveQueues = new Map<string, Promise<void>>()
 
@@ -449,7 +450,7 @@ const literaryRetainSkillContent = `# de-AI-writing
 
 默认只输出处理后的正文。不要输出赏析或修改说明。`
 
-export class DeAiSkillConfigCorruptError extends Error {
+class DeAiSkillConfigCorruptError extends Error {
   constructor(public readonly configPath: string) {
     super(`技能库配置文件损坏：${configPath}`)
     this.name = "DeAiSkillConfigCorruptError"
@@ -500,6 +501,14 @@ export const BUILT_IN_DE_AI_SKILLS: DeAiSkill[] = [
     description: "去掉空泛文艺腔和修饰堆叠，保留有效意象与画面，不按比喻数量硬砍。",
     templateId: "literary-retain",
     content: literaryRetainSkillContent,
+    source: "built-in",
+  },
+  {
+    id: "built-in:corpus-stat",
+    name: "语料统计去 AI 味",
+    description: "moxt.ai 提供",
+    templateId: "corpus-stat",
+    content: corpusStatSkillContent,
     source: "built-in",
   },
 ]
@@ -613,7 +622,7 @@ export function resolveEffectiveDeAiSkill(
   return available.find((skill) => skill.id === requested) ?? available[0]
 }
 
-export interface SafeDeAiSkillResult {
+interface SafeDeAiSkillResult {
   skill: DeAiSkill | null
   warning: string
 }
@@ -622,6 +631,7 @@ export function deAiSkillToUserSkill(skill: DeAiSkill): UserSkill {
   return {
     id: skill.id,
     name: skill.name,
+    displayName: "",
     description: skill.description,
     kind: ["style"],
     stages: ["rewrite", "output"],

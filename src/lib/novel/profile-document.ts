@@ -1,0 +1,1028 @@
+/**
+ * 「档案文档」通用内核：人物卡 / 势力卡 / 后续更多类型的共同底座。
+ *
+ * 提供：
+ * - 统一的档案模型 `ProfileDocument`（name / tag / tagline / sections）；
+ * - sections 三态 `kv` / `list` / `table`；
+ * - AI ```json 围栏解析（单对象或数组）、MD 正文兜底解析（含 Markdown 表格）；
+ * - 模板运行时（项目覆盖 → 程序 skills 目录 → 内置）；
+ * - HTML 渲染（供各类型专属模板共用，占位符统一为 `__PROFILE_*__`）。
+ *
+ * 各类型模块（人物小传 character-profile-template.ts、组织势力 faction-profile-template.ts）
+ * 只需提供：模板内容、JSON 顶层字段名、头部小标题。
+ */
+
+import { fileExists, getExecutableDir, getResourceDir, readFile } from "@/commands/fs"
+import { normalizePath } from "@/lib/path-utils"
+import { normalizeProfileDiagram, renderProfileDiagram, type ProfileDiagram } from "./profile-diagram"
+import { escapeMarkdownCell, markdownInline, unescapeMarkdownInline } from "./markdown-inline"
+
+export interface ProfileKvItem {
+  label?: string
+  text: string
+}
+
+export type ProfileSection =
+  | { kind: "kv"; heading: string; items: ProfileKvItem[] }
+  | { kind: "list"; heading: string; items: string[] }
+  | { kind: "table"; heading: string; head: string[]; rows: string[][] }
+  /** Markdown 分区内的正文、列表与多张表，按原始顺序保留。 */
+  | { kind: "mixed"; heading: string; blocks: ProfileSection[] }
+
+export interface ProfileDocument {
+  name: string
+  /** 类型 / 定位徽章（男主 / 门派 / 家族 …） */
+  tag?: string
+  /** 一句话定位 */
+  tagline?: string
+  sections: ProfileSection[]
+  /** 地理/地点的结构化关系示意，缺失时不伪造地图。 */
+  diagram?: ProfileDiagram
+}
+
+/** JSON 顶层字段：单个对象字段 + 可选数组字段。 */
+export interface ProfileDocumentKeys {
+  single: string
+  list?: string
+}
+
+// ---------------------------------------------------------------------------
+// 归一化
+// ---------------------------------------------------------------------------
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function asStringArray(value: unknown): string[] {
+  return (Array.isArray(value) ? value : []).map((item) => asString(item)).filter(Boolean)
+}
+
+/** 零宽 / 控制类不可见字符：`trim()` 不会去掉，会导致「空白徽章」「看不见的标签」。 */
+const INVISIBLE_CHARS = /[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g
+
+/** 是否含可见字符（决定是否渲染徽章 / 标签 / 芯片）。 */
+export function hasVisibleText(value: string | undefined | null): boolean {
+  if (!value) return false
+  return /[^\s\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/.test(value)
+}
+
+/**
+ * 清洗行内文本：去掉不可见字符 + markdown 行内标记。
+ * ⚠️ AI 在 ```json 里也经常写 `**加粗**`，Json 路径必须与 MD 路径做同样的清洗，
+ * 否则 `**` 会原样显示在卡片上。
+ */
+function sanitizeInline(value: string): string {
+  return cleanInline(value.replace(INVISIBLE_CHARS, "")).trim()
+}
+
+function normalizeKvItem(raw: unknown): ProfileKvItem | null {
+  if (typeof raw === "string") {
+    const text = sanitizeInline(raw)
+    return text ? { text } : null
+  }
+  if (!isRecord(raw)) return null
+  const label = sanitizeInline(asString(raw.label ?? raw.k ?? raw.name ?? raw.field))
+  const text = sanitizeInline(asString(raw.text ?? raw.value ?? raw.v ?? raw.content))
+  if (!label && !text) return null
+  return { ...(label ? { label } : {}), text }
+}
+
+/** 归一化一个分区：支持 kv / list / table，并容错 AI 的多种写法。 */
+export function normalizeProfileSection(raw: unknown): ProfileSection | null {
+  if (!isRecord(raw)) return null
+  const heading = sanitizeInline(asString(raw.heading ?? raw.title ?? raw.name)) || "分区"
+
+  const rowsRaw = Array.isArray(raw.rows) ? raw.rows : Array.isArray(raw.table) ? raw.table : null
+  const tableObj = isRecord(raw.table) ? raw.table : null
+  const tableRowsSource = tableObj && Array.isArray(tableObj.rows) ? tableObj.rows : rowsRaw
+  if (Array.isArray(tableRowsSource)) {
+    const rows = tableRowsSource
+      .map((row) => (Array.isArray(row) ? row.map((cell) => sanitizeInline(asString(cell))) : []))
+      .filter((row) => row.length > 0)
+    const head = asStringArray(raw.head ?? (tableObj ? tableObj.head : undefined)).map(sanitizeInline)
+    if (rows.length > 0) return { kind: "table", heading, head, rows }
+  }
+
+  const items = Array.isArray(raw.items) ? raw.items : []
+  if (items.length === 0) return null
+  if (items.every((item) => typeof item === "string")) {
+    return { kind: "list", heading, items: items.map((item) => sanitizeInline(asString(item))).filter(Boolean) }
+  }
+  const kv = items.map(normalizeKvItem).filter((item): item is ProfileKvItem => Boolean(item))
+  if (kv.length === 0) return null
+  const anyLabel = kv.some((item) => (item.label ?? "").trim())
+  return anyLabel
+    ? { kind: "kv", heading, items: kv }
+    : { kind: "list", heading, items: kv.map((item) => item.text) }
+}
+
+/** 归一化一个档案对象（容错 AI 的多种字段名）。 */
+export function normalizeProfileDocument(raw: unknown, fallbackName = "未命名"): ProfileDocument | null {
+  if (!isRecord(raw)) return null
+  const payload = isRecord(raw.profile) ? raw.profile : raw
+  const name = sanitizeInline(asString(payload.name ?? payload.title ?? payload.characterName ?? payload.factionName))
+  const tag = sanitizeInline(asString(payload.tag ?? payload.roleType ?? payload.role ?? payload.type ?? payload.position))
+  const tagline = sanitizeInline(asString(payload.tagline ?? payload.subtitle ?? payload.summary ?? payload.oneLine))
+  const sections = (Array.isArray(payload.sections) ? payload.sections : [])
+    .map(normalizeProfileSection)
+    .filter((section): section is ProfileSection => Boolean(section))
+  const diagram = normalizeProfileDiagram(payload.diagram)
+  if (!name && sections.length === 0) return null
+  return {
+    name: name || fallbackName,
+    ...(hasVisibleText(tag) ? { tag } : {}),
+    ...(tagline ? { tagline } : {}),
+    ...(diagram ? { diagram } : {}),
+    sections,
+  }
+}
+
+function tryParseJson(text: string): unknown | null {
+  const start = text.indexOf("{")
+  if (start < 0) return null
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = start; index < text.length; index += 1) {
+    const ch = text[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === "\\") escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === "{") depth += 1
+    else if (ch === "}") {
+      depth -= 1
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(start, index + 1)) as unknown
+        } catch {
+          return null
+        }
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * 从 AI 原文中解析档案结构化数据。
+ * 支持单个对象（keys.single）或数组（keys.list）。
+ */
+export function extractProfileDocuments(
+  text: string,
+  keys: ProfileDocumentKeys,
+  fallbackName = "未命名",
+): ProfileDocument[] {
+  if (!text) return []
+  const marker = keys.single
+  const candidates: string[] = []
+  const fencePattern = /```(?:json)?[ \t]*\r?\n([\s\S]*?)```/gi
+  for (const match of text.matchAll(fencePattern)) {
+    const block = match[1].trim()
+    if (block.includes(marker) || block.startsWith("{")) candidates.push(block)
+  }
+  const trimmed = text.trim()
+  if (trimmed.startsWith("{")) candidates.push(trimmed)
+
+  for (const candidate of candidates) {
+    const parsed = tryParseJson(candidate)
+    if (!parsed || !isRecord(parsed)) continue
+    const listRaw = keys.list && Array.isArray(parsed[keys.list])
+      ? (parsed[keys.list] as unknown[])
+      : parsed[marker] !== undefined
+        ? [parsed[marker]]
+        : null
+    if (!listRaw) continue
+    const docs = listRaw
+      .map((item) => normalizeProfileDocument(item, fallbackName))
+      .filter((doc): doc is ProfileDocument => Boolean(doc))
+    if (docs.length > 0) return docs
+  }
+  return []
+}
+
+// ---------------------------------------------------------------------------
+// 多对象场景：挑出「本文件」对应的那一份档案
+// ---------------------------------------------------------------------------
+
+/** 挑选档案时可参考的线索（文件名 / 目标文件夹 / 本文件的 MD 正文）。 */
+export interface ProfilePickHints {
+  fileName?: string
+  targetFolder?: string
+  content?: string
+}
+
+/** 文件名前缀（势力-青云门.md → 青云门；角色-男主-林辰.md → 男主-林辰）。 */
+const FILE_NAME_PREFIX =
+  /^(?:势力|组织|门派|家族|阵营|角色|人物|队伍|团队|机构|集团|力量体系|能力体系|修炼体系|体系|功法|神通|金手指|系统|背景设定|世界观|地理设定|地点设定|地点|地图|道具|物品|伏笔|设定)\s*[-—–_:：\s]\s*/
+
+function normalizeName(value: string): string {
+  return value
+    .replace(/[\s（）()【】\[\]「」“”"'`·・。.,，、:：\-—–_]/g, "")
+    .toLowerCase()
+}
+
+/** 名字互相包含即视为匹配（「男主-林辰」与「林辰」应匹配）。 */
+function nameMatches(candidate: string, target: string): boolean {
+  const a = normalizeName(candidate)
+  const b = normalizeName(target)
+  if (!a || !b) return false
+  return a === b || a.includes(b) || b.includes(a)
+}
+
+/** 取正文最浅层标题作为档案名（去掉「势力：」前缀与括号徽章）。 */
+function firstHeadingName(content: string): string {
+  const { body } = stripFrontmatter(content ?? "")
+  if (!body) return ""
+  const headings = collectHeadings(body.split(/\r?\n/))
+  if (headings.length === 0) return ""
+  const rootLevel = Math.min(...headings.map((heading) => heading.level))
+  const root = headings.find((heading) => heading.level === rootLevel)
+  if (!root) return ""
+  return splitNameAndTag(stripNumbering(root.text.replace(NAME_PREFIX, ""))).name
+}
+
+/** 从线索里提取候选名字（文件名 → 去前缀文件名 → 正文首标题）。 */
+function candidateNames(hints: ProfilePickHints): string[] {
+  const names: string[] = []
+  const raw = (hints.fileName ?? "").replace(/\.(?:md|html)$/i, "").trim()
+  if (raw) {
+    names.push(raw)
+    const stripped = raw.replace(FILE_NAME_PREFIX, "").trim()
+    if (stripped && stripped !== raw) names.push(stripped)
+  }
+  const heading = firstHeadingName(hints.content ?? "")
+  if (heading) names.push(heading)
+  return names.filter(Boolean)
+}
+
+/**
+ * per_item 场景（一次生成多个势力 / 地点 / 背景 …，拆成多个文件保存）挑选本文件对应的那份档案。
+ *
+ * - 0 份：返回 null（调用方回退 MD 解析）；
+ * - 1 份：直接用（AI 通常只给一份且对应本文件）；
+ * - 多份：按「文件名 → 去前缀文件名 → 正文首标题」与 docs[].name 匹配；
+ *   匹配不到返回 null（回退 MD），**绝不张冠李戴**。
+ *
+ * 这一步很关键：多份时若直接回退 MD，AI 精心设计的结构化表格会被压成零散条目，
+ * 卡片信息量大幅下降（势力卡的 组织架构/人员构成/经济来源 等表格尤其明显）。
+ */
+export function pickProfileDocument<T extends ProfileDocument>(
+  docs: T[],
+  hints: ProfilePickHints,
+): T | null {
+  if (docs.length === 0) return null
+  if (docs.length === 1) return docs[0]
+  const names = candidateNames(hints)
+  /*
+   * 先做**逐字相等**匹配，再用「互相包含」兜底。
+   *
+   * 只做包含匹配会张冠李戴：同一批里同时有「青云会」和「青云会分舵」时，
+   * 给「青云会分舵.md」挑档案，`find` 会先撞上名字较短的「青云会」
+   * （「青云会分舵」包含「青云会」），于是把总会的档案存进分舵文件。
+   * 精确相等这一步把这种前缀重合的情况拨回来，包含匹配只在
+   * 「男主-林辰」↔「林辰」这类前缀/后缀差异时生效。
+   */
+  for (const name of names) {
+    const exact = docs.find((doc) => normalizeName(doc.name) === normalizeName(name))
+    if (exact) return exact
+  }
+  for (const name of names) {
+    const hit = docs.find((doc) => nameMatches(doc.name, name))
+    if (hit) return hit
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// Markdown → 档案（兜底路径）
+// ---------------------------------------------------------------------------
+
+function stripFrontmatter(md: string): { frontmatter: string; body: string } {
+  const match = md.match(/^\uFEFF?---\s*\n([\s\S]*?)\n---\s*\n?/)
+  if (!match) return { frontmatter: "", body: md.trim() }
+  return { frontmatter: match[1], body: md.slice(match[0].length).trim() }
+}
+
+function cleanInline(value: string, stripMarker = true, unescape = true): string {
+  const paired = value
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+  // 不成对残留兜底：AI 常写 `**标签：** 正文`（冒号在加粗对内部），按「：」拆成
+  // label/text 后各自只剩半个 `**`，上面的成对正则处理不了，会原样显示在卡片上。
+  // 中文正文里孤立的星号/下划线串几乎不可能是正常内容，直接清除。
+  const stripped = paired
+    .replace(/\*{2,}/g, "")
+    .replace(/_{2,}/g, "")
+    .replace(/^\s*\*\s*/, "")
+    .replace(/\s*\*\s*$/, "")
+    .replace(/^\s*_\s*/, "")
+    .replace(/\s*_\s*$/, "")
+  /*
+   * `stripMarker = false` 用在「已经是字段值」的位置（kv 的 text、表格单元格）：
+   * 那里出现 `- xxx` 是内容本身，不是列表语法，再剥一次就等于改数据。
+   */
+  const noMarker = stripMarker
+    ? stripped
+        .replace(/^#+\s*/, "")
+        .replace(/^[-*+]\s+/, "") // 行首列表符（MD 兜底取首行做 tagline 时会带上）
+    : stripped
+  /*
+   * 反转义必须放最后：反推器把「值本身以 `- ` 开头」写成 `\- `，首字符是反斜线，
+   * 上面所有行首规则都不会命中；到这里才还原成原文。顺序反了就会被
+   * `^[-*+]` 先吃掉，`{ text: "- 甲" }` 反推再解析回来变成 `甲`。
+   *
+   * `unescape = false` 用在「已经还原过的整行再拆出来的片段」上：
+   * 整行 `C:\\path\\|x` 还原一次得到 `C:\path\|x`，拆出 text 如果再还原一次，
+   * 字面的 `\|` 会被当成转义竖线，路径就少一个反斜线。
+   */
+  return (unescape ? unescapeMarkdownInline(noMarker) : noMarker).trim()
+}
+
+interface HeadingLine {
+  level: number
+  text: string
+  index: number
+}
+
+function collectHeadings(lines: string[]): HeadingLine[] {
+  const headings: HeadingLine[] = []
+  lines.forEach((line, index) => {
+    const match = line.match(/^(#{1,6})\s+(.*\S)\s*$/)
+    if (match) headings.push({ level: match[1].length, text: cleanInline(match[2]), index })
+  })
+  return headings
+}
+
+function stripNumbering(heading: string): string {
+  return heading.replace(/^\s*(?:\d+[.、)]|[一二三四五六七八九十]+[、.)])\s*/, "").trim() || heading
+}
+
+function isTableRow(line: string): boolean {
+  return /^\|.*\|$/.test(line)
+}
+
+function splitCells(line: string): string[] {
+  const body = line.replace(/^\|/, "").replace(/\|$/, "")
+  /*
+   * 不能简单 `split(/(?<!\\)\|/)`：`\\|` 是「字面反斜线 + 列分隔」，`\|` 才是「字面竖线」，
+   * 只看前一个字符会把前者也当成转义，整行少一列。这里成对吃掉反斜线再判断，
+   * 转义还原交给 cleanInline 末尾的 unescape。
+   */
+  const cells: string[] = []
+  let current = ""
+  for (let index = 0; index < body.length; index++) {
+    const char = body[index]
+    if (char === "\\" && index + 1 < body.length) {
+      current += char + body[index + 1]
+      index++
+      continue
+    }
+    if (char === "|") {
+      cells.push(current)
+      current = ""
+      continue
+    }
+    current += char
+  }
+  cells.push(current)
+  return cells.map((cell) => cleanInline(cell).trim())
+}
+
+function isTableSeparator(cells: string[]): boolean {
+  return cells.length > 0 && cells.every((cell) => /^:?-{2,}:?$/.test(cell))
+}
+
+function parseKvOrList(block: string): ProfileSection | null {
+  const items: ProfileKvItem[] = []
+  let buffer: string[] = []
+  const flush = () => {
+    const text = cleanInline(buffer.join(" ")).trim()
+    buffer = []
+    if (!text) return
+    const field = text.match(/^([^：:]{1,32})[：:]\s*(.+)$/)
+    /*
+     * 字段值不再剥行首记号：`- 字段：- 甲` 里的 `- 甲` 是数据，不是列表语法。
+     * 整行层面已经剥过一次（`flush` 第一行的 `- `），这里再剥就丢内容。
+     * 也不再反转义：`text` 是整行清理的结果，反斜线已经还原过了。
+     */
+    items.push(field
+      ? { label: cleanInline(field[1], false, false), text: cleanInline(field[2], false, false) }
+      : { text })
+  }
+  for (const line of block.split(/\r?\n/)) {
+    const text = line.trim()
+    if (!text) { flush(); continue }
+    const item = text.match(/^(?:[-*+]|\d+[.)])\s+(.*)$/)
+    if (item) {
+      flush()
+      buffer.push(item[1])
+    } else if (/^[^：:]{1,32}[：:]\s*.+$/.test(text)) {
+      flush()
+      buffer.push(text)
+    } else {
+      buffer.push(text)
+    }
+  }
+  flush()
+  if (!items.length) return null
+  return items.some(item => item.label)
+    ? { kind: "kv", heading: "", items }
+    : { kind: "list", heading: "", items: items.map(item => item.text) }
+}
+
+/** 保留分区内所有正文和表格，不能识别到一张表就丢掉其余文字。 */
+function parseSection(heading: string, block: string): ProfileSection | null {
+  const lines = block.split(/\r?\n/)
+  const blocks: ProfileSection[] = []
+  let prose: string[] = []
+  const flush = () => {
+    const parsed = parseKvOrList(prose.join("\n"))
+    if (parsed) blocks.push(parsed)
+    prose = []
+  }
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index].trim()
+    const next = lines[index + 1]?.trim() ?? ""
+    if (isTableRow(line) && isTableRow(next) && isTableSeparator(splitCells(next))) {
+      flush()
+      const head = splitCells(line)
+      const rows: string[][] = []
+      index += 2
+      while (index < lines.length && isTableRow(lines[index].trim())) {
+        rows.push(splitCells(lines[index].trim()))
+        index++
+      }
+      index--
+      blocks.push({ kind: "table", heading: "", head, rows })
+    } else {
+      prose.push(lines[index])
+    }
+  }
+  flush()
+  if (!blocks.length) return null
+  return blocks.length === 1 ? { ...blocks[0], heading } : { kind: "mixed", heading, blocks }
+}
+
+/** 常见「设定名：」前缀（势力：青云门 / 力量体系：九转玄功 / 角色：林辰 …）。 */
+const NAME_PREFIX =
+  /^(?:势力|组织|门派|家族|阵营|角色|人物|队伍|团队|机构|集团|力量体系|能力体系|修炼体系|体系|功法|神通|金手指|系统|背景设定|世界观|地理设定|地点设定|地点|地图|道具|物品|设定)\s*[：:]\s*/
+/** 常见分区名（用于判断最浅标题是「档案名」还是「分区名」）。 */
+const DEFAULT_KNOWN_HEADS =
+  /^(?:基本信息|角色定位|外在表现|内在分析|语言风格|关系网络|出场记录|状态追踪|写作使用规则|别名|性格特征|背景故事|人物动机|人物弧线|关键关系|标志性特征|经典语录|内部结构|外部关系|剧情功能|写作约束|核心定义|运行规则|规则体系|等级体系|能力|势力目标|资源|代表人物)/
+/** 「类型 / 定位」类字段，用于在无徽章时从基本信息里补 tag。 */
+const TAG_FIELD = /^(?:类型|角色类型|角色定位|定位|类别|分类|势力类型|组织类型|门派类型)$/
+
+/** 从「青云门（正道魁首）」这类标题里拆出名字与徽章。 */
+function splitNameAndTag(raw: string): { name: string; tag: string } {
+  const paren = raw.match(/[（(]\s*([^）)]+)\s*[)）]/)
+  const tag = paren?.[1]?.trim() ?? ""
+  const name = raw.replace(/[（(][^）)]*[)）]/g, "").trim()
+  return { name, tag }
+}
+
+/** 从 MD 正文解析档案（兜底：AI 只出 MD 时）。 */
+export function profileDocumentFromMarkdown(md: string, fallbackName = "未命名"): ProfileDocument | null {
+  const { frontmatter, body } = stripFrontmatter(md)
+  if (!body) return null
+  const fmName = cleanInline(frontmatter.match(/^\s*name\s*:\s*(.+)$/m)?.[1]?.trim() ?? "")
+  const fmTag = cleanInline(
+    frontmatter.match(/^\s*(?:role_type|tag|type)\s*:\s*(.+)$/m)?.[1]?.trim() ?? "",
+  )
+
+  const lines = body.split(/\r?\n/)
+  const headings = collectHeadings(lines)
+
+  let name = fmName
+  let tag = fmTag
+  let sectionLevelMin = 2
+  let leadingStart = 0
+
+  const h1 = headings.find((heading) => heading.level === 1)
+  if (h1) {
+    /*
+     * 一级标题同样要拆「名字（类型）」。
+     *
+     * 从 4.3.6 起正文由 `renderProfileDocumentMarkdown` 反推，标题固定写成
+     * `# 楚白（主角）`；这里不拆的话，存盘后重新渲染会把括号留在名字里、
+     * 而且徽章丢失（卡片头变成「楚白（主角）」且没有类型标签）。
+     * 与下面二级标题那条分支保持同一套规则。
+     */
+    if (!name) {
+      const split = splitNameAndTag(cleanInline(h1.text).replace(NAME_PREFIX, ""))
+      name = stripNumbering(split.name)
+      if (!tag && split.tag) tag = split.tag
+    }
+    sectionLevelMin = 2
+    leadingStart = h1.index + 1
+  } else if (headings.length > 0) {
+    const rootLevel = Math.min(...headings.map((heading) => heading.level))
+    const root = headings.find((heading) => heading.level === rootLevel)
+    if (root && rootLevel >= 2 && !DEFAULT_KNOWN_HEADS.test(root.text)) {
+      const split = splitNameAndTag(root.text.replace(NAME_PREFIX, ""))
+      if (!name) name = stripNumbering(split.name)
+      if (split.tag) tag = split.tag
+      sectionLevelMin = rootLevel + 1
+      leadingStart = root.index + 1
+    } else {
+      sectionLevelMin = rootLevel
+      leadingStart = 0
+    }
+  }
+
+  const firstSection = headings.find((heading) => heading.level >= sectionLevelMin)
+  const leadingEnd = firstSection ? firstSection.index : lines.length
+  const leading = lines.slice(leadingStart, leadingEnd).join("\n").trim()
+  const tagline = leading ? cleanInline(leading.split(/\r?\n/)[0]).slice(0, 120) : ""
+
+  const sectionHeadings = headings.filter((heading) => heading.level >= sectionLevelMin)
+  const sections: ProfileSection[] = []
+  // 页首只展示短摘要，完整导语另存为正文分区，不能因 120 字摘要上限丢失。
+  if (firstSection && leading && cleanInline(leading) !== tagline) {
+    const introduction = parseSection("设定导语", leading)
+    if (introduction) sections.push(introduction)
+  }
+  sectionHeadings.forEach((heading, i) => {
+    const end = i + 1 < sectionHeadings.length ? sectionHeadings[i + 1].index : lines.length
+    const section = parseSection(stripNumbering(heading.text), lines.slice(heading.index + 1, end).join("\n"))
+    if (section) sections.push(section)
+  })
+
+  if (sections.length === 0) {
+    const fallback = parseKvOrList(body)
+    if (!fallback) return null
+    // MD 兜底出的是「无子标题的整篇内容」：分区标题沿用档案名，
+    // 否则卡片上会出现毫无信息量的「分区 1」。
+    if (!fallback.heading && name) fallback.heading = name
+    sections.push(fallback)
+  }
+
+  // 无括号徽章时，从「基本信息」里的 类型/定位 字段补 tag
+  if (!tag) {
+    const basic = sections.find((section) => section.kind === "kv" && /基本信息|概览/.test(section.heading))
+    if (basic && basic.kind === "kv") {
+      tag = basic.items.find((item) => TAG_FIELD.test((item.label ?? "").trim()))?.text ?? ""
+    }
+  }
+
+  return {
+    name: name || fallbackName,
+    ...(tag ? { tag } : {}),
+    ...(tagline ? { tagline } : {}),
+    sections,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 结构化数据 → Markdown（省掉模型重复写一遍正文）
+// ---------------------------------------------------------------------------
+
+/** 表格单元格里的竖线、反斜线与换行必须转义，否则反推出来的 MD 会被解析成错列。 */
+function markdownCell(value: string): string {
+  return escapeMarkdownCell(value)
+}
+
+function sectionMarkdownBody(section: ProfileSection): string[] {
+  switch (section.kind) {
+    case "kv":
+      /*
+       * 空值不导出：`- 债务：` 这种只有标签的行在 .md 里没有任何信息量。
+       * 标签与值都过 `markdownInline`：值里的换行会让下一行以裸 `- ` 开头，
+       * 解析回来就变成**另一个条目**（字段被撕成两条），必须拍平并转义。
+       */
+      return section.items
+        .filter((item) => item.text.trim())
+        .map((item) => {
+          const text = markdownInline(item.text)
+          return item.label?.trim()
+            ? `- ${markdownInline(item.label)}：${text}`
+            : `- ${text}`
+        })
+    case "list":
+      return section.items.filter((item) => item.trim()).map((item) => `- ${markdownInline(item)}`)
+    case "table": {
+      /*
+       * 表格行按「首列之外是否还有内容」筛：只剩行标签、右侧全空的表导出来
+       * 就是几行「| 对象 |  |  |」，看着像数据、读起来什么也没有。
+       * 整表都这样时连表头一起不导出（返回空数组，调用方会跳过整个分区）。
+       */
+      const hasBody = (row: string[]) =>
+        (section.head.length > 1 ? row.slice(1) : row).some((value) => String(value ?? "").trim())
+      const rows = section.rows.filter(hasBody)
+      if (rows.length === 0) return []
+      /*
+       * 🔴 列数按「表头与所有行里最宽的那个」定，不能用表头长度去取值。
+       *
+       * 模型完全可能给出「表头 2 列、某行 3 列」，也可能只给 rows 不给 head
+       * （`{heading, rows:[["会长","1"]]}`，`normalizeProfileSection` 是允许的）。
+       * 旧写法用 `section.head.map(...)` 取单元格：
+       *   · 行比表头宽 → 多出来的那几列**静默丢失**；
+       *   · 表头为空   → 整张表被压成 `|  |`，一行内容都不剩（数据等于被删掉）。
+       * 两种都是「一个字段不能丢」的直接违反，而且表面上 .md 还在，没人会发现。
+       * 缺表头时用「第 N 项」占位，至少内容能读、能再解析回来。
+       */
+      const cellAt = (row: string[], index: number) => markdownCell(row[index] ?? "")
+      const columnCount = Math.max(section.head.length, ...rows.map((row) => row.length))
+      if (columnCount <= 0) return []
+      const headCells = Array.from({ length: columnCount }, (_, index) =>
+        markdownCell(section.head[index] ?? `第 ${index + 1} 项`))
+      return [
+        `| ${headCells.join(" | ")} |`,
+        `| ${headCells.map(() => "---").join(" | ")} |`,
+        ...rows.map((row) =>
+          `| ${Array.from({ length: columnCount }, (_, index) => cellAt(row, index)).join(" | ")} |`),
+      ]
+    }
+    case "mixed": {
+      /*
+       * 一个分区里可能有多块（MD 兜底路径：正文 + 表 + 另一张表）。
+       * 块之间必须空一行：两张表紧贴会被 Markdown 合并成一张（第二张的表头
+       * 变成第一张的数据行），列表后紧跟表格则整张表退化成一行竖线。
+       * 数据路径不会产出 mixed（只来自 MD 解析），但反推函数是公开 API，
+       * 从 `profileDocumentFromMarkdown` 拿到的文档也可能被拿去反推。
+       */
+      const blocks = section.blocks.map(sectionMarkdownBody).filter((block) => block.length > 0)
+      return blocks.flatMap((block, index) => (index === 0 ? block : ["", ...block]))
+    }
+  }
+}
+
+/**
+ * 档案数据 → Markdown 正文。
+ *
+ * 与 `profileDocumentFromMarkdown` 互逆：反推出来的 MD 再解析回来应得到同一份分区，
+ * 所以标题层级固定为 `# 名字（类型）` + `## 分区`，条目固定为 `- 字段：内容` 与 GFM 表格。
+ * 模型不再手写正文时，落盘的 .md 就由这里生成。
+ */
+export function renderProfileDocumentMarkdown(doc: ProfileDocument): string {
+  /*
+   * 名字、徽章、一句话简介、分区标题都来自数据，同样可能带换行。
+   * 标题位置出现换行会把后半截变成正文段落（`# 名` 后面凭空多一行字），
+   * 统一走 `markdownInline` 拍平 —— 除这些位置以外它什么都不改。
+   */
+  const name = markdownInline(doc.name ?? "").trim() || "未命名"
+  const tag = markdownInline(doc.tag ?? "").trim()
+  /*
+   * 名字本身可能已经带括号（模型常写 `name: "楚白（主角）"`），此时再拼一个 (tag)
+   * 会得到「楚白（主角）（主角）」—— 存盘标题一读就像坏了，而且再解析回来
+   * `splitNameAndTag` 只会取第一组括号，徽章虽然还是「主角」，名字却已经变形。
+   * 尾部的括号与 tag 完全相同时不重复拼；不同时保留两者（名字里的括号是模型
+   * 自己给的信息，不能为了排版删掉）。
+   */
+  const trailingParen = name.match(/[（(]\s*([^）)]+?)\s*[)）]\s*$/)
+  const title = !tag || trailingParen?.[1] === tag ? name : `${name}（${tag}）`
+  const lines: string[] = [`# ${title}`]
+  if (doc.tagline?.trim()) lines.push("", markdownInline(doc.tagline))
+  for (const section of doc.sections) {
+    const body = sectionMarkdownBody(section)
+    // 只判空、不逐行 filter：mixed 块之间的分隔空行是语法需要（见上面的 case "mixed"），
+    // 按行去掉会把它一起吃掉，两张表重新粘成一张。
+    if (!body.some((line) => line.trim())) continue
+    lines.push("", `## ${markdownInline(section.heading)}`, "", ...body)
+  }
+  return `${lines.join("\n")}\n`
+}
+
+// ---------------------------------------------------------------------------
+// HTML 渲染（占位符统一为 __PROFILE_*__）
+// ---------------------------------------------------------------------------
+
+export const PROFILE_PLACEHOLDERS = {
+  eyebrow: "__PROFILE_EYEBROW__",
+  name: "__PROFILE_NAME__",
+  tag: "__PROFILE_ROLE__",
+  chips: "__PROFILE_CHIPS__",
+  tagline: "__PROFILE_TAGLINE__",
+  overview: "__PROFILE_OVERVIEW__",
+  sections: "__PROFILE_SECTIONS__",
+  diagram: "__PROFILE_DIAGRAM__",
+  title: "__PROFILE_TITLE__",
+} as const
+
+/**
+ * 必填占位符 = 除图形、标题、分区导航以外的全部槽位。
+ * `overview` 已随左侧栏一起退场（见 buildOverviewHtml 的说明），
+ * 模板不再需要提供它；旧自定义模板留着也不会有占位符漏出（映射到空串）。
+ */
+const REQUIRED_PLACEHOLDERS = Object.values(PROFILE_PLACEHOLDERS).filter(
+  value => value !== PROFILE_PLACEHOLDERS.diagram && value !== PROFILE_PLACEHOLDERS.title && value !== PROFILE_PLACEHOLDERS.overview,
+)
+
+function escapeHtml(value: unknown): string {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
+export function profileEscapeHtml(value: unknown): string {
+  return escapeHtml(value)
+}
+
+function kvRow(label: string, value: string): string {
+  const text = value.trim() || "—"
+  return `<div class="kv"><span class="kk">${escapeHtml(label)}</span><span class="vv">${escapeHtml(text)}</span></div>`
+}
+
+function listBlock(items: string[]): string {
+  return `<ul class="clist">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+}
+
+/**
+ * 短值阈值：值 ≤ 此长度视为「字段」（走双列紧凑行），超过则视为「条目段落」
+ * （走「小标题 + 正文」条目块）。AI 输出的设定卡常把 100+ 字的段落塞进 kv 值里，
+ * 侧栏标签 + 长段落的表单式排版正是「第一点、第二点」流水账观感的根源。
+ */
+const SHORT_VALUE_LIMIT = 44
+
+/** 长段落条目块：小标题 + 正文（对齐卷纲 .who/.lrow 的视觉语言）。 */
+function entryBlock(item: ProfileKvItem): string {
+  const label = (item.label ?? "").trim()
+  const head = label ? `<h4>${escapeHtml(label)}</h4>` : ""
+  return `<div class="entry">${head}<p>${escapeHtml(item.text.trim() || "—")}</p></div>`
+}
+
+/**
+ * kv 条目渲染：按「连续短值 / 连续长值」分组——
+ * 短值组包进 .kgrid 迷你信息卡双列排布（信息密度），
+ * 长值组包进 .entrylist 正文条目，保持顺序与可读行宽。
+ */
+function renderKvItems(items: ProfileKvItem[]): string {
+  const groups: Array<{ long: boolean; items: ProfileKvItem[] }> = []
+  for (const item of items) {
+    const long = !item.label?.trim() || item.text.length > SHORT_VALUE_LIMIT
+    const last = groups[groups.length - 1]
+    if (last && last.long === long) last.items.push(item)
+    else groups.push({ long, items: [item] })
+  }
+  return groups
+    .map((group) =>
+      group.long
+        ? `<div class="entrylist">${group.items.map(entryBlock).join("")}</div>`
+        : `<div class="kgrid">${group.items.map((item) => kvRow(item.label ?? "", item.text)).join("")}</div>`,
+    )
+    .join("")
+}
+
+/**
+ * 表格行里还剩不剩正文：首列之外至少要有一个非空单元格。
+ *
+ * 与 MD 反推（`sectionMarkdownBody` 的 `hasBody`）**同一口径**。两边不一致时，
+ * 同一份数据会生成「.md 里没有这一行、.html 里却有一条只有边框的空行」——
+ * 用户点开 HTML 版只看到一条空白的表格行，像是渲染坏了。
+ */
+function tableRowHasBody(head: string[], row: string[]): boolean {
+  const cells = (head?.length ?? 0) > 1 ? row.slice(1) : row
+  return cells.some((value) => String(value ?? "").trim())
+}
+
+function tableRowsWithBody(section: Extract<ProfileSection, { kind: "table" }>): string[][] {
+  return section.rows.filter((row) => tableRowHasBody(section.head, row))
+}
+
+function tableBlock(head: string[], rows: string[][]): string {
+  // AI 输出的表格常出现「表头 4 列、某一行 5 列（或少了 1 列）」——不归一化会让整张表错位。
+  // 这里按最大列数补齐，缺失的单元格留空。
+  const headCells = Array.isArray(head) ? head : []
+  const colCount = Math.max(headCells.length, ...rows.map((row) => row.length))
+  if (colCount <= 0) return ""
+  const pad = (cells: string[]): string[] =>
+    Array.from({ length: colCount }, (_, index) => cells[index] ?? "")
+
+  const headHtml = headCells.length
+    ? `<thead><tr>${pad(headCells)
+        .map((cell) => `<th class="mxh" scope="col">${escapeHtml(cell)}</th>`)
+        .join("")}</tr></thead>`
+    : ""
+  const bodyHtml = rows
+    .map(
+      (row) =>
+        `<tr>${pad(row)
+          .map((cell, index) => `<td${index === 0 ? ' class="mxh"' : ""} data-label="${escapeHtml(headCells[index] || `第${index + 1}项`)}">${renderCell(cell)}</td>`)
+          .join("")}</tr>`,
+    )
+    .join("")
+  return `<div class="mxwrap"><table class="mx">${headHtml}<tbody>${bodyHtml}</tbody></table></div>`
+}
+
+/** 第二版按信息语义组织视觉，所有单元格原文仍在卡片和可展开源表中保留。 */
+function semanticTable(section: Extract<ProfileSection, { kind: "table" }>): string | null {
+  const heading = section.heading
+  const style = /等级|阶梯|升级树/.test(heading) ? "ranks"
+    : /历史|沿革|出场记录|成长节奏|使用史/.test(heading) ? "timeline"
+    : /伏笔状态|线索链|埋设与回收|表层误导|回收日志/.test(heading) ? "threads"
+    : /区域划分|重要地点|交通与通行|空间规则|可触发事件/.test(heading) ? "regions"
+    : /经济来源|资源与消耗|资源与限制/.test(heading) ? "resources"
+    : /关系网络|外部关系|组织架构|人员构成|派系/.test(heading) ? "roster" : null
+  if (!style || !section.rows.length) return null
+  // 与 MD 反推同口径剔掉「只剩行标签」的空行：卡片与下方源表都不该出现空条目。
+  const rows = tableRowsWithBody(section)
+  if (!rows.length) return null
+  const cards = rows.map((row, index) => {
+    const fields = row.slice(1).map((cell, i) => `<div class="semantic-field"><dt>${escapeHtml(section.head?.[i + 1] || `第${i + 2}项`)}</dt><dd>${renderCell(cell)}</dd></div>`).join("")
+    return `<article class="semantic-card"><header><span class="semantic-number">${String(index + 1).padStart(2, "0")}</span><h4>${escapeHtml(row[0] || "未命名条目")}</h4></header><dl>${fields}</dl></article>`
+  }).join("")
+  return `<div class="profile-${style} semantic-grid">${cards}</div><details class="profile-source-table"><summary>查看完整对照表（${rows.length} 条）</summary>${tableBlock(section.head, rows)}</details>`
+}
+
+function sectionBody(section: ProfileSection, editorial = false): string {
+  if (section.kind === "mixed") return section.blocks.map(block => sectionBody({ ...block, heading: section.heading }, editorial)).join("\n")
+  if (editorial && section.kind === "table") {
+    const visual = semanticTable(section)
+    if (visual) return visual
+  }
+  if (section.kind === "table") {
+    const rows = tableRowsWithBody(section)
+    return rows.length ? tableBlock(section.head, rows) : `<p class="hint">未填</p>`
+  }
+  /*
+   * kv / list 都要先剔空值项：MD 反推（`sectionMarkdownBody`）本来就不导出
+   * `- 债务：`（只有标签）与空列表项，HTML 照旧渲染会在同一份档案里多出一条
+   * 「债务 —」—— 用户点开 .html 看到一条空值，会以为数据缺了。
+   */
+  if (section.kind === "list") {
+    const items = section.items.filter((item) => item.trim())
+    return items.length ? listBlock(items) : `<p class="hint">未填</p>`
+  }
+  const items = section.items.filter((item) => item.text.trim())
+  return items.length ? renderKvItems(items) : `<p class="hint">未填</p>`
+}
+
+/** 分区规模标注（导航与卡片标题共用）。 */
+function sectionCount(section: ProfileSection): string {
+  if (section.kind === "mixed") return `${section.blocks.length} 组内容`
+  // 表格计数与正文同口径：不把被剔掉的空行算成「有内容」，否则标题写着「3 行」
+  // 而表里只有 1 行（用户会以为丢了两行）。kv / list 同理，空值项不计数。
+  if (section.kind === "table") return `${tableRowsWithBody(section).length} 行`
+  if (section.kind === "list") return `${section.items.filter((item) => item.trim()).length} 条`
+  return `${section.items.filter((item) => item.text.trim()).length} 条`
+}
+
+/**
+ * 按分区标题语义附加样式类，让专属模板能针对不同领域出彩
+ * （例：力量体系的「等级阶梯」「代价矩阵」），而无需改动数据模型。
+ */
+export function profileSectionExtraClass(heading: string): string {
+  const text = heading.trim()
+  const classes: string[] = []
+  if (/等级|阶|境界|段位|层级|梯/.test(text)) classes.push("ladder")
+  if (/代价|消耗|限制|反制|约束|禁忌|风险|过期|隐患/.test(text)) classes.push("matrix")
+  if (/关系|出场|外部|派系|成员|人物|人员|编制|架构|部门|职位|流派/.test(text)) classes.push("roster")
+  if (/伏笔|线索|埋设|悬念/.test(text)) classes.push("threads")
+  if (/回收|兑现/.test(text)) classes.push("payoff")
+  if (/解锁|技能|面板|系统/.test(text)) classes.push("unlock")
+  if (/区域|地理|地图|地域|分布|环境/.test(text)) classes.push("map")
+  if (/地点|场景|密室|据点|坐标|场所|遗迹|秘境|空间|事件|资源|入口|出口/.test(text)) classes.push("place")
+  if (/世界观|背景|时代|文化|历史|沿革|习俗|文明|信仰|传说|神话|社会|制度|规则|法则/.test(text)) classes.push("lore")
+  return classes.length > 0 ? ` ${classes.join(" ")}` : ""
+}
+
+/** 常见状态/等级枚举 → 徽章配色（内联样式，模板无需额外 CSS）。 */
+const STATUS_BADGES: Array<{ pattern: RegExp; tone: "ok" | "warn" | "danger" }> = [
+  { pattern: /^(已回收|已兑现|已完成|已埋|已收|已解决|已埋伏)$/, tone: "ok" },
+  { pattern: /^(推进中|进行中|待回收|未回收|未兑现|部分回收|部分兑现|埋设中)$/, tone: "warn" },
+  { pattern: /^(已过期|未埋|未完成|已放弃|超期|断线)$/, tone: "danger" },
+  { pattern: /^高$/, tone: "danger" },
+  { pattern: /^中$/, tone: "warn" },
+  { pattern: /^低$/, tone: "ok" },
+]
+
+const BADGE_TONES = {
+  ok: { bg: "var(--ok-soft)", fg: "var(--ok)", bd: "var(--ok-border)" },
+  warn: { bg: "var(--warn-soft)", fg: "var(--warn)", bd: "var(--he)" },
+  danger: { bg: "var(--danger-soft)", fg: "var(--danger)", bd: "var(--danger-border)" },
+} as const
+
+/** 单元格渲染：命中状态枚举时套一个带内联样式的徽章，否则普通转义。 */
+function renderCell(cell: string): string {
+  const text = cell.trim()
+  const badge = STATUS_BADGES.find((item) => item.pattern.test(text))
+  if (!badge) return escapeHtml(cell)
+  const tone = BADGE_TONES[badge.tone]
+  return `<span style="display:inline-block;font-size:11px;line-height:1.5;border-radius:999px;padding:1px 9px;background:${tone.bg};color:${tone.fg};border:1px solid ${tone.bd}">${escapeHtml(text)}</span>`
+}
+
+function buildSectionsHtml(doc: ProfileDocument, editorial = false): string {
+  if (doc.sections.length === 0) return `<p class="empty">未包含档案数据（sections 为空），请重新生成。</p>`
+  return doc.sections.map((section, index) => {
+    const wide = section.kind === "table" || section.kind === "mixed" ? " wide" : ""
+    const extra = profileSectionExtraClass(section.heading)
+    const anchor = `psec-${index + 1}`
+    return `<section class="pcard${wide}${extra}" id="${anchor}"><details open><summary><h3><span class="no">${index + 1}</span>${escapeHtml(section.heading || `分区 ${index + 1}`)}<span class="pn">${sectionCount(section)}</span></h3></summary><div class="section-body">${sectionBody(section, editorial)}</div></details></section>`
+  }).join("")
+}
+
+function buildChipsHtml(doc: ProfileDocument): string {
+  const chips: string[] = []
+  if (hasVisibleText(doc.tag)) chips.push(`<span class="chip"><b>${escapeHtml(doc.tag ?? "")}</b></span>`)
+  chips.push(`<span class="chip"><b>${doc.sections.length}</b> 个分区 · 正文写作参考</span>`)
+  return chips.join("")
+}
+
+/**
+ * 用户明确要求删掉档案文档左侧的「分区导航」：
+ * 十个分区的卡片本来就是一条从上到下、折叠展开的长条，左侧那栏既占 200px
+ * 版面，又要额外维护一套 sticky 定位与窄屏折行规则，实际用不上。
+ *
+ * 因此 `overview` 槽位**保留但不再产出内容**：
+ *   · 8 个模板里的 `<aside class="profile-rail">…</aside>` 已整块删除，
+ *     版面改成单栏，不再有左栏；
+ *   · 仍然映射占位符 → 空串，这样**用户自定义模板**（`.qmai/人物小传模板.html` 等）
+ *     里若还留着 `__PROFILE_OVERVIEW__`，也不会把占位符原文漏到页面上；
+ *   · `overview` 同时从 REQUIRED_PLACEHOLDERS 移除 —— 模板不必再提供这个槽位。
+ *
+ * 为什么不在这里塞一段 `<style>` 去隐藏左栏：那属于「藏起来」而不是「删掉」，
+ * 与本次要求相反；模板已经真的没有这个元素了。
+ */
+function buildOverviewHtml(): string {
+  return ""
+}
+
+/** 用模板渲染档案 HTML（纯静态，0 脚本）。 */
+export function renderProfileDocumentHtml(
+  doc: ProfileDocument,
+  template: string,
+  eyebrow: string,
+): string {
+  const editorial = template.includes('data-qmai-layout="editorial-v2"')
+  // 徽章只在有可见文字时渲染：避免 tag 里是零宽字符 / 只有 `**` 时出现「空白胶囊」
+  const tagHtml = hasVisibleText(doc.tag) ? `<span class="role">${escapeHtml(doc.tag ?? "")}</span>` : ""
+  const placeholders: Record<string, string> = {
+    [PROFILE_PLACEHOLDERS.eyebrow]: escapeHtml(eyebrow),
+    [PROFILE_PLACEHOLDERS.name]: escapeHtml(doc.name || "未命名"),
+    [PROFILE_PLACEHOLDERS.tag]: tagHtml,
+    [PROFILE_PLACEHOLDERS.chips]: buildChipsHtml(doc),
+    [PROFILE_PLACEHOLDERS.tagline]: hasVisibleText(doc.tagline) ? escapeHtml(doc.tagline ?? "") : "",
+    [PROFILE_PLACEHOLDERS.overview]: buildOverviewHtml(),
+    [PROFILE_PLACEHOLDERS.sections]: buildSectionsHtml(doc, editorial),
+    [PROFILE_PLACEHOLDERS.diagram]: doc.diagram ? renderProfileDiagram(doc.diagram) : "",
+    [PROFILE_PLACEHOLDERS.title]: escapeHtml(`${doc.name || "未命名"} · ${eyebrow}`),
+  }
+  return Object.entries(placeholders).reduce(
+    (html, [placeholder, value]) => html.replace(placeholder, () => value),
+    template,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 模板运行时（项目覆盖 → 程序 skills 目录 → 内置）
+// ---------------------------------------------------------------------------
+
+export interface ProfileTemplateRuntime {
+  getTemplate: () => string
+  resetForTest: () => void
+  prime: (projectPath?: string | null) => Promise<void>
+  ready: boolean
+}
+
+async function resolveRuntimeDirs(): Promise<string[]> {
+  const dirs: string[] = []
+  try { dirs.push(normalizePath(await getExecutableDir())) } catch { /* 非 Tauri 环境忽略 */ }
+  try { dirs.push(normalizePath(await getResourceDir())) } catch { /* 同上 */ }
+  return dirs
+}
+
+export function createProfileTemplateRuntime(input: {
+  templateHtml: string
+  /** 程序运行目录下的模板相对路径（便携版 / 安装版通用） */
+  relativePaths: string[]
+  /** 项目内可覆盖模板的相对路径 */
+  projectOverride: string
+}): ProfileTemplateRuntime {
+  let activeTemplate: string | null = null
+  return {
+    ready: REQUIRED_PLACEHOLDERS.every((placeholder) => input.templateHtml.includes(placeholder)),
+    getTemplate: () => activeTemplate ?? input.templateHtml,
+    resetForTest: () => { activeTemplate = null },
+    prime: async (projectPath?: string | null) => {
+      const candidates: string[] = []
+      if (projectPath?.trim()) candidates.push(`${normalizePath(projectPath)}/${input.projectOverride}`)
+      for (const dir of await resolveRuntimeDirs()) {
+        for (const relative of input.relativePaths) candidates.push(`${dir}/${relative}`)
+      }
+      for (const candidate of candidates) {
+        try {
+          if (!(await fileExists(candidate))) continue
+          const content = await readFile(candidate)
+          if (REQUIRED_PLACEHOLDERS.every((placeholder) => content.includes(placeholder))) {
+            activeTemplate = content
+            return
+          }
+        } catch { /* 单个候选失败继续 */ }
+      }
+      activeTemplate = null
+    },
+  }
+}

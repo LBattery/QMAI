@@ -4,7 +4,7 @@ import { parseFrontmatter } from "@/lib/frontmatter"
 import { normalizePath } from "@/lib/path-utils"
 import type { FileNode } from "@/types/wiki"
 
-export type OutlineSegmentKind =
+type OutlineSegmentKind =
   | "master"
   | "volume"
   | "chapter-plan"
@@ -12,9 +12,10 @@ export type OutlineSegmentKind =
   | "character"
   | "setting"
   | "foreshadowing"
+  | "material"
   | "unknown"
 
-export interface OutlineDocument {
+interface OutlineDocument {
   path: string
   relativePath: string
   folder?: string
@@ -23,7 +24,7 @@ export interface OutlineDocument {
   frontmatter: Record<string, unknown> | null
 }
 
-export interface OutlineSegment {
+interface OutlineSegment {
   path: string
   relativePath: string
   folder?: string
@@ -33,19 +34,19 @@ export interface OutlineSegment {
   frontmatter: Record<string, unknown> | null
 }
 
-export interface OutlineDocumentIndex {
+interface OutlineDocumentIndex {
   projectPath: string
   documents: OutlineDocument[]
   segments: OutlineSegment[]
 }
 
-export interface ChapterOutlineResolution {
+interface ChapterOutlineResolution {
   content: string
   sourceKind: "standalone" | "volume" | "chapter-plan" | "master" | "none"
   sourcePaths: string[]
 }
 
-export interface ResolvedVolume {
+interface ResolvedVolume {
   scopeId: string
   title: string
   sourcePaths: string[]
@@ -75,6 +76,7 @@ const STANDARD_FOLDER_KINDS: Record<string, OutlineSegmentKind> = {
   伏笔: "foreshadowing",
   伏笔表: "foreshadowing",
   伏笔计划: "foreshadowing",
+  材料: "material",
 }
 
 const SOURCE_START = "<!-- qmai-outline-source:start -->"
@@ -157,11 +159,26 @@ interface HeadingState {
 }
 
 function splitSemanticSegments(document: OutlineDocument): OutlineSegment[] {
+  // 材料不按标题拆段。标题里的「第 N 章 / 世界观」不能把这篇改写成章纲或设定，否则会漏进稳定大纲。
+  // 正文不在这里预选，只在材料目录里列出路径。
+  if (document.kind === "material") {
+    const content = document.content.trim()
+    if (!content) return []
+    return [{
+      path: document.path,
+      relativePath: document.relativePath,
+      folder: document.folder,
+      kind: "material",
+      content,
+      frontmatter: document.frontmatter,
+    }]
+  }
+
   const lines = document.content.split(/\r?\n/)
   const segments: OutlineSegment[] = []
   const stack: HeadingState[] = []
   let volumeCounter = 0
-  let currentKind = document.kind
+  let currentKind: OutlineSegmentKind = document.kind
   let currentVolumeScope = document.kind === "volume" ? `${document.path}#document` : undefined
   let currentLines: string[] = []
 
@@ -224,7 +241,7 @@ async function buildIndex(projectPath: string): Promise<OutlineDocumentIndex> {
   return createOutlineDocumentIndex(pp, loadedFiles)
 }
 
-export function createOutlineDocumentIndex(
+function createOutlineDocumentIndex(
   projectPath: string,
   files: Array<{ path: string; content: string }>,
 ): OutlineDocumentIndex {
@@ -290,7 +307,9 @@ function exactChapterHeading(content: string, chapterNumber: number): boolean {
   return content.split(/\r?\n/).some((line) => {
     const heading = line.match(/^#{1,6}\s*(.+)$/)?.[1]?.replace(/\s+/g, "").toLowerCase()
     if (!heading) return false
-    const arabic = heading.match(/^第0*(\d+)章(?:章纲|细纲|[：:、\-—]|$)/)
+    // 章纲 MD 的章标题可能写作「## 第5章 无我」/「## 第5章：无我」，
+    // 因此只要求「第N章」后面不是数字即可（(?!\d) 防止 第23章 命中 第230章）。
+    const arabic = heading.match(/^第0*(\d+)章(?!\d)/)
     if (arabic && Number(arabic[1]) === chapterNumber) return true
     return labels.some((label) =>
       heading === label || heading === `${label}章纲` || heading === `${label}细纲` ||
@@ -299,11 +318,78 @@ function exactChapterHeading(content: string, chapterNumber: number): boolean {
   })
 }
 
+/**
+ * 正文里出现过的章号（只认标题行里的「第N章」）。
+ *
+ * 用途：判断一份多章章纲到底含不含某一章。返回空数组说明正文没有逐章标题，
+ * 此时「切不出本章」是格式问题而不是缺内容，调用方应保留旧行为。
+ */
+function chapterHeadingNumbers(content: string): number[] {
+  const numbers: number[] = []
+  for (const line of content.split(/\r?\n/)) {
+    const heading = line.match(/^#{1,6}\s*(.+)$/)?.[1]?.replace(/\s+/g, "")
+    if (!heading) continue
+    const match = heading.match(/第0*(\d+)章(?!\d)/)
+    if (match) numbers.push(Number(match[1]))
+  }
+  return numbers
+}
+
 function pathMatchesChapter(path: string, chapterNumber: number): boolean {
   const compact = path.replace(/\s+/g, "")
   return new RegExp(`第0*${chapterNumber}章`).test(compact) ||
     compact.includes(`第${numberToChinese(chapterNumber)}章`) ||
     new RegExp(`(?:chapter|ch)[-_ ]*0*${chapterNumber}(?:\\D|$)`, "i").test(path)
+}
+
+interface ChapterRange {
+  start: number
+  end: number
+}
+
+const CHAPTER_RANGE_SEPARATORS = "[-—–－~～至到]"
+
+/** 去掉「章纲 / 细纲」等前缀，得到以「第…章」开头的命名主体。 */
+function chapterRangeSubject(text: string): string {
+  return text
+    .replace(/\s+/g, "")
+    .replace(/^(?:章纲|细纲|章节细纲|章节大纲|chapter[-_ ]*outline)/i, "")
+    .replace(/^[-—–－~～:：、_]+/, "")
+}
+
+function toChapterRange(match: RegExpMatchArray | null): ChapterRange | null {
+  if (!match) return null
+  const start = Number(match[1])
+  const end = Number(match[2])
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end <= start) return null
+  return { start, end }
+}
+
+/**
+ * 文件名形如「章纲-第01–12章.md」时，解析出覆盖的章号区间。
+ * 要求区间出现在命名主体开头且以「章」收尾，避免「第001章-标题」这类单章命名被误判。
+ */
+function pathChapterRange(path: string): ChapterRange | null {
+  const stem = (path.split("/").pop() ?? "").replace(/\.md$/i, "")
+  const subject = chapterRangeSubject(stem)
+  return toChapterRange(subject.match(new RegExp(`^第0*(\\d+)章?${CHAPTER_RANGE_SEPARATORS}第?0*(\\d+)章`)))
+}
+
+/** 标题形如「# 章纲-第01–12章：雨夜无我」时，解析出覆盖的章号区间。 */
+function titleChapterRange(content: string): ChapterRange | null {
+  const title = content.match(/^#{1,6}\s+(.+)$/m)?.[1] ?? ""
+  const subject = chapterRangeSubject(title)
+  return toChapterRange(subject.match(new RegExp(`^第0*(\\d+)章?${CHAPTER_RANGE_SEPARATORS}第?0*(\\d+)章`)))
+}
+
+/** 一份章纲覆盖多章（如「第01–12章」）时返回其区间，单章命名返回 null。 */
+function standaloneDocumentRange(document: OutlineDocument): ChapterRange | null {
+  return pathChapterRange(document.relativePath) ?? titleChapterRange(document.content)
+}
+
+function rangeContainsChapter(range: ChapterRange | null, chapterNumber: number): boolean {
+  if (!range) return false
+  return chapterNumber >= range.start && chapterNumber <= range.end
 }
 
 function frontmatterChapterNumber(frontmatter: Record<string, unknown> | null): number | undefined {
@@ -386,7 +472,7 @@ function firstHeading(content: string): string {
   return content.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim() ?? "卷纲"
 }
 
-export function resolveTargetVolumes(index: OutlineDocumentIndex, chapterNumber: number): ResolvedVolume[] {
+function resolveTargetVolumes(index: OutlineDocumentIndex, chapterNumber: number): ResolvedVolume[] {
   const grouped = new Map<string, OutlineSegment[]>()
   for (const segment of index.segments) {
     if (!segment.volumeScopeId) continue
@@ -466,7 +552,28 @@ function groupSourcesByDocument(
   }))
 }
 
-export function buildOutlineContext(index: OutlineDocumentIndex, chapterNumber?: number): string {
+/** 材料只列路径，不按文件名或章号预选正文。模型读过之后自己决定用不用。 */
+function renderMaterialCatalog(index: OutlineDocumentIndex): string {
+  const paths = index.documents
+    .filter((document) => document.kind === "material")
+    .map((document) => document.relativePath)
+    .sort((left, right) => left.localeCompare(right, "zh-Hans-CN", { numeric: true }))
+  if (paths.length === 0) return ""
+  return [
+    "材料目录（只列路径，不含正文）。与大纲列表相同：先看清单，读过正文后再判断本章要不要用。不要按文件名或章号机械选定。",
+    ...paths.map((path) => `- ${path}`),
+  ].join("\n")
+}
+
+export interface OutlineContextLayers {
+  full: string
+  project: string
+  task: string
+  /** 材料路径清单。不含正文，不进入 project / full。 */
+  materials: string
+}
+
+export function buildOutlineContextLayers(index: OutlineDocumentIndex, chapterNumber?: number): OutlineContextLayers {
   const master = index.segments.filter((segment) => segment.kind === "master")
   const settings = index.segments.filter((segment) => segment.kind === "setting")
   let volumes: OutlineSegment[] = []
@@ -481,7 +588,17 @@ export function buildOutlineContext(index: OutlineDocumentIndex, chapterNumber?:
     volumes = index.segments.filter((segment) => segment.kind === "volume")
     chapterPlans = index.segments.filter((segment) => segment.kind === "chapter-plan")
   }
-  return uniqueSourceBlocks(groupSourcesByDocument([...master, ...volumes, ...chapterPlans, ...settings])).join("\n\n")
+  const render = (segments: OutlineSegment[]) => uniqueSourceBlocks(groupSourcesByDocument(segments)).join("\n\n")
+  return {
+    full: render([...master, ...volumes, ...chapterPlans, ...settings]),
+    project: render([...master, ...settings]),
+    task: render([...volumes, ...chapterPlans]),
+    materials: renderMaterialCatalog(index),
+  }
+}
+
+export function buildOutlineContext(index: OutlineDocumentIndex, chapterNumber?: number): string {
+  return buildOutlineContextLayers(index, chapterNumber).full
 }
 
 function extractHeadingSection(content: string, chapterNumber: number): string {
@@ -529,33 +646,98 @@ function extractIdentifierSections(content: string, identifiers: string[]): stri
   return sections
 }
 
+/**
+ * 卷纲里没有任何「第 N 章」字样时，退到「故事」粒度兜底。
+ *
+ * 🔴 为什么必须要有这一层：结构化-only 之后的卷纲由 `renderVolumeOutlineMarkdown`
+ * 生成，一个章号都不出现（只有「## 故事N：标题 / 章号范围 / 环节」）。旧格式靠
+ * 模型自己写的 `章序表` 或 `第N章` 行兜底，新格式这两样都没有 —— 缺了这层，
+ * 用户「只生成了卷纲、还没生成章纲」就开写正文时，`resolveChapterOutline` 会
+ * 返回 `sourceKind: "none"` + 空串，写作上下文里连一份大纲都拿不到。
+ *
+ * 取「包含本章号范围的最小那一节」：H1 通常是整卷（也包含本章号），按长度升序
+ * 挑最短的，才能落到 `## 故事N` 这一节而不是整卷。
+ */
+function extractStorySection(content: string, chapterNumber: number): string {
+  const lines = content.split(/\r?\n/)
+  const candidates: string[] = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const heading = lines[index].match(/^(#{1,6})\s+(.+)$/)
+    if (!heading) continue
+    const level = heading[1].length
+    let end = index + 1
+    while (end < lines.length) {
+      const next = lines[end].match(/^(#{1,6})\s+/)
+      if (next && next[1].length <= level) break
+      end += 1
+    }
+    const section = lines.slice(index, end).join("\n").trim()
+    if (section && bodyRangeContains(section, chapterNumber)) candidates.push(section)
+    /*
+     * 这里**不能** `index = end - 1` 跳过整节：H1 是整卷、也包含全部章号范围，
+     * 跳过去就再也看不到里面更精确的 `## 故事N` 了（实测会退回整卷全文）。
+     * 每个标题各自独立成候选，最后按长度挑最短的那个。
+     */
+  }
+  if (candidates.length === 0) return ""
+  return candidates.sort((left, right) => left.length - right.length)[0]
+}
+
 function extractStructuredChapterContent(content: string, chapterNumber: number): string {
   const headingSection = extractHeadingSection(content, chapterNumber)
   const rows = chapterTableRows(content, chapterNumber)
-  const lines = explicitChapterLines(content, chapterNumber)
+  /*
+   * 章标题那一行会同时被 `extractHeadingSection`（整节）和 `explicitChapterLines`
+   * （单行）抓到，`new Set` 按整串去重挡不住 —— 落进写作上下文的摘录里会出现
+   * 同一行「## 第 13 章 断线」两遍（一次在节首、一次在末尾）。按「行」去重。
+   */
+  const headingLines = new Set(headingSection.split(/\r?\n/).map((line) => line.trim()))
+  const lines = explicitChapterLines(content, chapterNumber).filter((line) => !headingLines.has(line.trim()))
   const base = [headingSection, ...rows, ...lines].filter(Boolean)
   const ids = stableIdentifiers(base)
   const identifierSections = extractIdentifierSections(content, ids)
   const relatedLines = ids.length > 0
     ? content.split(/\r?\n/).filter((line) => ids.some((id) => line.includes(id)))
     : []
-  return Array.from(new Set([...base, ...identifierSections, ...relatedLines])).join("\n\n").trim()
+  const structured = Array.from(new Set([...base, ...identifierSections, ...relatedLines])).join("\n\n").trim()
+  // 逐章信息缺失（新格式卷纲）时退到所属故事的环节，别让写作上下文空手而归。
+  return structured || extractStorySection(content, chapterNumber)
 }
 
 function standaloneChapterMatches(document: OutlineDocument, chapterNumber: number): boolean {
   const titleLine = document.content.match(/^#{1,6}\s+.+$/m)?.[0] ?? ""
   return frontmatterChapterNumber(document.frontmatter) === chapterNumber ||
     pathMatchesChapter(document.relativePath, chapterNumber) ||
-    exactChapterHeading(titleLine, chapterNumber)
+    exactChapterHeading(titleLine, chapterNumber) ||
+    rangeContainsChapter(standaloneDocumentRange(document), chapterNumber)
 }
 
 export function resolveChapterOutline(index: OutlineDocumentIndex, chapterNumber: number): ChapterOutlineResolution {
-  const standalone = index.documents.find((document) =>
+  const standaloneDocs = index.documents.filter((document) =>
     document.kind === "chapter" && standaloneChapterMatches(document, chapterNumber),
   )
-  if (standalone) {
+  for (const standalone of standaloneDocs) {
+    // 一份章纲覆盖多章（如「章纲-第01–12章」）时，只取本章那一节；单章文件仍返回整份内容。
+    const range = standaloneDocumentRange(standalone)
+    const scoped = range ? extractStructuredChapterContent(standalone.content, chapterNumber) : ""
+    const headings = range ? chapterHeadingNumbers(standalone.content) : []
+    /*
+     * 文件名覆盖本章、正文里却没有本章 —— 不能拿整份顶替。
+     *
+     * 真实场景：模型被要求写 1–12 章的章纲，只写完了第 1 章就产出
+     * `chapterOutlineData`，而保存请求的文件名是按故事区间生成的
+     * 「章纲-第01–12章.md」。于是写第 5 章时 `standaloneChapterMatches` 命中这个文件，
+     * 切片拿不到内容，旧实现退回整份 ⇒ 写作上下文里塞进的是**第 1 章**的 17 节。
+     * 模型会照着第一章的节拍、事件、钩子去写第五章，而且不报任何错。
+     *
+     * 判据：正文里存在明确的「第N章」标题、且没有任何一个等于本章号 ⇒ 这份文件
+     * 确实不含本章，跳到下一份候选（最终落到卷纲兜底）。
+     * 正文里根本没有逐章标题时才退回整份 —— 那是格式不认识导致切不出来，
+     * 旧行为必须保留，否则非标准章纲会一律读不到。
+     */
+    if (range && !scoped.trim() && headings.length > 0) continue
     return {
-      content: excerptHeadTail(standalone.content, MAX_CHAPTER_CONTEXT_CHARS),
+      content: excerptHeadTail(scoped.trim() ? scoped : standalone.content, MAX_CHAPTER_CONTEXT_CHARS),
       sourceKind: "standalone",
       sourcePaths: [standalone.relativePath],
     }
@@ -567,7 +749,7 @@ export function resolveChapterOutline(index: OutlineDocumentIndex, chapterNumber
     const sourcePaths = Array.from(new Set(volumes.flatMap((volume) => volume.sourcePaths)))
     return {
       content: [
-        `【章纲来源：卷纲兜底】未找到第${chapterNumber}章独立章纲，以下内容从目标卷纲按章节结构精确摘录。`,
+        `【章纲来源：卷纲兜底】未找到第${chapterNumber}章独立章纲，以下内容从目标卷纲摘录：章号精确命中时给本章那一节，只有故事粒度的卷纲则给本章所属故事的环节。`,
         ...volumeExtracts,
       ].join("\n\n").slice(0, MAX_CHAPTER_CONTEXT_CHARS),
       sourceKind: "volume",
@@ -595,11 +777,16 @@ export function resolveChapterOutline(index: OutlineDocumentIndex, chapterNumber
 }
 
 export function buildVolumeContext(index: OutlineDocumentIndex, chapterNumber: number): string {
-  return resolveTargetVolumes(index, chapterNumber).map((volume) => [
-    `所属卷纲：${volume.title}`,
-    `来源：${volume.sourcePaths.join("、")}`,
-    ...chapterTableRows(volume.content, chapterNumber),
-  ].filter(Boolean).join("\n")).join("\n\n")
+  return resolveTargetVolumes(index, chapterNumber).map((volume) => {
+    // 逐章表格是旧格式卷纲才有的；新格式只有故事粒度，同样要给出所属故事的环节，
+    // 否则这里只剩「所属卷纲 / 来源」两行标题、正文全空。
+    const rows = chapterTableRows(volume.content, chapterNumber)
+    return [
+      `所属卷纲：${volume.title}`,
+      `来源：${volume.sourcePaths.join("、")}`,
+      ...(rows.length > 0 ? rows : [extractStorySection(volume.content, chapterNumber)].filter(Boolean)),
+    ].filter(Boolean).join("\n")
+  }).join("\n\n")
 }
 
 function parseMarkedSourceBlocks(outline: string): string[] {

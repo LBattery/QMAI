@@ -287,6 +287,31 @@ async function handleApi(req, res, route) {
       sendJson(res, 200, { ok: true, project: { name: path.basename(root), path: toPortablePath(root) } })
       return
     }
+    case "/api/project/rename": {
+      const source = await assertAllowed(body.path)
+      if (!allowedRoots.has(source)) throw new Error("只能重命名已打开的项目根目录")
+      const name = validateProjectName(body.name)
+      if (/[<>:"|?*]/.test(name) || /[. ]$/.test(name)) throw new Error("小说名称包含无效字符")
+      const target = path.join(path.dirname(source), name)
+      if (await exists(target)) throw new Error("目标目录已存在")
+      await fs.rename(source, target)
+      allowedRoots.delete(source)
+      registerRoot(target)
+      sendJson(res, 200, { ok: true, project: { name, path: toPortablePath(target) } })
+      return
+    }
+    case "/api/project/cover": {
+      const root = await assertAllowed(body.path)
+      if (!allowedRoots.has(root)) throw new Error("封面必须保存在已打开的项目中")
+      const source = await assertAllowed(body.source)
+      const ext = path.extname(source).toLowerCase()
+      if (![".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)) throw new Error("封面仅支持 PNG、JPEG、WebP 或 GIF")
+      const destination = await assertAllowed(path.join(root, META_DIR, "covers", `cover${ext}`))
+      await fs.mkdir(path.dirname(destination), { recursive: true })
+      await fs.copyFile(source, destination)
+      sendJson(res, 200, { ok: true, savedPath: toPortablePath(destination) })
+      return
+    }
     case "/api/fs/read": {
       const absPath = await assertAllowed(body.path)
       sendJson(res, 200, { ok: true, contents: await fs.readFile(absPath, "utf8") })
@@ -409,6 +434,6 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(port, HOST, () => {
-  console.log(`[QMAI Web] API listening at http://${HOST}:${port}`)
+  console.log(`[QMAI Web] API listening at http://${HOST}:${server.address().port}`)
   if (staticDir) console.log(`[QMAI Web] Serving ${staticDir}`)
 })

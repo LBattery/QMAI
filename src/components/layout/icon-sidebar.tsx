@@ -1,8 +1,7 @@
-import { useState, useRef, useEffect, useMemo } from "react"
+import { useMemo } from "react"
 import {
-  FileText, FolderOpen, Search, Network, Brain, Settings, ArrowLeftRight, Sun, Moon, SunMoon, Check, Trash2, Sparkles, LayoutDashboard, BookOpen, Drama, WandSparkles, Film,
+  FileText, FolderOpen, Search, Network, Brain, ArrowLeftRight, Trash2, Sparkles, LayoutDashboard, BookOpen, Drama, WandSparkles, Film,
 } from "lucide-react"
-import { createPortal } from "react-dom"
 import {
   DndContext,
   PointerSensor,
@@ -21,12 +20,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
 import { useTranslation } from "react-i18next"
-import logoImg from "@/assets/QM-LOGO.png"
+import { BrandLogo } from "@/components/brand-logo"
 import type { WikiState } from "@/stores/wiki-store"
-import { saveTheme } from "@/lib/project-store"
-import { applyTheme, type ThemeMode } from "@/lib/theme-utils"
 import { isChapterPathInProject } from "@/lib/path-utils"
 import {
+  isNavItemActive,
   isSidebarNavItemId,
   reorderSidebarNavOrder,
   type SidebarNavItemId,
@@ -62,12 +60,6 @@ interface IconSidebarProps {
   onSwitchProject: () => void
 }
 
-const THEME_OPTIONS: { value: ThemeMode; icon: typeof Sun; labelKey: string }[] = [
-  { value: "light", icon: Sun, labelKey: "theme.light" },
-  { value: "dark", icon: Moon, labelKey: "theme.dark" },
-  { value: "system", icon: SunMoon, labelKey: "theme.system" },
-]
-
 interface SortableNavButtonProps {
   item: ConfigurableNavItem
   activeView: NavView
@@ -76,10 +68,23 @@ interface SortableNavButtonProps {
   onClick: (item: ConfigurableNavItem) => void
 }
 
+/*
+ * 「技能库 tab 的内部视图要折算到技能库图标上、保持高亮」这条判定住在
+ * `@/lib/sidebar-nav-preferences` 的 `isNavItemActive` / `FOLDED_SKILL_LIBRARY_VIEWS`：
+ * 那是个不依赖 React 的模块，所以它能被**行为测试**（本文件的测试只读源码文本，
+ * 跑不了组件）。见该模块里关于 `skillFavorites` 例外与「测试守而非编译守」的说明。
+ */
+
 function SortableNavButton({ item, activeView, pendingCount, label, onClick }: SortableNavButtonProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id })
   const Icon = item.icon
-  const isActive = activeView === item.view || (item.view === "skillLibrary" && activeView === "writingSkillLibrary")
+  /*
+   * 合并说明：采用本分支的重构（判定抽到 `isNavItemActive`，可被行为测试），
+   * 但 `main` 上「人物 Skill」让 `personaSkillLibrary` 折算到技能库图标的
+   * 既有行为必须保留 —— 已把它并入 `FOLDED_SKILL_LIBRARY_VIEWS`，
+   * 否则点开人物 Skill 页时侧边栏会没有任何图标高亮。
+   */
+  const isActive = isNavItemActive(item.view, activeView)
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -102,12 +107,12 @@ function SortableNavButton({ item, activeView, pendingCount, label, onClick }: S
       >
         <Icon className="h-5 w-5" />
         {item.view === "reviewCenter" && pendingCount > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[0.625rem] font-bold text-primary-foreground">
             {pendingCount > 99 ? "99+" : pendingCount}
           </span>
         )}
         {item.view === "storySimulation" && (
-          <span className="absolute -right-1 -top-0.5 flex h-3.5 items-center justify-center rounded bg-amber-500 px-1 text-[9px] font-bold leading-none text-white">
+          <span className="absolute -right-1 -top-0.5 flex h-3.5 items-center justify-center rounded bg-amber-500 px-1 text-[0.5625rem] font-bold leading-none text-white">
             BETA
           </span>
         )}
@@ -129,16 +134,10 @@ export function IconSidebar({ onToggleSidebar, onOpenSidebar, onSwitchProject }:
   const project = useWikiStore((s) => s.project)
   const selectedFile = useWikiStore((s) => s.selectedFile)
   const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
-  const theme = useWikiStore((s) => s.theme)
-  const setTheme = useWikiStore((s) => s.setTheme)
   const sidebarNavConfig = useWikiStore((s) => s.sidebarNavConfig)
   const setSidebarNavConfig = useWikiStore((s) => s.setSidebarNavConfig)
   const pendingCount = useReviewStore((s) => s.items.filter((i) => !i.resolved).length)
 
-  // 主题下拉框状态
-  const [themeMenuOpen, setThemeMenuOpen] = useState(false)
-  const themeTriggerRef = useRef<HTMLButtonElement>(null)
-  const [themeMenuStyle, setThemeMenuStyle] = useState<{ left: number; top: number } | null>(null)
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 5 },
@@ -156,45 +155,6 @@ export function IconSidebar({ onToggleSidebar, onOpenSidebar, onSwitchProject }:
     .map((id) => navItemsById.get(id))
     .filter((item): item is ConfigurableNavItem => item !== undefined && !hiddenNavIds.has(item.id))
   const visibleNavIds = visibleNavItems.map((item) => item.id)
-
-  const getThemeIcon = () => {
-    const option = THEME_OPTIONS.find((o) => o.value === theme)
-    const Icon = option?.icon ?? Sun
-    return <Icon className="h-5 w-5" />
-  }
-
-  const handleSelectTheme = (nextTheme: ThemeMode) => {
-    setTheme(nextTheme)
-    saveTheme(nextTheme)
-    applyTheme(nextTheme)
-    setThemeMenuOpen(false)
-  }
-
-  useEffect(() => {
-    if (!themeMenuOpen) {
-      setThemeMenuStyle(null)
-      return
-    }
-    const updatePosition = () => {
-      const rect = themeTriggerRef.current?.getBoundingClientRect()
-      if (!rect) return
-      const menuWidth = 180
-      const menuHeight = THEME_OPTIONS.length * 36 + 8
-      const left = Math.min(rect.right + 6, window.innerWidth - menuWidth - 4)
-      let top: number
-      const availableAbove = rect.top
-      const availableBelow = window.innerHeight - rect.bottom
-      if (availableAbove >= menuHeight + 6 || availableAbove >= availableBelow) {
-        top = Math.max(4, rect.bottom - menuHeight)
-      } else {
-        top = rect.top
-      }
-      setThemeMenuStyle({ left, top })
-    }
-    updatePosition()
-    window.addEventListener("resize", updatePosition)
-    return () => window.removeEventListener("resize", updatePosition)
-  }, [themeMenuOpen])
 
   const handleNavClick = (view: NavView) => {
     setSearchPanelOpen(false)
@@ -272,10 +232,9 @@ export function IconSidebar({ onToggleSidebar, onOpenSidebar, onSwitchProject }:
           className="mb-2 flex items-center justify-center rounded-md p-0.5 transition-colors hover:bg-accent/50"
           title={t("iconSidebar.toggleSidebar")}
         >
-          <img
-            src={logoImg}
-            alt={t("iconSidebar.logoAlt")}
-            className="h-6 w-6 rounded-[22%]"
+          <BrandLogo
+            title={t("iconSidebar.logoAlt")}
+            className="h-6 w-6 text-brand-600"
           />
         </button>
         {/* Top: configurable feature entries */}
@@ -301,73 +260,12 @@ export function IconSidebar({ onToggleSidebar, onOpenSidebar, onSwitchProject }:
             </SortableContext>
           </DndContext>
         </div>
-        {/* Bottom: daemon status + theme toggle + settings + switch project */}
+        {/*
+          Bottom: 切换小说。
+          「外观 / 设置」已移到各侧栏面板（章节/大纲列表等）的底部，
+          见 components/layout/sidebar-bottom-actions.tsx。
+        */}
         <div className="flex flex-col items-center gap-1.5 pb-1">
-          {/* Theme selector dropdown */}
-          <Tooltip>
-            <TooltipTrigger
-              ref={themeTriggerRef}
-              onClick={() => setThemeMenuOpen(!themeMenuOpen)}
-              className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-accent/50 hover:text-accent-foreground ${
-                themeMenuOpen ? "bg-accent/50 text-accent-foreground" : "text-muted-foreground"
-              }`}
-            >
-              {getThemeIcon()}
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              {t("theme.switch")}
-            </TooltipContent>
-          </Tooltip>
-          {themeMenuOpen && themeMenuStyle && createPortal(
-            <>
-              <div
-                className="fixed inset-0 z-40"
-                onClick={() => setThemeMenuOpen(false)}
-              />
-              <div
-                className="fixed z-50 rounded-md border bg-popover p-1 shadow-md"
-                style={{ left: themeMenuStyle.left, top: themeMenuStyle.top, width: 180 }}
-              >
-                {THEME_OPTIONS.map((option) => {
-                  const Icon = option.icon
-                  const isActive = theme === option.value
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => handleSelectTheme(option.value)}
-                      className={`flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent ${
-                        isActive ? "text-foreground" : "text-muted-foreground"
-                      }`}
-                    >
-                      <Icon className="h-4 w-4 shrink-0" />
-                      <span className="flex-1">{t(option.labelKey)}</span>
-                      <Check className={`h-4 w-4 shrink-0 ${isActive ? "opacity-100" : "opacity-0"}`} />
-                    </button>
-                  )
-                })}
-              </div>
-            </>,
-            document.body,
-          )}
-          <Tooltip>
-            <TooltipTrigger
-              onClick={() => {
-                setSearchPanelOpen(false)
-                setActiveView("settings")
-              }}
-              className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
-                activeView === "settings"
-                  ? "qm-selected"
-                  : "text-muted-foreground qm-hover"
-              }`}
-            >
-              <Settings className="h-5 w-5" />
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              {t("novel.nav.settings")}
-            </TooltipContent>
-          </Tooltip>
           <Tooltip>
             <TooltipTrigger
               onClick={() => {

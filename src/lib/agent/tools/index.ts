@@ -1,5 +1,5 @@
 import type { ToolRegistry } from "../registry"
-import type { AgentToolEvent, Tool } from "../types"
+import type { AgentToolEvent } from "../types"
 import type { AiWorkflowMode } from "@/lib/agent/workflow-mode"
 import { createReadChapterTool } from "./read-chapter"
 import { createReadOutlineTool } from "./read-outline"
@@ -49,7 +49,6 @@ export interface ToolFactoryOptions {
   getChatConversations: () => { id: string; title: string; messages: { role: string; content: string }[] }[]
   getOutlineConversations: () => { id: string; title: string; messages: { role: string; content: string }[] }[]
   virtualToolContext?: VirtualToolContext
-  mcpTools?: Tool[]
   draftMode?: boolean
   projectPath?: string
   /** Session model context window in tokens (for trim_context defaults). */
@@ -66,6 +65,8 @@ export interface ToolFactoryOptions {
   onToolEvent?: (event: AgentToolEvent) => void
   getPlanBlueprint?: () => string | undefined
   getSelectedSkillsPrompt?: () => string | undefined
+  /** 丁-2「文风写作」：本轮临时覆盖的文风预设 id（三态：undefined/null/string）。 */
+  getWritingStyleIdOverride?: () => string | null | undefined
   readTextFile?: (path: string) => Promise<string>
 }
 
@@ -126,10 +127,8 @@ export function registerAllBuiltInTools(registry: ToolRegistry, options: ToolFac
       onToolEvent: options.onToolEvent,
       getPlanBlueprint: options.getPlanBlueprint,
       getSelectedSkillsPrompt: options.getSelectedSkillsPrompt,
+      getWritingStyleIdOverride: options.getWritingStyleIdOverride,
     }))
-  }
-  for (const tool of options.mcpTools ?? []) {
-    if (shouldRegister(tool.name)) registry.register(tool)
   }
 
   if (options.virtualToolContext) {

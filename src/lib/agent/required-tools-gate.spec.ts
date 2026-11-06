@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  RequiredToolFallbackError,
   RequiredToolsNotCalledError,
   buildRequiredToolNudgeMessage,
   missingRequiredToolsOnce,
@@ -81,6 +82,14 @@ describe("required-tools-gate", () => {
     expect(err.message).toContain("run_chapter_workflow")
     expect(err.missingTools).toEqual(["run_chapter_workflow"])
   })
+
+  it("RequiredToolFallbackError preserves the workflow and underlying reason", () => {
+    const err = new RequiredToolFallbackError("run_chapter_workflow", "正文为空")
+    expect(err.name).toBe("RequiredToolFallbackError")
+    expect(err.toolName).toBe("run_chapter_workflow")
+    expect(err.message).toContain("正文为空")
+    expect(err.message).not.toContain("模型未调用")
+  })
 })
 
 describe("resolveRequiredToolsOnce", () => {
@@ -153,6 +162,18 @@ describe("resolveRequiredToolsOnce", () => {
         mode: "strict",
         planExecuteActive: false,
         enabledToolNames: ["read_chapter", "read_outline"],
+      }),
+    ).toBeUndefined()
+  })
+
+  it("skips discuss mode like fast (co-creation round produces no prose)", () => {
+    expect(
+      resolveRequiredToolsOnce({
+        novelMode: true,
+        intent: "write_chapter",
+        mode: "discuss",
+        planExecuteActive: false,
+        enabledToolNames: ["read_chapter", "run_chapter_workflow"],
       }),
     ).toBeUndefined()
   })

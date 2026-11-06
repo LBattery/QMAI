@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-qmai-layout="editorial-v2">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>卷纲</title>
+<style>
+:root{
+  --bg:#fffefa;--surface:#f5f3ed;--surface2:#e7ebdf;--ink:#253a42;--ink2:#435852;--muted:#596863;
+  --border:#d9d9ce;--brand:#876533;--brand-text:#765929;--brand-soft:#ede8da;--brand-soft2:#dfd4bd;--on-brand:#fffefa;
+  --qi:#8E6E63;--cheng:#D97757;--zhuan:#B8551D;--he:#F59E42;
+  --day:#7FB07F;--warn:#96601A;--warn-soft:#FFF7E6;
+  --k-qi-bg:#e9e6de;--k-qi-ink:#5F4A3E;--k-cheng-bg:#f0e4d8;--k-cheng-ink:#A8451C;--k-he-bg:#f6ecd9;--k-he-ink:#96601A;
+  --font-heading:"Noto Serif CJK SC","Source Han Serif SC","Songti SC","SimSun",serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--surface);color:var(--ink);font-size:15px;line-height:1.9;
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Source Han Sans SC",-apple-system,"Segoe UI",sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:1280px;margin:0 auto;padding:0 30px}
+.intro{background:var(--surface);padding:38px 0 28px}
+.intro .eyebrow{font-size:11px;letter-spacing:.16em;color:var(--brand-text);font-weight:600;margin:0 0 10px}
+.intro h1{margin:0 0 10px;font:600 36px/1.5 var(--font-heading);letter-spacing:.05em}
+.intro .goal{margin:0;max-width:80ch;color:var(--ink2);line-height:1.95}
+.chip{display:inline-flex;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:999px;padding:3px 11px;font-size:12px;color:var(--ink2);margin:10px 6px 0 0}
+.chip b{color:var(--brand-text)}
+
+/* 故事目录 */
+.nav{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:14px 18px;margin:0 0 16px}
+.nav .navt{font-size:11.5px;color:var(--muted);margin-right:4px}
+.navlink{display:inline-flex;gap:6px;align-items:baseline;font-size:12px;color:var(--ink2);text-decoration:none;border:1px solid var(--border);border-radius:999px;padding:2px 10px;background:var(--surface)}
+.navlink b{font-size:10.5px;color:var(--on-brand);background:var(--brand);border-radius:4px;padding:0 5px}
+.navlink:hover{border-color:var(--brand);color:var(--brand-text)}
+.navlink:focus-visible,summary:focus-visible{outline:2px solid var(--brand);outline-offset:3px}
+
+/* 折叠树（原生 details，全部默认展开） */
+.tree{background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:14px 20px 26px;margin:0 0 45px}
+.story-wrap{padding:6px 0 14px;border-bottom:1px dashed var(--border)}
+.story-wrap:last-child{border-bottom:none}
+.story-wrap:target{outline:2px solid var(--brand);outline-offset:2px;background:var(--brand-soft);border-radius:6px}
+details.nd{margin:0}
+details.nd>summary{list-style:none;cursor:pointer;display:flex;align-items:flex-start;gap:8px;padding:6px 8px;border-radius:6px}
+details.nd>summary::-webkit-details-marker{display:none}
+details.nd>summary::marker{content:""}
+details.nd>summary::before{content:"▾";width:16px;flex:none;color:var(--muted);font-size:11px;margin-top:5px;text-align:center}
+details.nd:not([open])>summary::before{content:"▸"}
+details.nd>summary:hover{background:var(--surface)}
+details.nd>.kids{padding-left:22px;position:relative}
+details.nd>.kids::before{content:"";position:absolute;left:8px;top:0;bottom:6px;width:1px;background:var(--border)}
+.line{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.k{font-size:10.5px;font-weight:700;border-radius:4px;padding:1px 7px;flex:none;letter-spacing:.02em}
+.k-s{background:var(--brand-soft2);color:var(--brand-text);border:1px solid var(--brand)}
+.k-qi{background:var(--k-qi-bg);color:var(--k-qi-ink)}
+.k-cheng{background:var(--k-cheng-bg);color:var(--k-cheng-ink)}
+.k-zhuan{background:var(--brand-soft2);color:var(--brand-text)}
+.k-he{background:var(--k-he-bg);color:var(--k-he-ink)}
+.t{font:600 17px/1.6 var(--font-heading)}
+.t2{font-weight:600;font-size:14px}
+.tag{font-size:10.5px;border-radius:999px;padding:1px 8px;border:1px solid var(--border);color:var(--muted);background:var(--surface);flex:none}
+.tag.chap{background:var(--surface2);border-color:var(--border);color:var(--ink2);font-weight:600}
+.who{display:flex;gap:7px;flex-wrap:wrap;align-items:baseline;font-size:12.5px;color:var(--ink2);margin:2px 8px 6px;padding:4px 9px;background:var(--surface);border-left:2px solid var(--brand);border-radius:0 5px 5px 0}
+.who .lb{font-size:10px;font-weight:700;color:var(--on-brand);background:var(--brand);border-radius:3px;padding:0 5px;flex:none}
+.who .nm{font-weight:600;color:var(--ink)}
+.txt{margin:0 0 4px;padding:2px 9px 2px 12px;font-size:13px;color:var(--ink2);line-height:1.85;position:relative}
+.txt::before{content:"";position:absolute;left:3px;top:12px;width:4px;height:4px;border-radius:50%;background:var(--border)}
+.empty{margin:6px 8px;padding:8px 10px;font-size:12.5px;color:var(--warn);background:var(--warn-soft);border:1px dashed var(--he);border-radius:6px}
+
+@media (max-width:760px){
+  .wrap{padding:0 17px}
+  .intro{padding:26px 0}
+  .intro h1{font-size:28px}
+  .tree{padding:12px}
+}
+@media print{
+  .wrap{max-width:none;padding:0}
+  .nav{display:none}
+  details::details-content{content-visibility:visible!important;block-size:auto!important;height:auto!important}
+}
+</style>
+</head>
+<body>
+
+<header class="intro">
+  <div class="wrap">
+    <p class="eyebrow">卷纲 · 10 个故事 · 每故事 10 个环节</p>
+    <h1>__VOLUME_TITLE__</h1>
+    <p class="goal">__VOLUME_GOAL__</p>
+    <div>__VOLUME_CHIPS__</div>
+  </div>
+</header>
+
+<div class="wrap">
+  __VOLUME_NAV__
+  <main class="tree">
+__VOLUME_TREE__
+  </main>
+</div>
+
+</body>
+</html>

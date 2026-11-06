@@ -33,6 +33,7 @@ import {
 interface HubRegistry {
   refresh(): Promise<SourceRefreshResult>
   getDependencyStamp(kinds?: ContextSourceKind[]): Promise<DependencyStamp>
+  getDependencyStampForPrefixes(prefixes: string[]): Promise<DependencyStamp>
   getDependencyPreview(kinds?: ContextSourceKind[], limit?: number): string[]
   markDirty(path: string): void
   dispose(): void
@@ -59,7 +60,7 @@ type BuildContextPack = (
 
 const STABLE_SOURCE_KINDS: ContextSourceKind[] = ["soul", "setting", "entity", "outline", "deduction"]
 
-export interface ContextHubControllerDependencies {
+interface ContextHubControllerDependencies {
   registry?: HubRegistry
   storage?: HubStorage
   buildContextPack?: BuildContextPack
@@ -266,6 +267,7 @@ export class ContextHubController implements ContextHub {
       confidence: confidenceFor(request, contextPack),
       tokenBudget: request.tokenBudget,
       maxContextSize: request.maxContextSize,
+      // 正典溢出时 composer 会抛错，交由调用方停机并告知用户。
     })
     const cacheStats = cacheAdapter.getStats()
     const cacheItems = cacheAdapter.getTraceItems()
@@ -314,6 +316,11 @@ export class ContextHubController implements ContextHub {
         fallbackUsed: cacheStats.fallbackUsed,
         readFailed: cacheStats.readFailed,
         writeFailed: cacheStats.writeFailed,
+        cacheHitTokens: cacheStats.cacheHitTokens,
+        taskScopedLoaded: cacheStats.taskScopedLoaded,
+        cacheableLoaded: cacheStats.cacheableLoaded,
+        cacheableHits: cacheStats.cacheableHits,
+        taskScopedHits: cacheStats.taskScopedHits,
         stablePrefixStatus,
       },
       cacheItems: withRelativeDependencyPaths(this.projectPath, cacheItems),

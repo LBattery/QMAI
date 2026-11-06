@@ -30,11 +30,15 @@ describe("QMAI model settings", () => {
       resolve(__dirname, "sections/llm-provider-section.tsx"),
       "utf8",
     )
-    expect(source).toContain("settings.sections.llm.longWritingContextTitle")
-    expect(source).toContain("settings.sections.llm.longWritingContextHint")
-    expect(source).toContain("settings.sections.llm.longWritingContextDocs")
-    expect(source).toContain("https://global.modelmesh.info/model")
-    expect(source).toContain("text-emerald-800 dark:text-emerald-200")
+    // 该期望于 26f80ee 随「v4.0.0 全新界面（LLM 设置页改为模型配置库）」变更：旧版 200K 提示条与其中的
+    // 「参考文档」外链随旧界面一并移除，新页面不再外链模型参数文档；失效的 URL 常量随后由 2f762e6 删除。
+    // 200K 要求本身仍在本页呈现：MIN_USER_LLM_CONTEXT_SIZE 仍是 204800，且 ContextSizeSelector 会渲染
+    // settings.sections.llm.contextWindowHint（“最低 200K”）。
+    expect(source).not.toContain("https://global.modelmesh.info/model")
+    expect(source).toContain("MIN_USER_LLM_CONTEXT_SIZE")
+    expect(source).toContain("maxContextSize: preset.suggestedContextSize ?? MIN_USER_LLM_CONTEXT_SIZE")
+    expect(source).toContain("<ContextSizeSelector")
+    expect(source).toContain('t("settings.sections.llm.contextWindow")')
     expect(source).not.toContain("bg-emerald-500/10 px-3 py-2 text-sm text-white")
   })
 
@@ -47,6 +51,7 @@ describe("QMAI model settings", () => {
       "claude-code-cli",
       "codex-cli",
       "cursor-cli",
+      "antigravity-cli",
       "openai",
       "google",
       "azure",
@@ -125,13 +130,14 @@ describe("QMAI model settings", () => {
 
     const codex = resolveConfig(
       preset("codex-cli"),
-      { localCliIsolation: true, codexCliTimeoutMinutes: 45 },
+      { localCliIsolation: true, codexCliTimeoutMinutes: 45, codexSpeedMode: "fast" },
       fallback,
     )
     expect(codex.provider).toBe("codex-cli")
     expect(codex.localCliIsolation).toBe(true)
     expect(codex.model).toBe("gpt-5.6-terra")
     expect(codex.codexCliTimeoutMinutes).toBe(45)
+    expect(codex.codexSpeedMode).toBe("fast")
 
     const codexPreset = preset("codex-cli")
     expect(codexPreset.defaultModel).toBe("gpt-5.6-terra")
@@ -143,6 +149,7 @@ describe("QMAI model settings", () => {
     const codexDefault = resolveConfig(preset("codex-cli"), {}, fallback)
     expect(codexDefault.model).toBe("gpt-5.6-terra")
     expect(codexDefault.codexCliTimeoutMinutes).toBe(40)
+    expect(codexDefault.codexSpeedMode).toBe("standard")
 
     const cursor = resolveConfig(
       preset("cursor-cli"),
@@ -151,8 +158,15 @@ describe("QMAI model settings", () => {
     )
     expect(cursor.provider).toBe("cursor-cli")
     expect(cursor.customEndpoint).toBe("http://127.0.0.1:8765/v1")
-    expect(cursor.model).toBe("composer-2-fast")
+    expect(cursor.model).toBe("composer-2.5-fast")
     expect(cursor.apiKey).toBe("")
+
+    const cursorMapped = resolveConfig(
+      preset("cursor-cli"),
+      { model: "cursor-grok-4.6-medium-fast" },
+      fallback,
+    )
+    expect(cursorMapped.model).toBe("cursor-grok-4.6-medium-fast")
 
     const cursorProvider = getProviderConfig(cursor)
     expect(cursorProvider.url).toBe("http://127.0.0.1:8765/v1/chat/completions")
@@ -169,6 +183,9 @@ describe("QMAI model settings", () => {
     expect(llm.longWritingContextHint).toContain("最大")
     expect(llm.longWritingContextHint).toContain("输出")
     expect(llm.longWritingContextDocs).toBe("参考文档")
+    expect(llm.codexSpeed).toBe("Codex 速度")
+    expect(llm.codexSpeedFast).toContain("1.5 倍")
+    expect(llm.codexSpeedFast).toContain("用量更多")
     expect(JSON.stringify(llm)).not.toContain("??")
   })
 })

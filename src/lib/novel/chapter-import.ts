@@ -7,7 +7,7 @@ export const CHAPTER_IMPORT_EXTENSIONS = ["txt", "md", "mdx", "doc", "docx"] as 
 
 const CHAPTER_IMPORT_EXTENSION_SET = new Set<string>(CHAPTER_IMPORT_EXTENSIONS)
 
-export interface ChapterImportCandidate {
+interface ChapterImportCandidate {
   path: string
   name: string
 }
@@ -19,18 +19,18 @@ export interface ImportedChapter {
   chapterNumber: number
 }
 
-export interface ChapterImportFilenameMatch {
+interface ChapterImportFilenameMatch {
   chapterNumber: number
   titleSuffix: string
 }
 
-export interface ImportedChapterMemoryProgress {
+interface ImportedChapterMemoryProgress {
   completed: number
   total: number
   currentPath: string | null
 }
 
-export interface ImportedChapterMemoryResult {
+interface ImportedChapterMemoryResult {
   completed: number
   failed: number
   cancelled: boolean
@@ -41,7 +41,7 @@ type IngestChapterDependency = (
   projectPath: string,
   chapterPath: string,
   reviewModel?: string,
-) => Promise<{ snapshot: unknown | null; failReason?: string }>
+) => Promise<{ snapshot: unknown | null; failReason?: string; error?: string }>
 
 function yamlEscape(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
@@ -120,7 +120,7 @@ function parseChapterNumberToken(raw: string): number | null {
   return parseChineseInteger(raw)
 }
 
-export function matchChapterImportFilename(text: string): ChapterImportFilenameMatch | null {
+function matchChapterImportFilename(text: string): ChapterImportFilenameMatch | null {
   const stem = getFileStem(getFileName(text) || text)
   const normalized = normalizeFullWidthDigits(stem.normalize("NFKC"))
 
@@ -219,7 +219,14 @@ export function buildImportedChapterMarkdown({
   ].join("\n")
 }
 
-function isChapterImportablePath(path: string): boolean {
+/**
+ * 这个路径能不能作为章节文档导入。
+ *
+ * 导出是给「从桌面拖进章节列表」用的：拖进来的是用户磁盘上的任意路径，
+ * 必须先按同一套规则过一遍，否则同一次导入会因为你走的是「选文件」还是
+ * 「拖文件」而对同一个文件给出两种结论。
+ */
+export function isChapterImportablePath(path: string): boolean {
   const fileName = getFileName(path)
   if (!fileName || fileName.startsWith(".")) return false
   const extension = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() ?? "" : ""
@@ -270,15 +277,6 @@ export async function importChapterFiles(
   const candidates = sourcePaths
     .map((path) => ({ path: normalizePath(path), name: getFileName(path) }))
     .filter((candidate) => isChapterImportablePath(candidate.path))
-  return importChapterCandidates(projectPath, candidates, options)
-}
-
-export async function importChapterFolder(
-  projectPath: string,
-  selectedFolder: string,
-  options: { finalForMemoryExtraction: boolean },
-): Promise<ImportedChapter[]> {
-  const candidates = await collectChapterImportCandidatesFromFolder(selectedFolder)
   return importChapterCandidates(projectPath, candidates, options)
 }
 
@@ -347,7 +345,7 @@ export async function runImportedChapterMemoryExtraction({
         completed += 1
       } else {
         failed += 1
-        errors.push(`${getFileName(chapterPath)}：${result.failReason ?? "提取失败"}`)
+        errors.push(`${getFileName(chapterPath)}：${result.error ?? result.failReason ?? "提取失败"}`)
       }
     } catch (error) {
       failed += 1

@@ -1,3 +1,4 @@
+import { UserMessageMeta } from "./user-message-meta";
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -23,7 +24,8 @@ import {
   Globe,
   Image as ImageIcon,
   Loader2,
-  Info,
+  Save,
+  ArrowRight,
 } from "lucide-react";
 import { useWikiStore } from "@/stores/wiki-store";
 import { readFile } from "@/commands/fs";
@@ -31,6 +33,7 @@ import { normalizePath } from "@/lib/path-utils";
 import { resolveCitedPagePath } from "@/lib/resolve-cited-page-path";
 import { refreshProjectState } from "@/lib/project-refresh";
 import { getLastQueryPages } from "@/components/chat/chat-shared";
+import { useWaitingHint } from "@/hooks/use-waiting-hint";
 import { FileEditPreview } from "@/components/chat/file-edit-preview";
 import { AgentToolCallMessage } from "@/components/chat/agent-tool-call-message";
 import type { ToolCallRecord } from "@/components/chat/agent-tool-call-message";
@@ -39,6 +42,7 @@ import { ReferenceChip } from "@/components/reference/ReferenceChip";
 import type { DisplayMessage } from "@/stores/chat-store";
 import { ContextTracePanel } from "@/components/chat/context-trace-panel";
 import { ContextHubDetails } from "@/components/common/context-hub-details";
+import { UiTestGenerationStats } from "@/components/common/context-hub-stats-summary";
 import { getStreamingTailDisplay } from "@/components/common/streaming-display-text";
 import { parseContextHubSnapshotRef } from "@/lib/context-hub/types";
 
@@ -57,6 +61,22 @@ import { StreamingMarkdown } from "@/components/common/streaming-markdown";
 import { StreamingSpinner } from "@/components/common/streaming-spinner";
 import { canContinueUnfinishedDeepChapter } from "./chat-resume";
 import { getCopyableAssistantContent } from "@/lib/chat-copy-content";
+import { StoppedGenerationActions } from "@/components/novel/stopped-generation-actions";
+import { FailedGenerationActions } from "@/components/novel/failed-generation-actions";
+import { isStoppedGenerationMessage } from "@/lib/novel/stopped-generation";
+import {
+  hasFailedGenerationPartialContent,
+  isFailedGenerationMessage,
+} from "@/lib/novel/failed-generation";
+import { ChapterDiscussCard } from "@/components/chat/chapter-discuss-card";
+import { EventOutlineCard } from "@/components/sources/event-outline-card";
+import { extractEventOutlineData, looksLikeEventOutlineDeliveryNote, renderEventOutlineMarkdown, stripEventOutlineDataFence } from "@/lib/novel/event-outline";
+import { handoffEventOutlineToProse } from "@/lib/novel/event-outline-handoff";
+import { stripStructuredMarkers } from "@/lib/novel/outline-intent-clarity";
+import type {
+  ChapterDiscussDirection,
+  ChapterDiscussProtocol,
+} from "@/lib/novel/chapter-discuss-protocol";
 
 interface ChatMessageProps {
   message: DisplayMessage;
@@ -71,6 +91,20 @@ interface ChatMessageProps {
   ) => void;
   onContinueNextChapter?: () => void;
   onContinueUnfinished?: () => void;
+  /**
+   * 「继续」：上一条回复被用户手动停止后，保留已生成内容接着往下写。
+   * 与 onContinueUnfinished 的区别：那个只服务"深度章节生成失败"这种特定场景，
+   * 这个服务任意一次手动停止。见 lib/novel/stopped-generation.ts。
+   */
+  onContinueStopped?: () => void;
+  /**
+   * 「继续」：上一条回复生成失败后，保留已生成内容接着往下写。
+   *
+   * 与 onContinueStopped 的区别只在提示词（失败有"完全没产出"这种形态，
+   * 那需要整份重来而不是接着写）；按钮的显示条件来自
+   * lib/novel/failed-generation.ts 的 isFailedGenerationMessage，与大纲面板共用。
+   */
+  onContinueFailed?: () => void;
   onSaveAsDraft?: (content: string) => void;
   onDiscardDraft?: () => void;
   saveStatus?: string;
@@ -89,6 +123,20 @@ interface ChatMessageProps {
     chapterCount?: number;
     error?: string;
   } | null;
+  /** 共创模式：作者选定某个方向后按它生成正文。 */
+  onSelectChapterDiscussDirection?: (
+    messageId: string,
+    protocol: ChapterDiscussProtocol,
+    direction: ChapterDiscussDirection,
+  ) => void;
+  /** 共创模式：对当前一批方向都不满意，重新推演。 */
+  onRegenerateChapterDiscuss?: (messageId: string, protocol: ChapterDiscussProtocol) => void;
+  /** 共创模式：作者用自己的想法让 AI 按它重新推演方向。 */
+  onCustomChapterDiscuss?: (
+    messageId: string,
+    protocol: ChapterDiscussProtocol,
+    idea: string,
+  ) => void;
 }
 
 export function ChatMessage({
@@ -100,6 +148,8 @@ export function ChatMessage({
   onSaveAsChapter,
   onContinueNextChapter,
   onContinueUnfinished,
+  onContinueStopped,
+  onContinueFailed,
   saveStatus,
   isSaving,
   onConfirmToolSave,
@@ -108,27 +158,135 @@ export function ChatMessage({
   retrievalIndexHasIndex,
   isRebuildingRetrievalIndex,
   lastRebuildRetrievalResult,
+  onSelectChapterDiscussDirection,
+  onRegenerateChapterDiscuss,
+  onCustomChapterDiscuss,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const isAssistant = message.role === "assistant";
   const [hovered, setHovered] = useState(false);
-  const [contextTraceExpanded, setContextTraceExpanded] = useState(false);
+  const [contextTraceExpanded] = useState(false);
+  /**
+   * 事件细纲：助手回复里带 `eventOutlineData` 时，在气泡下方挂一张卡片。
+   *
+   * 已有的同形先例是上面那段 chapter_discuss 的剥离逻辑 —— 结构化数据由程序消费，
+   * 用户该看到的是卡片，不是裸 JSON。这里只是把同一套做法对齐到事件细纲这条产线
+   * （它原先只在章节区本地渲染卡片，用户要求改成「在 AI 对话里显示」）。
+   *
+   * ⚠️ 三道闸都不能省：
+   * - **只认助手消息**：用户消息里也可能粘贴一段细纲 JSON，那不是生成结果；
+   * - **生成中不解析**（`isAgentRunning`）：流式期间每条 token 都会重渲染，
+   *   而这个解析要逐字符配平花括号 —— 对一条几千字的回复做几十次是白烧 CPU。
+   *   生成结束时 `isAgentRunning` 转假，卡片随之出现，用户不会少看到什么；
+   * - **先做一次子串预筛**：`"events"` 是 JSON 里的键名，不可能不出现。绝大多数
+   *   回复连这个子串都没有，预筛之后就完全不进那个 O(n) 的扫描。
+   */
+  const eventOutline = useMemo(
+    () =>
+      isAssistant && !message.discarded && !message.isAgentRunning && message.content.includes('"events"')
+        ? extractEventOutlineData(message.content)
+        : null,
+    [isAssistant, message.content, message.discarded, message.isAgentRunning],
+  );
+  /**
+   * 共创（discuss）轮：气泡里隐藏 chapter_discuss 协议标记。
+   * 生成过程中的正文可能已带上 `<!-- chapter_discuss -->{json}`，不剥离会让用户看到裸 JSON。
+   *
+   * ⚠️ 两条剥离**不是二选一**（用户 2026-10-13 实测的裸 JSON 就是这么漏出来的）：
+   * 同一条回复完全可能既有 `chapter_discuss` 协议块、又有 `eventOutlineData` 围栏 ——
+   * 共创判「前文不足以推演」时，模型经常顺手把整章事件细纲也一起给了出来。
+   * 原先写成互斥三元（有协议只剥协议、没有协议才剥围栏），恰好把**这一种**回复漏在
+   * 两个分支之外：协议块被剥掉了，围栏里的裸 JSON 原样留在气泡里。
+   * 两件事各管各的，按顺序各做一遍即可，单协议/单细纲的老路径行为完全不变。
+   */
+  const displayContent = useMemo(() => {
+    let text = message.content;
+    if (message.chapterDiscussPhase || message.chapterDiscussProtocol || message.chapterDiscussError || message.chapterDiscussNotice) {
+      text = stripStructuredMarkers(text);
+    }
+    if (eventOutline) {
+      /**
+       * 2026-10-18 起细纲提示词只要求模型输出 JSON（不再手写 Markdown 细纲，写两遍付两次钱），
+       * 于是摘掉围栏后气泡会**空着**。空着不是「没生成」，只是正文挪到了软件这边生成：
+       * 这里用 `renderEventOutlineMarkdown` 从数据反推一份，用户仍可在气泡里拖选复制。
+       *
+       * 提示词允许模型在围栏外留一句「已生成第N章事件细纲」的交代，所以不能只看
+       * 「剥完还有没有字」——那句话同样会顶掉正文（用户看到一条 12 字的回复，
+       * 内容却在 JSON 里）。只有剥完仍是一份**带标题的手写细纲**时才用原文，
+       * 其余一律用反推正文。老消息本来就有模型手写的正文，走的就是保留分支。
+       */
+      const stripped = stripEventOutlineDataFence(text);
+      text = looksLikeEventOutlineDeliveryNote(stripped)
+        ? renderEventOutlineMarkdown(eventOutline)
+        : stripped;
+    }
+    return text;
+  }, [
+    message.content,
+    message.chapterDiscussPhase,
+    message.chapterDiscussProtocol,
+    message.chapterDiscussError,
+    message.chapterDiscussNotice,
+    eventOutline,
+  ]);
+  /**
+   * 共创判「前文不足以推演」、而这条回复**同时**给了一份可用的事件细纲 —— 2026-10-13
+   * 起不再单独渲染那张琥珀卡，改成把原因与三枚动作并进细纲卡片（用户要求）。
+   *
+   * 只有这一种组合才合并：`needs_choice`（真给了多向方向）与「没有细纲的 insufficient」
+   * 都照旧走 ChapterDiscussCard —— 那两种场合没有细纲卡可以承载这些按钮，
+   * 硬合并会把卡片连同方向候选一起弄丢。
+   */
+  const insufficientDiscuss = message.chapterDiscussProtocol?.status === "insufficient"
+    ? message.chapterDiscussProtocol
+    : null;
+  const mergeDiscussIntoOutlineCard = Boolean(eventOutline && insufficientDiscuss);
   const canResumeUnfinished = Boolean(
     novelMode &&
     isLastAssistant &&
     onContinueUnfinished &&
     canContinueUnfinishedDeepChapter(message.content),
   );
+  /**
+   * 上一条回复是被用户手动停止的（正文结尾带着「已停止生成。」这类收尾提示）。
+   *
+   * 只在**最后一条**助手消息、且这一轮已经跑完（isAgentRunning 转假）时成立：
+   * 流式当中正文里还没有收尾提示，历史消息里的停止提示也不该再长出按钮 ——
+   * 那两个按钮是给"刚刚停下、马上要决定下一步"这一刻用的。
+   *
+   * 这里刻意**不看** novelMode：停止是用户在面板上亲手按的，按钮该不该出现
+   * 只取决于"上一轮是不是被停止过"，跟项目是不是小说模式没有关系。
+   * （旁边的 canResumeUnfinished 需要 novelMode，因为它专指深度章节生成。）
+   */
+  const isStoppedGeneration = Boolean(
+    isLastAssistant &&
+    !message.isAgentRunning &&
+    isStoppedGenerationMessage(message.content),
+  );
+  /**
+   * 上一条回复是**生成失败**的（正文结尾带着 `出错：…`）。
+   *
+   * 与"已停止"同一个口径：只认最后一条助手消息、且这一轮已经跑完。
+   * 历史里失败过的消息不再长出按钮 —— 那两枚动作只服务"刚刚失败、马上要决定
+   * 下一步"这一刻，翻旧账时它们既无用（请求上下文已经变了）又占地方。
+   */
+  const isFailedGeneration = Boolean(
+    isLastAssistant &&
+    !message.isAgentRunning &&
+    !isStoppedGeneration &&
+    isFailedGenerationMessage(message.content),
+  );
+  /**
+   * 「继续」能不能用：失败前是否真的写出了内容。
+   *
+   * 401 / 404 这类失败一个字都没产出，此时"接着写"没有可接的断点，
+   * 按钮做禁用态并说明原因（用户要求失败时两个按钮都在，那就如实禁用）。
+   */
+  const canContinueFailed = hasFailedGenerationPartialContent(message.content);
   const currentContextHubSnapshot = message.contextHubSnapshot
     ? parseContextHubSnapshotRef(message.contextHubSnapshot)
     : null;
-  const hasContextTrace = Boolean(
-    currentContextHubSnapshot ||
-    (message.contextTrace &&
-      (message.contextTrace.toolCalls.length > 0 ||
-        message.contextTrace.contextInfo)),
-  );
 
   // 仅对最后一条流式助手消息提取 thinking，避免历史消息重复提取
   const isLastStreamingAssistant = isLastAssistant && isAssistant;
@@ -199,27 +357,121 @@ export function ChatMessage({
                   onReject={onRejectTool}
                 />
               ) : null}
-              {message.isAgentRunning && !message.content ? (
-                <AgentThinkingIndicator />
-              ) : (
+              {!message.isAgentRunning || message.content ? (
                 <AgentAwareContent
-                  content={message.content}
+                  content={displayContent}
                   projectPath={projectPath}
                 />
-              )}
+              ) : null}
+              {/* 等待文案挂在正文之后：整段生成期间始终显示在最下面，
+                  生成结束（isAgentRunning 转假）时随指示器一起消失。 */}
+              {message.isAgentRunning ? <AgentThinkingIndicator /> : null}
             </>
           )}
         </div>
+        {/*
+          * 事件细纲卡片挂在助手气泡**下方**（不是气泡内）。
+          *
+          * 与大纲助手（outline-chat-panel）里那张卡片是同一个组件、同一个交接回调，
+          * 差别只在宿主：用户要求「点章节工具栏的生成按钮后，内容发进 AI 对话、
+          * 生成结果在 AI 对话框里显示」，于是写作助手这一侧也要能认出细纲并渲染它。
+          *
+          * 只渲染只读视图：卡片上报的手改 / 重新生成 / 丢弃三枚入口在这里都不接线
+          * （各自的回调不传即不渲染），因为本面板没有承载细纲任务状态的地方 ——
+          * 接了线就会长出一枚点了没反应的按钮，比没有更糟。要手改就再让 AI 出一份。
+          */}
+        {isAssistant && !message.discarded && eventOutline ? (
+          <EventOutlineCard
+            data={eventOutline}
+            onWriteChapter={handoffEventOutlineToProse}
+            /*
+             * 下面三枚只在「共创判前文不足 + 这条回复给了细纲」时接线：其余场合
+             * 卡片保持原样（只读、只有「用这份细纲写这一章」），不会凭空多出按钮。
+             */
+            discussNote={mergeDiscussIntoOutlineCard ? insufficientDiscuss?.judgment : undefined}
+            onDiscussRegenerate={
+              mergeDiscussIntoOutlineCard && onRegenerateChapterDiscuss
+                ? () => onRegenerateChapterDiscuss(message.id, message.chapterDiscussProtocol!)
+                : undefined
+            }
+            onDiscussCustomIdea={
+              mergeDiscussIntoOutlineCard && onCustomChapterDiscuss
+                ? (idea) => onCustomChapterDiscuss(message.id, message.chapterDiscussProtocol!, idea)
+                : undefined
+            }
+          />
+        ) : null}
+        {/*
+          * 停止生成之后的补救动作，紧贴在「已停止生成」那句提示的下方。
+          * 停止按钮是这个应用里唯一「先停下 → 换个模型 → 再来一次」的入口，
+          * 所以停下之后必须当场给出「重试」和「继续」。判定与文案都在
+          * lib/novel/stopped-generation.ts 与 novel/stopped-generation-actions 里，
+          * 大纲面板用的是同一套，两个面板不会长得不一样。
+          */}
+        {isAssistant && !message.discarded && isStoppedGeneration ? (
+          <StoppedGenerationActions
+            className="mt-1"
+            onRetry={onRegenerate}
+            onContinue={onContinueStopped}
+          />
+        ) : null}
+        {isUser && !message.discarded ? <UserMessageMeta content={message.content} timestamp={message.timestamp} /> : null}
         {isAssistant && !message.discarded && (
           <CitedReferencesPanel
             content={message.content}
             savedReferences={message.references}
           />
         )}
+        {/*
+          共创方向卡。`!mergeDiscussIntoOutlineCard` 是 2026-10-13 加的那一条：
+          「判了前文不足、却又给了整章细纲」时，这张卡整张退场 —— 它的两枚按钮
+          （换一批 / 其他想法）已经并入上方细纲卡片，原因也搬了过去。留着的话
+          屏幕上就是两张卡 + 两枚「换一批」，用户得先猜按哪个（这正是用户反馈的
+          「单独出现」）。其余场合（needs_choice、没有细纲的 insufficient）照旧由
+          本卡承载，一个分支都没少。
+        */}
+        {isAssistant && !message.discarded && !message.isAgentRunning && message.chapterDiscussProtocol && !mergeDiscussIntoOutlineCard ? (
+          <ChapterDiscussCard
+            protocol={message.chapterDiscussProtocol}
+            decided={message.chapterDiscussDecision}
+            onSelect={(direction) =>
+              onSelectChapterDiscussDirection?.(
+                message.id,
+                message.chapterDiscussProtocol as ChapterDiscussProtocol,
+                direction,
+              )
+            }
+            onRegenerate={() =>
+              onRegenerateChapterDiscuss?.(
+                message.id,
+                message.chapterDiscussProtocol as ChapterDiscussProtocol,
+              )
+            }
+            onCustom={(idea) =>
+              onCustomChapterDiscuss?.(
+                message.id,
+                message.chapterDiscussProtocol as ChapterDiscussProtocol,
+                idea,
+              )
+            }
+            disabled={!onSelectChapterDiscussDirection}
+            disabledReason="请在生成结束或打开项目后重试。"
+          />
+        ) : null}
+        {isAssistant && !message.discarded && message.chapterDiscussNotice ? (
+          <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-50/60 px-2 py-1.5 text-[0.6875rem] leading-5 text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+            方向卡片已给出，但有一处不完整：{message.chapterDiscussNotice}
+          </div>
+        ) : null}
+        {isAssistant && !message.discarded && message.chapterDiscussError ? (
+          <div className="mt-2 rounded-md border border-red-500/30 bg-red-50/40 px-2 py-1.5 text-[0.6875rem] leading-5 text-red-700 dark:bg-red-950/20 dark:text-red-300">
+            本轮没有拿到方向卡片：{message.chapterDiscussError}。上方回复内容已保留，可再发一次或换个说法重试。
+          </div>
+        ) : null}
         {isAssistant && !message.discarded && (
-          <div className="flex items-center gap-1 flex-wrap">
+          <div className="flex w-full items-center gap-1 flex-wrap">
             {canResumeUnfinished && (
-              <div className="basis-full rounded-md border border-amber-500/30 bg-amber-50/60 px-2 py-1.5 text-[11px] leading-5 text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+              <div className="basis-full rounded-md border border-amber-500/30 bg-amber-50/60 px-2 py-1.5 text-[0.6875rem] leading-5 text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
                 这次深度生成已经完成了部分思考过程。点击“继续未完成”会基于上方已有阶段继续往后生成，通常比“重新生成”更节省 token；如果前面的思考方向本身不对，再使用“重新生成”。
               </div>
             )}
@@ -230,9 +482,11 @@ export function ChatMessage({
                   onSaveAsChapter(message.id, message.content, message.agentToolCalls)
                 }
                 disabled={isSaving}
-                className="rounded border border-border px-2 py-0.5 text-[11px] text-foreground hover:bg-accent disabled:opacity-50"
+                className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent disabled:opacity-50"
+                title={isSaving ? "保存中" : "保存到章节库"}
+                aria-label={isSaving ? "保存中" : "保存到章节库"}
               >
-                {isSaving ? "保存中..." : "保存到章节库"}
+                <Save className="h-3.5 w-3.5" />
               </button>
             )}
             {novelMode && isLastAssistant && onContinueNextChapter && (
@@ -240,9 +494,11 @@ export function ChatMessage({
                 type="button"
                 onClick={onContinueNextChapter}
                 disabled={isSaving}
-                className="rounded border border-border px-2 py-0.5 text-[11px] text-foreground hover:bg-accent disabled:opacity-50"
+                className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent disabled:opacity-50"
+                title="继续生成下一章"
+                aria-label="继续生成下一章"
               >
-                继续生成下一章
+                <ArrowRight className="h-3.5 w-3.5" />
               </button>
             )}
             {canResumeUnfinished && (
@@ -250,7 +506,7 @@ export function ChatMessage({
                 type="button"
                 onClick={onContinueUnfinished}
                 disabled={isSaving}
-                className="rounded border border-amber-500/40 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800 hover:bg-amber-100 disabled:opacity-50 dark:bg-amber-950/20 dark:text-amber-300 dark:hover:bg-amber-950/35"
+                className="rounded border border-amber-500/40 bg-amber-50 px-2 py-0.5 text-[0.6875rem] text-amber-800 hover:bg-amber-100 disabled:opacity-50 dark:bg-amber-950/20 dark:text-amber-300 dark:hover:bg-amber-950/35"
                 title="基于已有思考过程继续生成，减少重复消耗"
               >
                 继续未完成
@@ -258,47 +514,57 @@ export function ChatMessage({
             )}
             {(hovered || (novelMode && isLastAssistant)) && (
               <CopyButton
-                content={message.content}
+                content={displayContent}
                 toolCalls={message.agentToolCalls}
               />
             )}
-            {isLastAssistant && onRegenerate && (
+            {/*
+              * 失败消息的补救动作，位置就在原本「重新生成」那一格：
+              * 保存 / 复制 → 重试 / 继续，与大纲面板那一排的顺序一致。
+              * 判定与提示词都在 lib/novel/failed-generation.ts 里，两侧同源。
+              */}
+            {isFailedGeneration ? (
+              <FailedGenerationActions
+                onRetry={onRegenerate}
+                onContinue={onContinueFailed}
+                continueDisabled={!canContinueFailed}
+              />
+            ) : null}
+            {/*
+              * 停止生成的消息不再单出一枚「重新生成」：它和上方那对
+              * 「重试」是同一个动作，并排出现只会让人猜哪个才是"换模型重来"。
+              * 重试按钮已经承担了这件事。失败消息同理 —— 上方那枚「重试」
+              * 接的就是 onRegenerate，再并排一枚会变成两个一模一样的按钮。
+              */}
+            {isLastAssistant && onRegenerate && !isStoppedGeneration && !isFailedGeneration && (
               <button
                 type="button"
                 onClick={onRegenerate}
-                className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
-                title="重新生成这条回复"
+                className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent transition-colors"
+                title="重新生成"
+                aria-label="重新生成"
               >
-                <RefreshCw className="h-3 w-3" /> 重新生成
+                <RefreshCw className="h-3.5 w-3.5" />
               </button>
             )}
-            {hasContextTrace && (
-              <button
-                type="button"
-                onClick={() => setContextTraceExpanded(!contextTraceExpanded)}
-                className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
-                title="查看生成详情"
-              >
-                <Info className="h-3 w-3" />
-                {contextTraceExpanded ? "收起详情" : "查看生成详情"}
-                {contextTraceExpanded ? (
-                  <ChevronDown className="h-3 w-3" />
-                ) : (
-                  <ChevronRight className="h-3 w-3" />
-                )}
-              </button>
-            )}
+            {!message.isAgentRunning ? (
+              <div className="ml-auto"><UiTestGenerationStats stats={currentContextHubSnapshot?.stats} timing={message.generationTiming} /></div>
+            ) : currentContextHubSnapshot ? (
+              <div className="ml-auto"><ContextHubDetails reference={currentContextHubSnapshot} timing={message.generationTiming} /></div>
+            ) : null}
           </div>
         )}
-        {isAssistant &&
+        {false && isAssistant &&
           !message.discarded &&
+          !message.isAgentRunning &&
           contextTraceExpanded &&
           (message.contextTrace || currentContextHubSnapshot) && (
             <div className="mt-1">
               {message.contextTrace ? (
                 <ContextTracePanel
-                  trace={message.contextTrace}
+                  trace={message.contextTrace ?? null}
                   contextHubSnapshot={currentContextHubSnapshot ?? undefined}
+                  generationTiming={message.generationTiming}
                   projectPath={projectPath}
                   onRebuildRetrievalIndex={onRebuildRetrievalIndex}
                   retrievalIndexHasIndex={retrievalIndexHasIndex}
@@ -307,8 +573,8 @@ export function ChatMessage({
                 />
               ) : currentContextHubSnapshot ? (
                 <ContextHubDetails
-                  reference={currentContextHubSnapshot}
-                  projectPath={projectPath}
+                  reference={currentContextHubSnapshot!}
+                  timing={message.generationTiming}
                 />
               ) : null}
             </div>
@@ -349,15 +615,15 @@ function CopyButton({
       type="button"
       onClick={handleCopy}
       disabled={!copyable}
-      className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors disabled:opacity-40"
+      className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent transition-colors disabled:opacity-40"
+      aria-label={copied ? "已复制" : "复制"}
       title={
         hasRecoveredChapterBody
           ? "复制已完成的章节正文（不含错误信息）"
           : "复制到剪贴板"
       }
     >
-      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-      {copied ? "已复制" : hasRecoveredChapterBody ? "复制正文" : "复制"}
+      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
     </button>
   );
 }
@@ -580,7 +846,7 @@ function CitedReferencesPanel({
               className="flex w-full items-center gap-1.5 rounded text-left"
               title={page.path}
             >
-              <span className="text-[10px] text-muted-foreground/60 w-4 shrink-0 text-right">
+              <span className="text-[0.625rem] text-muted-foreground/60 w-4 shrink-0 text-right">
                 [{i + 1}]
               </span>
               {/*
@@ -602,7 +868,7 @@ function CitedReferencesPanel({
                   onClick={() =>
                     handleJumpToImageSource(info.firstUrl!, page.path)
                   }
-                  className="flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-blue-600 hover:bg-blue-100/40 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors"
+                  className="flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[0.625rem] text-blue-600 hover:bg-blue-100/40 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors"
                   title={`打开第一张图片所在原始文档（本页共 ${info.count} 张图片）`}
                 >
                   <ImageIcon className="h-3 w-3" />
@@ -626,7 +892,7 @@ function CitedReferencesPanel({
           <button
             type="button"
             onClick={() => setExpanded(true)}
-            className="w-full text-center text-[10px] text-muted-foreground hover:text-primary pt-0.5"
+            className="w-full text-center text-[0.625rem] text-muted-foreground hover:text-primary pt-0.5"
           >
             +{citedPages.length - MAX_COLLAPSED} 条更多引用...
           </button>
@@ -753,10 +1019,11 @@ export function StreamingMessage({ content, isStreaming = true }: StreamingMessa
 }
 
 function AgentThinkingIndicator() {
+  const hint = useWaitingHint(true);
   return (
     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-      <span>正在生成中...</span>
+      <span>{hint ?? "正在生成中..."}</span>
     </div>
   );
 }
@@ -1047,7 +1314,7 @@ function StreamingWorkflowBlock({ content }: { content: string }) {
         className="w-full min-w-0 max-h-72 overflow-y-auto overflow-x-hidden pr-1 text-xs text-blue-800/70 dark:text-blue-300/60 leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] [contain:content]"
       >
         {display.truncated ? (
-          <div className="mb-1 text-[11px] text-blue-700/60 dark:text-blue-400/60">…上文已省略</div>
+          <div className="mb-1 text-[0.6875rem] text-blue-700/60 dark:text-blue-400/60">…上文已省略</div>
         ) : null}
         {display.text}
         <span className="text-blue-500"><StreamingSpinner /></span>
@@ -1067,7 +1334,7 @@ function WorkflowBlock({ content }: { content: string }) {
         <span className="text-sm">📋</span>
         <span className="font-medium">{title}</span>
         {stageCount !== null && (
-          <span className="text-[10px] text-blue-600/60 dark:text-blue-500/60">{stageCount} 个阶段</span>
+          <span className="text-[0.625rem] text-blue-600/60 dark:text-blue-500/60">{stageCount} 个阶段</span>
         )}
       </div>
       <div className="w-full min-w-0 max-h-72 overflow-y-auto overflow-x-hidden border-t border-blue-500/20 px-2.5 py-2 pr-1 text-xs text-blue-800/80 dark:text-blue-300/70 whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere] [contain:content]">

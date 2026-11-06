@@ -2,8 +2,9 @@ import type { ToolRegistry } from "./registry"
 import type { AgentRunCallbacks, AgentRunRecord, ToolCall } from "./types"
 import { TOOL_EXECUTE_TIMEOUT_MS } from "./types"
 import { isToolErrorResult } from "./tool-result"
+import { splitToolResultForModel } from "@/lib/search-display"
 
-export function withToolTimeout<T>(operation: Promise<T>, timeoutMs: number | undefined): Promise<T> {
+function withToolTimeout<T>(operation: Promise<T>, timeoutMs: number | undefined): Promise<T> {
   const resolvedTimeoutMs = timeoutMs ?? TOOL_EXECUTE_TIMEOUT_MS
   if (resolvedTimeoutMs <= 0) return operation
   return new Promise<T>((resolve, reject) => {
@@ -27,6 +28,42 @@ export interface ExecuteAgentToolResult {
   success: boolean
   /** finalizesRun 工具通过 onFinalContent 交付的终稿，取最后一次交付。 */
   finalContent?: string
+}
+
+export function rejectAgentToolCall(
+  call: Pick<ToolCall, "id" | "name">,
+  message: string,
+  callbacks: AgentRunCallbacks,
+): ExecuteAgentToolResult {
+  const timestamp = Date.now()
+  const params: Record<string, unknown> = {}
+  const record: AgentRunRecord["toolCalls"][number] = {
+    id: call.id,
+    name: call.name,
+    params,
+    result: message,
+    status: "error",
+    startedAt: timestamp,
+    finishedAt: timestamp,
+  }
+  callbacks.onToolCall({ id: call.id, name: call.name, arguments: params })
+  callbacks.onToolEvent?.({
+    type: "call_started",
+    callId: call.id,
+    name: call.name,
+    params,
+    timestamp,
+  })
+  callbacks.onToolError(call.id, message)
+  callbacks.onToolEvent?.({
+    type: "error",
+    callId: call.id,
+    name: call.name,
+    params,
+    result: message,
+    timestamp,
+  })
+  return { record, responseText: message, success: false }
 }
 
 export async function executeAgentTool(
@@ -164,7 +201,8 @@ export async function executeAgentTool(
     })
     return {
       record,
-      responseText: result,
+      // 带 uiDisplay 的结果（Gemini 搜索建议 HTML）只存进记录给界面用，不发给模型；其它结果原样。
+      responseText: splitToolResultForModel(result),
       success: true,
       ...(deliveredFinalContent ? { finalContent: deliveredFinalContent } : {}),
     }

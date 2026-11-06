@@ -1,0 +1,279 @@
+/* 仅两个助手的 VITE_QMAI_UI_TEST 标识生效；宽度、外壳与共享 portal 主题由主布局负责。 */
+[data-ui-ai-panel] {
+  min-width: 0;
+  min-height: 0;
+  gap: 12px;
+  padding: var(--ui-heading-top) 18px 6px;
+  border: 0;
+  background: var(--ui-panel);
+  color: var(--ui-ink);
+  font: 0.875rem/1.85 var(--ui);
+}
+
+[data-ui-ai-header] {
+  min-height: var(--ui-heading-line);
+  height: auto;
+  min-width: 0;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+[data-ui-ai-panel] .ui-test-ai-identity { display: flex; align-items: center; gap: 8px; min-width: 0; order: 0; justify-content: flex-start; }
+[data-ui-ai-panel] .ui-test-ai-mark { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 24px; height: 24px; border-radius: 7px; background: var(--ui-soft); color: var(--ui-accent); }
+[data-ui-ai-panel] .ui-test-ai-mark svg { width: 13px; height: 13px; }
+[data-ui-ai-panel] .ui-test-ai-heading { min-width: 0; flex: 1; }
+[data-ui-ai-panel] .ui-test-ai-title { display: flex; align-items: center; gap: 6px; }
+[data-ui-ai-panel] .ui-test-ai-title strong { font-size: 0.875rem; font-weight: 500; line-height: var(--ui-heading-line); }
+[data-ui-ai-panel] .ui-test-ai-session { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px; font-size: 0.75rem; line-height: 1.5; color: var(--ui-muted); }
+[data-ui-ai-header] > .qmai-header-actions { order: 0; margin-left: auto; }
+[data-ui-ai-header] > .relative { margin-left: 0; }
+[data-ui-ai-header] > .flex.min-w-0 { display: none; }
+[data-ui-ai-header] .qmai-new-conversation-button { width: 28px; height: var(--ui-heading-line); border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+[data-ui-ai-header] .qmai-new-conversation-button svg, [data-ui-ai-header] [aria-label^="关闭"] svg { width: 16px; height: 16px; }
+[data-ui-ai-header] .qmai-history-button, [data-ui-ai-header] .qmai-outline-history-button { width: auto; min-width: 0; padding: 5px 8px; }
+[data-ui-ai-header] button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: var(--ui-heading-line); flex-shrink: 0; padding: 5px; border: 0; border-radius: 8px; background: transparent; color: var(--ui-muted); box-shadow: none; }
+[data-ui-ai-header] button:hover:not(:disabled) { background: var(--ui-soft); color: var(--ui-accent); }
+[data-ui-ai-header] button:disabled { opacity: .45; }
+/* 图标入口保留中文 aria-label；只收起重复文字及数量，不隐藏操作。 */
+[data-ui-ai-header] .qmai-history-button > span:first-of-type,
+[data-ui-ai-header] .qmai-outline-history-button > span:first-of-type,
+[data-ui-ai-header] .qmai-history-button > svg:last-child,
+[data-ui-ai-header] .qmai-outline-history-button > svg:last-child { display: none; }
+
+[data-ui-ai-panel] .ui-test-ai-context { display: flex; align-items: center; gap: 7px; flex-shrink: 0; min-width: 0; padding: 9px 10px; border-radius: 8px; background: var(--ui-paper); color: var(--ui-muted); font-size: 0.75rem; line-height: 1.6; }
+[data-ui-ai-panel] .ui-test-ai-context svg { width: 14px; height: 14px; flex-shrink: 0; }
+[data-ui-ai-panel] .ui-test-ai-context span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-test-context-details { margin-top: 8px; }
+.ui-test-reference-context-column { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
+.ui-test-reference-context-column > details { flex: 1; min-width: 0; margin: 0; }
+.ui-test-reference-context-column .ui-test-context-details { flex: 0 0 auto; margin: 0 0 0 auto; }
+.ui-test-context-stats { display: flex; align-items: center; gap: 10px; color: var(--ui-muted); font-size: 0.75rem; line-height: 1.6; }
+.ui-test-context-stats button, .ui-test-context-stats span { display: inline-flex; align-items: center; gap: 4px; }
+.ui-test-context-stats svg { width: 13px; height: 13px; }
+.ui-test-usage-popover { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 30; width: 230px; padding: 10px; border: 1px solid var(--ui-line); border-radius: 10px; background: var(--ui-paper); box-shadow: 0 8px 24px #203b2b14; }
+.ui-test-usage-popover div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
+.ui-test-context-stats span { white-space: nowrap; }
+[data-ui-ai-body] { min-width: 0; gap: 18px; }
+[data-ui-ai-scroll] { min-width: 0; min-height: 0; padding: 0 2px 0 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--ui-soft) transparent; }
+[data-ui-ai-scroll] > .flex.flex-col { gap: 24px; }
+[data-ui-ai-panel="outline"] [data-ui-ai-scroll] > [data-ui-ai-message] + [data-ui-ai-message] { margin-top: 24px; }
+[data-ui-ai-message] { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+[data-ui-ai-message="user"] { width: calc(100% - 22px); margin-left: 22px; }
+[data-ui-ai-panel="chapter"] [data-ui-ai-message] > .flex > div:first-child { display: none; } /* 仅去掉旧头像装饰，作者名在正文上方。 */
+[data-ui-ai-panel="chapter"] [data-ui-ai-message] > .flex > div:last-child { width: 100%; min-width: 0; max-width: 100%; }
+[data-ui-ai-panel="chapter"] [data-ui-ai-message="user"] > .flex > div:last-child > div:first-child,
+[data-ui-ai-panel="outline"] [data-ui-ai-message="user"] > div {
+  width: 100%; min-width: 0; max-width: 100%; padding: 12px 14px; border: 0; border-radius: 12px;
+  background: var(--ui-soft); color: var(--ui-ink); font-size: 0.8125rem; line-height: 1.85;
+}
+[data-ui-ai-panel="chapter"] [data-ui-ai-message="assistant"] > .flex > div:last-child > div:first-child,
+[data-ui-ai-panel="outline"] [data-ui-ai-message="assistant"] > div,
+[data-ui-ai-panel="chapter"] [data-ui-ai-stream] > .flex > div:last-child {
+  min-width: 0; max-width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--ui-ink); box-shadow: none;
+}
+[data-ui-ai-panel] .ui-test-ai-author { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; color: var(--ui-muted); font-size: 0.75rem; line-height: 1.6; }
+[data-ui-ai-panel] .ui-test-ai-author svg { width: 14px; height: 14px; flex-shrink: 0; }
+[data-ui-ai-message] .chat-markdown { font: 0.875rem/1.85 var(--ui); color: var(--ui-ink); overflow-wrap: anywhere; }
+[data-ui-ai-message] .chat-markdown p { margin: 0 0 12px; line-height: 1.85; }
+[data-ui-ai-message] .chat-markdown :is(h1, h2, h3, h4) { margin: 14px 0 10px; padding: 0; border: 0; font: 500 0.9375rem/1.65 var(--ui); color: var(--ui-ink); }
+[data-ui-ai-message] .chat-markdown :is(pre, table) { max-width: 100%; overflow-x: auto; }
+[data-ui-ai-message] .chat-markdown pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+[data-ui-ai-message] .chat-markdown img { max-width: 100%; height: auto; }
+[data-ui-ai-actions],
+[data-ui-ai-panel="chapter"] [data-ui-ai-message="assistant"] > .flex > div:last-child > .flex.flex-wrap { display: flex; flex-wrap: nowrap; align-items: center; gap: 4px; width: 100%; margin-top: 15px; padding-top: 0; border: 0; }
+[data-ui-ai-actions] details > ul { position: absolute; }
+[data-ui-ai-actions] > button,
+[data-ui-ai-panel="chapter"] [data-ui-ai-message="assistant"] > .flex > div:last-child > .flex.flex-wrap > button { min-height: 28px; max-width: 100%; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--ui-accent); font: 0.75rem/1.5 var(--ui); white-space: normal; }
+[data-ui-ai-actions] > button:hover:not(:disabled),
+[data-ui-ai-panel="chapter"] [data-ui-ai-message="assistant"] > .flex > div:last-child > .flex.flex-wrap > button:hover:not(:disabled) { background: var(--ui-soft); }
+
+[data-ui-ai-panel] .ui-test-ai-empty { display: flex; min-height: 180px; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px 12px; text-align: center; color: var(--ui-muted); }
+[data-ui-ai-panel] .ui-test-ai-empty > svg { width: 28px; height: 28px; color: var(--ui-accent); }
+[data-ui-ai-panel] .ui-test-ai-empty h3 { margin: 0; font: 500 1.25rem/1.6 var(--serif); color: var(--ui-ink); }
+[data-ui-ai-panel] .ui-test-ai-empty p { max-width: 260px; margin: 0; font-size: 0.8125rem; line-height: 1.85; }
+/* 空会话的主行动必须看起来就是个按钮（现在是「生成小说大纲」与「生成章节细纲」两个）。
+   此前用 --ui-soft 底 + --ui-accent 字，观感接近一段说明文字，用户不知道能点。 */
+[data-ui-ai-panel] .ui-test-ai-empty button { padding: 0.5rem 1rem; border-radius: 0.5rem; background: var(--ui-accent); color: var(--ui-on-accent); font-size: 0.8125rem; font-weight: 500; cursor: pointer; }
+[data-ui-ai-panel] .ui-test-ai-empty button:hover:not(:disabled) { background: color-mix(in srgb, var(--ui-accent) 86%, var(--ui-ink)); }
+
+/* 空会话的两个主行动并排：「生成小说大纲」（全书规划）与「生成章节细纲」（当天这一章）。 */
+[data-ui-ai-panel] .ui-test-ai-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+[data-ui-ai-panel="outline"] > [data-ui-ai-input-area] { min-width: 0; padding-inline: 0; }
+
+[data-ui-ai-composer] { min-width: 0; padding: 0; border: 0; background: transparent; overflow: visible; }
+/* 写作区输入框包在 .shrink-0.bg-background 里，不是面板的直接子节点。这层直角白底会从圆角外露出来。 */
+[data-ui-ai-panel] .bg-background:has(> [data-ui-ai-composer]) { background-color: transparent; }
+[data-ui-ai-composer] > .border-t { padding: 0; border: 0; }
+[data-ui-ai-panel] [data-reference-input-footer] > div:first-child { flex-wrap: nowrap; }
+[data-ui-ai-panel] [data-reference-input-footer] [aria-label="上下文用量"] { display: inline-flex; flex: 0 0 auto; width: 28px; height: 28px; color: var(--ui-muted); }
+[data-ui-ai-tools] { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; margin-bottom: 8px; }
+[data-ui-ai-tools] > .flex { flex: 1; flex-wrap: wrap; gap: 4px; overflow: visible; }
+[data-ui-ai-tools] > [aria-label="上下文用量"] { order: 3; margin-left: auto; }
+[data-ui-ai-tools] :is(button[aria-haspopup="listbox"], button[aria-haspopup="menu"], button[aria-pressed]) { width: auto; min-height: 28px; height: auto; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--ui-muted); font: 0.75rem/1.5 var(--ui); box-shadow: none; }
+[data-reference-input-footer] :is(button[aria-haspopup="listbox"], button[aria-haspopup="menu"], button[aria-pressed]) { border: 0; border-radius: 7px; background: transparent; box-shadow: none; }
+[data-ui-ai-tools] button[aria-pressed="true"] { background: var(--ui-soft); color: var(--ui-accent); }
+[data-ui-ai-tools] button:hover:not(:disabled) { background: var(--ui-soft); }
+[data-ui-ai-tools] [aria-label="上下文用量"] { color: var(--ui-muted); }
+/* WKWebView 里 overflow:auto/scroll 不会把 background 裁进 border-radius，边框是圆的、白底仍是直角。overflow:hidden 加 clip-path 才会裁掉圆弧外的底色。 */
+[data-ui-ai-composer] div:has(> [data-reference-input-footer]) { max-height: min(58dvh, 460px); overflow: hidden; clip-path: inset(0 round 14px); border: 1px solid color-mix(in srgb, var(--ui-line) 45%, transparent); border-radius: 14px; background: var(--ui-paper); background-clip: padding-box; box-shadow: none; }
+[data-ui-ai-composer] div:has(> [data-reference-input-footer]):focus-within { border-color: color-mix(in srgb, var(--ui-line) 45%, transparent); outline: none; box-shadow: none; --tw-ring-shadow: 0 0 #0000; }
+[data-ui-ai-panel="outline"] [data-ui-ai-composer] div:has(> [data-reference-input-footer]):focus-within { border-color: color-mix(in srgb, var(--ui-line) 45%, transparent); box-shadow: none; outline: none; --tw-ring-shadow: 0 0 #0000; }
+[data-ui-ai-composer] textarea:focus, [data-ui-ai-composer] textarea:focus-visible { outline: none; box-shadow: none; }
+[data-ui-ai-panel="outline"] [data-ui-ai-composer] textarea:is(:focus, :focus-visible) { caret-color: var(--ui-accent); }
+[data-ui-ai-panel] .ui-test-outline-command { color: var(--ui-accent); font-weight: 600; }
+[data-ui-ai-composer]:has(.ui-test-outline-command) textarea { color: transparent; caret-color: var(--ui-accent); }
+[data-ui-ai-composer] .ui-test-command-overlay { position: absolute; top: 4px; right: 0; left: 0; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; color: var(--ui-ink); font: 0.875rem/1.7 var(--ui); }
+[data-ui-ai-composer] [role="separator"] { background: transparent; }
+[data-ui-ai-composer] [role="separator"] > span { background: var(--ui-soft); }
+[data-ui-ai-composer] textarea { color: var(--ui-ink); font: 0.875rem/1.7 var(--ui); }
+[data-ui-ai-composer] textarea::placeholder { color: var(--ui-muted); opacity: 1; }
+[data-ui-ai-composer] [data-reference-input-footer] {
+  /*
+   * 收窄时**不换行**。这里曾经是 flex-wrap: wrap，配一条注释说明
+   * 「一行放不下时，思考深度、模型和发送整组落到第二排，避免末尾被裁切」——
+   * 用户看过实机后判定那是缺陷：底栏被收窄时变成上下两排，看起来像排错了，
+   * 要的是**模型框跟着收窄**。所以现在靠压缩与截断让位，不靠换行。
+   * 代价是极窄时文字会被省略号截掉 —— 这是有意选择：宁可截断也不摆成两排。
+   */
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  /*
+   * 8px → 4px：这一条管的是**左控件组 ↔ @ 按钮 ↔ 右控件组**之间的距离。
+   * @ 按钮在视觉上属于左边那簇图标（它紧跟在「文风」按钮后面），
+   * 所以要和左组内部一样收紧，否则 @ 会孤零零地飘在图标簇外面。
+   * 右组有 margin-left:auto，它到 @ 的距离是剩余空间，不受这条影响。
+   * 详见 ReferenceInput.tsx 里左组 `gap-0.5` 那段说明。
+   */
+  gap: 4px;
+  min-width: 0;
+  /* 底和右侧留出圆角半径，避免发送按钮被 14px 圆角裁掉。 */
+  padding: 8px 14px 14px;
+  border: 0;
+}
+/*
+ * 右组（思考深度 + 模型 + 发送）从「撑满并保证不小于内容宽」改为「可压缩到 0 宽」。
+ * 旧写法的 min-width: min(100%, max-content) 正是换行的根因：它保证这一组永远
+ * 不小于自己的内容宽度，空间不够时 flex 只能把它整组挤到下一排。
+ */
+/*
+ * 右组整体也优先让位：flex-shrink 给一个极大的权重。
+ *
+ * 只在模型那层给大权重是不够的 —— flex 的收缩量是在**每一层各自**按
+ * (flex-shrink × flex-basis) 分配的。在底栏这一层，左组与右组权重相当，
+ * 于是实测左组也被压掉一半（156px → 78.8px），把「计划」按钮裁掉了。
+ * 使用者要的是"模型框收窄"，被裁的不该是一个功能按钮。
+ * 这里把右组在底栏这一层的收缩权重拉高，让模型先让位；左组只在模型压无可压时
+ * 才作为最后手段让步（下面那条仍有 min-width:0，配合 overflow:hidden 兜底）。
+ */
+[data-ui-ai-composer] [data-reference-input-footer] > div:last-child {
+  flex: 0 1000 auto;
+  justify-content: flex-end;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+  gap: 2px;
+}
+/* 左组也要可压缩：极窄时先让「快速」这类文字让步，而不是把右组顶到第二排。 */
+[data-ui-ai-composer] [data-reference-input-footer] > div:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+[data-ui-ai-composer] [data-reference-input-footer] > div:last-child > .ui-test-ai-model {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  gap: 2px;
+}
+[data-ui-ai-composer] [data-reference-input-footer] > div:last-child > .relative,
+[data-ui-ai-composer] .ui-test-ai-model > .relative { flex: 0 0 auto; width: auto; min-width: 0; }
+/*
+ * 模型选择是**唯一**优先被压缩的那一项：它的文案最长（模型名），被截断了也还有
+ * title 能看全名。所以：
+ *   - 它从 flex:0 0 auto 放开为可收缩，且 flex-shrink 给一个极大的权重，
+ *     让收窄时**先压它**（用户的要求是"把模型框收窄"），压到 0 才轮到别人；
+ *   - .relative 自己变成 flex 容器，按钮作为 flex 项才能被压到 min-content 以下
+ *     （flex 项的自动最小尺寸就是 min-content，不放开 min-width 永远截不断）。
+ * 思考深度那个 .relative 保持 flex:0 0 auto（上面那条）。
+ */
+[data-ui-ai-composer] .ui-test-ai-model > .relative:last-child { display: flex; flex: 0 1000 auto; width: auto; min-width: 0; overflow: hidden; }
+[data-ui-ai-composer] [data-reference-input-footer] > div:last-child > .relative > button,
+[data-ui-ai-composer] .ui-test-ai-model > .relative > button { width: auto; min-width: 0; max-width: 9rem; padding: 5px 2px; border: 0; background: transparent; color: var(--ui-muted); box-shadow: none; font-size: 0.75rem; }
+[data-ui-ai-composer] .ui-test-ai-model > .relative:last-child > button { flex: 1 1 auto; min-width: 44px; }
+/* 模型名那个 span 是 flex 项，自动最小尺寸等于 min-content；不放开 min-width 就永远截不断。 */
+[data-ui-ai-composer] .ui-test-ai-model > .relative > button > span { flex: 0 1 auto; width: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+[data-ui-ai-composer] [aria-label="引用内容"] { flex-shrink: 0; color: var(--ui-muted); }
+[data-ui-ai-composer] [aria-label="发送消息"] { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; height: 32px; padding: 0; line-height: 0; border-radius: 9px; background: var(--ui-accent); color: var(--ui-on-accent); }
+[data-ui-ai-composer] [aria-label="发送消息"]:disabled { background: var(--ui-soft); color: var(--ui-muted); }
+/* 外框固定 32px 后，图标仍按行高贴在内容起点，箭头和停止方块都会偏。去掉内边距并居中。 */
+[data-ui-ai-composer] [aria-label="停止生成"] { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; height: 32px; padding: 0; line-height: 0; }
+[data-ui-ai-composer] .relative > .flex.flex-wrap { max-height: 96px; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; }
+[data-ui-ai-panel] [data-reference-id] { display: inline-block; max-width: 100%; min-width: 0; border-color: transparent; background: var(--ui-soft); color: var(--ui-accent); font-size: 0.75rem; white-space: normal; overflow-wrap: anywhere; vertical-align: middle; }
+[data-ui-ai-panel] [data-reference-id] button { display: inline-flex; vertical-align: middle; color: var(--ui-muted); }
+
+/* 这些菜单由本面板创建；配色 token 由测试版的共享 portal 桥接继承。 */
+[data-ui-ai-menu] { max-width: calc(100vw - 16px); max-height: min(60dvh, 360px); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; border: 0; border-radius: 12px; padding: 8px; background: var(--ui-paper); color: var(--ui-ink); font: 0.8125rem/1.65 var(--ui); box-shadow: 0 12px 40px color-mix(in srgb, var(--ui-ink) 16%, transparent); }
+[data-ui-ai-menu="mode"] { max-height: none; overflow: visible; }
+[data-ui-ai-menu="history"] > .group { width: 100%; min-width: 0; margin: 2px 0; padding: 4px; border: 0; border-radius: 8px; background: transparent; box-shadow: none; }
+[data-ui-ai-menu="history"] > .group > button:first-child { min-width: 0; flex: 1; text-align: left; }
+[data-ui-ai-menu="history"] > .group > button:first-child > .truncate { flex: 1; min-width: 0; max-width: none; }
+[data-ui-ai-menu="history"] > .group > button:last-child { flex-shrink: 0; opacity: 1; }
+[data-ui-ai-menu="history"] > .sticky { gap: 8px; border: 0; background: var(--ui-paper); }
+[data-ui-ai-menu="history"] button { min-height: 30px; }
+[data-ui-ai-menu] button { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+[data-ui-ai-menu] button:hover:not(:disabled), [data-ui-ai-menu] button[aria-current="true"] { background: var(--ui-soft); color: var(--ui-accent); }
+[data-ui-ai-menu="mode"] .flex.items-center { flex-wrap: wrap; }
+[data-ui-ai-menu="mode"] [role="option"] { color: var(--ui-ink); }
+[data-ui-ai-menu="mode"] [role="option"] .text-muted-foreground { color: var(--ui-muted); }
+[data-ui-ai-menu="generation"] [role="menuitem"] { min-height: 34px; color: var(--ui-ink); }
+[data-ui-ai-menu="generation"] .truncate { white-space: normal; }
+[data-ui-ai-panel] :is(button, textarea):focus-visible, [data-ui-ai-menu] button:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
+[data-ui-ai-composer] textarea:focus-visible { outline: none; box-shadow: none; }
+
+@media (pointer: coarse) {
+  [data-ui-ai-header] button { width: 40px; height: 44px; }
+  [data-ui-ai-menu] button, [data-ui-ai-tools] button { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-ui-ai-panel] *, [data-ui-ai-menu] * { scroll-behavior: auto; transition: none; }
+}
+
+[data-ui-ai-panel] .ui-test-ai-stage { flex-shrink: 0; margin: 0; color: var(--ui-muted); font-size: 0.75rem; }
+[data-ui-ai-panel] .ui-test-ai-empty button:disabled { cursor: not-allowed; opacity: .5; }
+
+/* 用户消息时间和复制位于气泡外，不沿用助手用量行或气泡背景。 */
+[data-ui-ai-panel] .ui-test-user-message-meta { display: flex; justify-content: flex-end; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; margin-top: 5px; color: var(--ui-muted); font: 0.75rem/1.5 var(--ui); }
+[data-ui-ai-panel] .ui-test-user-message-meta time { font-variant-numeric: tabular-nums; }
+[data-ui-ai-panel] .ui-test-user-message-meta button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; padding: 5px; background: transparent; border-radius: 6px; color: inherit; }
+[data-ui-ai-panel] .ui-test-user-message-meta button:hover { background: var(--ui-soft); color: var(--ui-accent); }
+[data-ui-ai-panel] .ui-test-user-message-meta svg { width: 14px; height: 14px; }
+[data-ui-ai-panel] .ui-test-user-message-meta [role="status"] { flex-basis: 100%; text-align: right; color: var(--ui-danger); }
+[data-ui-ai-panel] .ui-test-scroll-latest { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--ui-line); border-radius: 50%; background: var(--ui-paper); color: var(--ui-muted); box-shadow: 0 2px 8px #203b2b12; cursor: pointer; }
+[data-ui-ai-panel] .ui-test-scroll-arrow { width: 17px; height: 17px; }
+[data-ui-ai-panel] .ui-test-stream-dots { display: flex; align-items: center; justify-content: center; gap: 3px; }
+[data-ui-ai-panel] [data-stream-dot] { width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: ui-test-stream-dot 1.2s ease-in-out infinite; }
+[data-ui-ai-panel] [data-stream-dot]:nth-child(2) { animation-delay: .15s; }
+[data-ui-ai-panel] [data-stream-dot]:nth-child(3) { animation-delay: .3s; }
+[data-ui-ai-panel] .ui-test-scroll-latest.is-streaming .ui-test-scroll-arrow { display: none; }
+[data-ui-ai-panel] .ui-test-scroll-latest.is-streaming:is(:hover, :focus-visible) .ui-test-scroll-arrow { display: block; }
+[data-ui-ai-panel] .ui-test-scroll-latest.is-streaming:is(:hover, :focus-visible) .ui-test-stream-dots { display: none; }
+[data-ui-ai-panel] .ui-test-scroll-tooltip { position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%); padding: 3px 8px; border-radius: 5px; white-space: nowrap; font-size: 0.75rem; color: var(--ui-ink); background: var(--ui-paper); border: 1px solid var(--ui-line); visibility: hidden; pointer-events: none; }
+[data-ui-ai-panel] .ui-test-scroll-latest:is(:hover, :focus-visible) .ui-test-scroll-tooltip { visibility: visible; }
+@keyframes ui-test-stream-dot { 0%, 60%, 100% { transform: translateY(0); opacity: .55; } 30% { transform: translateY(-3px); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { [data-ui-ai-panel] [data-stream-dot] { animation: none; } }

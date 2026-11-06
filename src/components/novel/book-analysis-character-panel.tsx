@@ -1,15 +1,22 @@
 import { useMemo } from "react"
-import { Plus, User } from "lucide-react"
+import { Plus, Trash2, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import type { BookAnalysisLibraryBook } from "@/lib/novel/book-analysis/library-state"
+import type { LegacyPanelVariant } from "./legacy-panel-variant"
 
 interface BookAnalysisCharacterPanelProps {
   book: BookAnalysisLibraryBook
   selectedCharacterId: string | null
-  addingToSoul: boolean
-  onOpenSkillSelection: () => void
   onSelectCharacter: (characterId: string) => void
-  onAddSelectedSkillsToSoul: (skillId: string) => void
+  /**
+   * embedded：嵌进新版页签时使用。隐藏重复标题与重复边框（页签本身已叫「角色 Skill」）。
+   * 管理类按钮是否出现由各自回调是否存在决定，与 variant 无关。
+   */
+  variant?: LegacyPanelVariant
+  addingToSoul?: boolean
+  onOpenSkillSelection?: () => void
+  onAddSelectedSkillsToSoul?: (skillId: string) => void
+  onDeleteCharacter?: (characterId: string) => void
 }
 
 const categoryLabels: Record<string, string> = {
@@ -29,11 +36,14 @@ const categoryOrder: Record<string, number> = {
 export function BookAnalysisCharacterPanel({
   book,
   selectedCharacterId,
-  addingToSoul,
-  onOpenSkillSelection,
   onSelectCharacter,
+  variant = "full",
+  addingToSoul = false,
+  onOpenSkillSelection,
   onAddSelectedSkillsToSoul,
+  onDeleteCharacter,
 }: BookAnalysisCharacterPanelProps) {
+  const embedded = variant === "embedded"
   const sortedCharacters = useMemo(
     () =>
       [...book.characters].sort(
@@ -58,25 +68,33 @@ export function BookAnalysisCharacterPanel({
   const profile = selectedCharacter?.personalityProfile
 
   return (
-    <section className="min-h-0 flex-1 rounded-lg border bg-background">
-      <div className="flex items-center justify-between border-b px-4 py-3">
-        <div>
-          <h3 className="text-sm font-semibold">角色 Skill</h3>
-          <p className="mt-1 text-xs text-muted-foreground">选择角色 Skill 加入自定义灵魂库。</p>
+    <section className={embedded ? "min-h-0 flex-1" : "min-h-0 flex-1 rounded-lg border bg-background"}>
+      {embedded ? null : (
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <div>
+            <h3 className="text-sm font-semibold">角色 Skill</h3>
+            <p className="mt-1 text-xs text-muted-foreground">选择角色 Skill 加入自定义灵魂库。</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {onOpenSkillSelection && (
+              <Button size="sm" variant="outline" onClick={onOpenSkillSelection}>
+                选择角色生成 Skill
+              </Button>
+            )}
+            {onAddSelectedSkillsToSoul && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => selectedSkill && !selectedAuraAdded && onAddSelectedSkillsToSoul(selectedSkill.id)}
+                disabled={addingToSoul || !selectedSkill || selectedAuraAdded}
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                {addButtonLabel}
+              </Button>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={onOpenSkillSelection}>选择角色生成 Skill</Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => selectedSkill && !selectedAuraAdded && onAddSelectedSkillsToSoul(selectedSkill.id)}
-            disabled={addingToSoul || !selectedSkill || selectedAuraAdded}
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            {addButtonLabel}
-          </Button>
-        </div>
-      </div>
+      )}
       <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: "minmax(220px, 320px) 1fr" }}>
         <div className="min-h-0 space-y-2 overflow-y-auto border-r p-3">
           {sortedCharacters.length === 0 ? (
@@ -86,26 +104,40 @@ export function BookAnalysisCharacterPanel({
               const active = selectedCharacter?.id === character.id
               const hasSkill = book.skills.some((skill) => skill.characterId === character.id || skill.characterName === character.name)
               return (
-                <button
+                <div
                   key={character.id}
-                  type="button"
-                  onClick={() => onSelectCharacter(character.id)}
-                  className={`w-full rounded-lg border p-3 text-left transition ${
+                  className={`w-full rounded-lg border p-3 transition ${
                     active ? "border-primary bg-primary/5" : "hover:bg-muted"
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onSelectCharacter(character.id)}
+                      className="min-w-0 flex-1 text-left"
+                    >
                       <div className="truncate text-sm font-medium">{character.name}</div>
                       <div className="mt-1 text-xs text-muted-foreground">
                         {categoryLabels[character.category] ?? character.category} · 重要度 {character.importance}/10
                       </div>
-                    </div>
+                    </button>
                     <span className="shrink-0 rounded-full border px-2 py-0.5 text-xs">
                       {hasSkill ? "已生成" : "未生成"}
                     </span>
+                    {onDeleteCharacter && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 shrink-0 px-2 text-destructive hover:bg-destructive/10"
+                        aria-label={`删除角色${character.name}`}
+                        title="删除角色（含角色档案与 Skill）"
+                        onClick={() => onDeleteCharacter(character.id)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                   </div>
-                </button>
+                </div>
               )
             })
           )}

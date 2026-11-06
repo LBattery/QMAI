@@ -1,7 +1,7 @@
 const FALLBACK_INSTALL_DRIVE = "D"
 
-export const DEFAULT_NOVEL_DIR_NAME = "QM-BOOK"
-export const DEFAULT_INSTALL_DIR_NAME = "QMaiWrite"
+// 新版为唯一正式版，直接使用正式小说目录 QM-BOOK。
+const DEFAULT_NOVEL_DIR_NAME = "QM-BOOK"
 
 function extractWindowsDriveLetter(pathLike: string): string | null {
   const match = pathLike.trim().match(/^([a-zA-Z]):[\\/]/)

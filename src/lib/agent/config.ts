@@ -5,25 +5,19 @@ import { DEFAULT_MAX_ROUNDS } from "./types"
 import { registerAllBuiltInTools } from "./tools"
 import type { ToolFactoryOptions } from "./tools"
 
-export const TOOL_UNSUPPORTED_MODEL_PREFIXES: string[] = [
+const TOOL_UNSUPPORTED_MODEL_PREFIXES: string[] = [
   "o1",
   "o3-mini",
   "deepseek-reasoner",
   "claude-code",
-  "cursor-cli",
 ]
 
 const TOOL_UNSUPPORTED_PROVIDERS = new Set<LlmConfig["provider"]>([
   "claude-code",
-  "cursor-cli",
+  "antigravity-cli",
 ])
 
-/** cursor-api-proxy 无法返回原生 tool_calls delta，需从文本中解析工具调用。 */
-export function providerUsesTextToolCalls(provider: LlmConfig["provider"]): boolean {
-  return provider === "cursor-cli"
-}
-
-export interface BuildAgentConfigOptions extends ToolFactoryOptions {
+interface BuildAgentConfigOptions extends ToolFactoryOptions {
   llmConfig: LlmConfig
   requestOverrides?: AgentConfig["requestOverrides"]
 }
@@ -64,23 +58,23 @@ export function buildAgentConfig(
   options: BuildAgentConfigOptions,
 ): AgentConfig {
   registry.clear()
-  const fcEnabled = isFunctionCallingEnabled(options.llmConfig)
-  registerAllBuiltInTools(registry, fcEnabled
+  // 两条关闭通道都必须在这里生效：
+  // ① 用户开关（functionCallingEnabled === false）；
+  // ② 模型/提供方黑名单（o1、o3-mini、deepseek-reasoner、claude-code）。
+  // 只判开关的话，黑名单模型在开关打开时仍会被注册工具并随请求发出，
+  // 服务端直接 400；只判黑名单的话，用户关掉开关也不起作用。
+  const toolsEnabled = effectiveToolsEnabled(modelId, options.llmConfig)
+  registerAllBuiltInTools(registry, toolsEnabled
     ? options
     : {
         ...options,
         enabledToolNames: [],
-        mcpTools: [],
       })
-
-  const prompt = providerUsesTextToolCalls(options.llmConfig.provider) && fcEnabled
-    ? `${systemPrompt}\n\n当需要调用工具时，请只输出一个 JSON 对象，格式为 {"name":"工具名","arguments":{...}}，不要附加其他说明文字。收到工具结果后继续推理；若无需工具则直接回答。`
-    : systemPrompt
 
   return {
     maxRounds: DEFAULT_MAX_ROUNDS,
     tools: registry.list(),
-    systemPrompt: prompt,
+    systemPrompt,
     llmConfig: options.llmConfig,
     modelId,
     projectPath: options.projectPath,

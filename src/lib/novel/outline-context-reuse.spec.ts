@@ -271,6 +271,18 @@ describe("AI 大纲上下文复用策略", () => {
       workflowMode: "standard",
       intentPhase: undefined,
     })).toBe(false)
+    expect(shouldShowOutlineWorkflowProcess({
+      workflowMode: "plan",
+      planPhase: "element_check",
+    })).toBe(true)
+    expect(shouldShowOutlineWorkflowProcess({
+      workflowMode: "discuss",
+      discussPhase: "decision",
+    })).toBe(true)
+    expect(shouldShowOutlineWorkflowProcess({
+      workflowMode: "plan",
+      intentPhase: "generation",
+    })).toBe(true)
 
     const decision = planOutlineContextReuse({
       hasPriorAssistantAnswer: true,
@@ -317,7 +329,79 @@ describe("AI 大纲上下文复用策略", () => {
     })
     expect(plan.showToolProcess).toBe(false)
     expect(plan.showThinkingProcess).toBe(false)
-    expect(plan.showToolProcessOnError).toBe(true)
-    expect(plan.sources).toContain("过程: 已隐藏重复工具过程")
+  })
+
+  it("计划模式要素盘点强制刷新上下文并说明原因", () => {
+    const decision = planOutlineContextReuse({
+      hasPriorAssistantAnswer: true,
+      attachedReferenceCount: 0,
+      inputText: "请对以下大纲请求做计划模式要素盘点",
+      enableMultiAgent: false,
+      systemGenerated: true,
+      workflowMode: "plan",
+      planPhase: "element_check",
+    })
+
+    expect(decision.mode).toBe("refresh")
+    expect(decision.reason).toBe("计划模式要素盘点需要读取项目已有大纲。")
+
+    const plan = planOutlineAgentHistory({
+      history: [
+        { role: "user", content: "生成章纲" },
+        { role: "assistant", content: "已生成" },
+      ],
+      contextDecision: decision,
+      workflowMode: "plan",
+      planPhase: "element_check",
+    })
+
+    expect(plan.showToolProcess).toBe(true)
+    expect(plan.showThinkingProcess).toBe(true)
+  })
+
+  it("共创讨论轮强制刷新上下文并说明原因", () => {
+    const decision = planOutlineContextReuse({
+      hasPriorAssistantAnswer: true,
+      attachedReferenceCount: 0,
+      inputText: "本轮进入共创讨论",
+      enableMultiAgent: false,
+      systemGenerated: true,
+      workflowMode: "discuss",
+      discussPhase: "decision",
+    })
+
+    expect(decision.mode).toBe("refresh")
+    expect(decision.reason).toBe("共创讨论需要读取项目已有大纲再抛决策点。")
+
+    const plan = planOutlineAgentHistory({
+      history: [
+        { role: "user", content: "讨论章纲" },
+        { role: "assistant", content: "先对齐钩子" },
+      ],
+      contextDecision: decision,
+      workflowMode: "discuss",
+      discussPhase: "decision",
+    })
+
+    expect(plan.showToolProcess).toBe(true)
+    expect(plan.showThinkingProcess).toBe(true)
+  })
+})
+
+
+describe("大纲会话缓存历史", () => {
+  it("预算内保留原始短历史，不因摘要或轮数而每轮重排前缀", () => {
+    const history = Array.from({ length: 8 }, (_, index) => ({ role: index % 2 ? "assistant" as const : "user" as const, content: `对话${index}` }))
+    const contextDecision = planOutlineContextReuse({ hasPriorAssistantAnswer: true, attachedReferenceCount: 0, inputText: "继续完善" })
+    const plan = planOutlineAgentHistory({ history, contextDecision, cachedSummary: "已有摘要", summaryInSystem: true, historyTokenBudget: 1000 })
+    expect(plan.messages).toEqual(history)
+    expect(plan.instruction).toContain("预算内")
+  })
+
+  it("超过预算仍使用原有摘要和必要近况，不扩大模型输入", () => {
+    const history = [{ role: "user" as const, content: "旧稿".repeat(5000) }, { role: "assistant" as const, content: "旧回答".repeat(5000) }, { role: "user" as const, content: "新问题" }, { role: "assistant" as const, content: "新结论" }]
+    const contextDecision = planOutlineContextReuse({ hasPriorAssistantAnswer: true, attachedReferenceCount: 0, inputText: "继续完善" })
+    const plan = planOutlineAgentHistory({ history, contextDecision, cachedSummary: "已有摘要", summaryInSystem: true, historyTokenBudget: 1000 })
+    expect(plan.messages).toEqual(history.slice(-2))
   })
 })

@@ -13,6 +13,7 @@ import { listSnapshots, loadSnapshot, type ChapterSnapshot } from "./chapter-ing
 import { buildRevisionDirectives } from "./revision-feedback"
 import { extractChapterOutlineStatus } from "./outline-quality-check"
 import { loadCognitionState, cognitionToContextText } from "./character-cognition"
+import { buildPersonaSkillContext } from "./persona-skill-context"
 import { isAuthoritativeGenerationPath, isHistoricalProjectionSnippet, novelMixedSearch } from "./search-adapter"
 import { rerankCandidates } from "@/lib/rerank"
 import {
@@ -23,11 +24,9 @@ import {
 import { getAllDataSources, getDataSourcesForCategories } from "./context-data-sources"
 import type { DataSourceCategory } from "./classification"
 import {
-  buildNovelVectorSnippet,
-  selectRelevantNovelVectorResults,
-} from "./vector-relevance"
-import {
   buildOutlineContext,
+  buildOutlineContextLayers,
+  type OutlineContextLayers,
   buildVolumeContext,
   capOutlineSourcesToBudget,
   loadOutlineDocumentIndex,
@@ -40,11 +39,18 @@ const FIELD_PRIORITY: Record<string, number> = {
   chapterGoal: 2,
   mustDo: 3,
   mustAvoid: 4,
+  /**
+   * 同人原作正典：硬约束，必须在「人物状态」之前保留。
+   * 用 4.5 而不是整数，避免改动任何既有字段的序号与 token 预算边界。
+   */
+  sourceCanon: 4.5,
   soulDoc: 5,
   outline: 6,
   recentSummaries: 7,
   previousChapterEnding: 8,
   characterStates: 9,
+  /** 排在 characterAuras 之后：被裁掉只是降级，绝不能反过来挤掉人格规则。 */
+  personaSkills: 11.5,
   /** Keep with stable core fields; must not share a slot with characterAuras. */
   storyFrameworkBinding: 5.5,
   characterAppearance: 10,
@@ -76,9 +82,18 @@ export interface TrimResult {
 }
 
 export interface ContextPack {
+  portablePersonalities?: import("./portable-personality").BoundPersonality[]
   task: string
   chapterGoal: string
   outline: string
+  /** 全书总纲和设定；与当前章节无关。缺失表示旧版未分层上下文。 */
+  projectOutline?: string
+  /** 当前分卷、章节规划和章纲；仅放在动态任务层。 */
+  chapterOutlineContext?: string
+  /** 当前章命中的材料；只进动态层，不进稳定大纲。 */
+  relevantMaterials?: string
+  /** 仅供写作实体补搜提取候选名称，不注入任务书、正文或审稿提示词。 */
+  entitySearchOutline?: string
   recentChapterContents?: string[]
   recentSummaries: string[]
   previousChapterEnding: string
@@ -86,6 +101,8 @@ export interface ContextPack {
   characterAppearance?: string
   soulDoc: string
   characterAuras: string
+  /** 「人物 Skill」段。与角色灵魂分成两档：预算紧张时先牺牲它，人格规则不受影响。 */
+  personaSkills?: string
   /** Active story-framework binding text; empty when unbound. */
   storyFrameworkBinding: string
   cognitionStates: string
@@ -94,6 +111,16 @@ export interface ContextPack {
   timeline: string
   relatedSettings: string
   canonRules: string
+  /**
+   * 同一部**外部原作**的既成事实（同人正典）。
+   *
+   * 与 `canonRules` 的区别：`canonRules` 是本项目自己确认的正史（`wiki/canon.md`），
+   * `sourceCanon` 来自 `.novel/fanfic-canon.md`，是用户导入的原作事实，按固定路径读取、
+   * 不经模糊检索。原创项目恒为空串。
+   *
+   * 可选：手工构造的旧上下文包没有这个字段，消费方一律按「无正典」处理。
+   */
+  sourceCanon?: string
   writingStyle: string
   searchResults: string
   graphSearchResults: string
@@ -174,10 +201,47 @@ async function buildContextPackFromRawData(
     rawData.searchResults || "",
     rawData.bookAnalysisReferences || "",
   ], "\n\n")
-  // 合并快照数据和降级数据，优先使用 retrieval 索引
-  const retrievalRecentSummaries = Array.isArray(rawData.retrieval?.recentSummaries)
-    ? rawData.retrieval.recentSummaries
+  // retrieval 源返回项目级原始条目，按当前章节在此过滤
+  interface RetrievalEntryShape {
+    chapterNumber: number
+    chapterTitle: string
+    summary: string
+    characterStates: string
+    characterAppearance?: string
+    foreshadowingChanges: string
+    timelineEvents: string
+  }
+  const retrievalEntries: RetrievalEntryShape[] = Array.isArray(rawData.retrieval?.entries)
+    ? rawData.retrieval.entries
     : []
+  const summaryCount = context.config.recentSummaryWindow > 0 ? context.config.recentSummaryWindow : 8
+  const lookbackCount = context.config.snapshotLookback > 0 ? context.config.snapshotLookback : 3
+  const summaryEntries = context.chapterNumber
+    ? retrievalEntries.filter((e) => e.chapterNumber < context.chapterNumber!).slice(-summaryCount)
+    : retrievalEntries.slice(-summaryCount)
+  const lookbackEntries = context.chapterNumber
+    ? retrievalEntries.filter((e) => e.chapterNumber < context.chapterNumber!).slice(-lookbackCount)
+    : retrievalEntries.slice(-lookbackCount)
+  const retrievalRecentSummaries = summaryEntries.map(
+    (entry) => `第${entry.chapterNumber}章 ${entry.chapterTitle}：${entry.summary}`,
+  )
+  const retrievalCharacterStates = joinNonEmpty(
+    lookbackEntries
+      .filter((e) => e.characterStates)
+      .map((e) => `第${e.chapterNumber}章：${e.characterStates}`),
+    "\n",
+  )
+  const retrievalTimeline = joinNonEmpty(
+    lookbackEntries
+      .filter((e) => e.timelineEvents)
+      .map((e) => `第${e.chapterNumber}章：${e.timelineEvents}`),
+    "\n",
+  )
+  const retrievalForeshadowingSignals = lookbackEntries
+    .filter((e) => e.foreshadowingChanges)
+    .flatMap((e) => e.foreshadowingChanges.split("\n").filter(Boolean))
+
+  // 合并快照数据和降级数据，优先使用 retrieval 索引
   const snapshotRecentSummaries = Array.isArray(rawData.snapshots?.recentSummaries)
     ? rawData.snapshots.recentSummaries
     : []
@@ -193,7 +257,6 @@ async function buildContextPackFromRawData(
   const previousChapterEnding = rawData.snapshots.previousChapterEnding 
     || rawData.fallbackPreviousEnding
   
-  const retrievalCharacterStates = rawData.retrieval?.characterStates || ""
   const snapshotCharacterStates = rawData.snapshots?.characterStates || ""
   const characterStates = joinNonEmpty([
     retrievalCharacterStates,
@@ -201,10 +264,9 @@ async function buildContextPackFromRawData(
     rawData.fallbackCharacterStates
   ], "\n\n")
   const snapshotCharacterAppearance = rawData.snapshots?.characterAppearance || ""
-  const retrievalCharacterAppearance = rawData.retrieval?.characterAppearance || ""
+  const retrievalCharacterAppearance = joinNonEmpty(lookbackEntries.flatMap((entry) => entry.characterAppearance ? [`第${entry.chapterNumber}章：${entry.characterAppearance}`] : []), "\n")
   const characterAppearance = snapshotCharacterAppearance || retrievalCharacterAppearance
   
-  const retrievalTimeline = rawData.retrieval?.timeline || ""
   const snapshotTimeline = rawData.snapshots?.timeline || ""
   const timeline = joinNonEmpty([
     retrievalTimeline,
@@ -212,9 +274,6 @@ async function buildContextPackFromRawData(
     rawData.fallbackTimeline
   ], "\n\n")
   
-  const retrievalForeshadowingSignals = Array.isArray(rawData.retrieval?.foreshadowingSignals)
-    ? rawData.retrieval.foreshadowingSignals
-    : []
   const snapshotForeshadowingSignals = Array.isArray(rawData.snapshots?.foreshadowingSignals)
     ? rawData.snapshots.foreshadowingSignals
     : []
@@ -228,16 +287,31 @@ async function buildContextPackFromRawData(
     searchResults,
   )
   
+  const outlineLayers = rawData.outline && typeof rawData.outline === "object"
+    && typeof rawData.outline.full === "string"
+    && typeof rawData.outline.project === "string"
+    && typeof rawData.outline.task === "string"
+    ? rawData.outline as OutlineContextLayers
+    : undefined
+  const outline = outlineLayers?.full ?? (typeof rawData.outline === "string" ? rawData.outline : "")
+
   // 构建章节目标
   const chapterGoal = buildChapterGoal(
-    rawData.outline, 
+    outline,
     rawData.chapterOutline, 
     context.chapterNumber
   )
+
+  const entitySearchOutline = selectWritingEntitySearchOutline({
+    chapterOutline: rawData.chapterOutline,
+    volumeContext: rawData.volumeContext,
+    chapterGoal,
+    outline,
+  })
   
   // 合并大纲信息
   const mergedOutline = joinNonEmpty([
-    rawData.outline,
+    outline,
     rawData.volumeContext,
     rawData.chapterOutline
   ], "\n\n")
@@ -245,23 +319,37 @@ async function buildContextPackFromRawData(
   // 构建修订指令
   const revisionDirectives = buildRevisionDirectives(rawData.revisionFeedback)
   
-  // 构建角色氛围上下文（依赖其他数据）
-  const { buildCharacterAuraContext } = await import("./character-aura")
-  const characterAuras = await buildCharacterAuraContext(context.projectPath, context.task, {
-    matchingText: joinNonEmpty([
-      chapterGoal,
-      rawData.chapterOutline,
-      rawData.fallbackCharacterStates,
-      rawData.snapshots.characterStates,
-      characterAppearance,
-      rawData.cognitionText,
-    ], "\n\n"),
-  })
+  // 构建角色氛围上下文（依赖其他数据）。
+  // 人物 Skill 与角色灵魂共用同一段匹配文本，保证两块注入的命中口径一致。
+  const personaMatchingText = joinNonEmpty([
+    chapterGoal,
+    rawData.chapterOutline,
+    rawData.fallbackCharacterStates,
+    rawData.snapshots.characterStates,
+    characterAppearance,
+    rawData.cognitionText,
+  ], "\n\n")
+  const { buildCharacterSoulContext } = await import("./character-aura")
+  const [soulContext, personaSkillContext] = await Promise.all([
+    buildCharacterSoulContext(context.projectPath, context.task, { matchingText: personaMatchingText }),
+    // 注入失败绝不能弄挂写作：这里兜住一切
+    buildPersonaSkillContext(context.projectPath, personaMatchingText).catch(() => ""),
+  ])
 
   return {
     task: context.task,
     chapterGoal,
     outline: mergedOutline,
+    ...(outlineLayers ? {
+      projectOutline: outlineLayers.project,
+      chapterOutlineContext: joinNonEmpty([
+        outlineLayers.task,
+        rawData.volumeContext,
+        rawData.chapterOutline,
+      ], "\n\n"),
+      relevantMaterials: outlineLayers.materials,
+    } : {}),
+    entitySearchOutline,
     recentChapterContents,
     recentSummaries,
     previousChapterEnding,
@@ -269,7 +357,9 @@ async function buildContextPackFromRawData(
     characterAppearance,
     soulDoc: rawData.soulDoc,
     sectionBriefing: rawData.sectionBriefing || "",
-    characterAuras,
+    characterAuras: soulContext.text,
+    ...(personaSkillContext ? { personaSkills: personaSkillContext } : {}),
+    ...(soulContext.portablePersonalities.length ? { portablePersonalities: soulContext.portablePersonalities } : {}),
     storyFrameworkBinding: typeof rawData.storyFrameworkBinding === "string"
       ? rawData.storyFrameworkBinding
       : "",
@@ -278,11 +368,12 @@ async function buildContextPackFromRawData(
     timeline,
     relatedSettings: rawData.relatedSettings,
     canonRules: rawData.canonRules,
+    sourceCanon: typeof rawData.sourceCanon === "string" ? rawData.sourceCanon : "",
     writingStyle: rawData.writingStyle,
     searchResults,
     graphSearchResults: rawData.graphSearchResults,
     mustDo: buildMustDo(chapterGoal, previousChapterEnding, foreshadowingStates),
-    mustAvoid: buildMustAvoid(rawData.canonRules, timeline, characterStates),
+    mustAvoid: buildMustAvoid(rawData.canonRules, timeline, characterStates, rawData.sourceCanon),
     nextChapterAdvice: buildNextChapterAdvice({
       chapterGoal,
       recentSummaries,
@@ -295,7 +386,7 @@ async function buildContextPackFromRawData(
   }
 }
 
-export function extractChapterNumberFromTask(task: string): number | undefined {
+function extractChapterNumberFromTask(task: string): number | undefined {
   const patterns = [
     /\u7b2c\s*(\d+)\s*\u7ae0/i,
     /chapter\s*(\d+)/i,
@@ -319,7 +410,7 @@ export function selectLookbackChapterNumbers(chapterNumber: number, lookback: nu
   return result
 }
 
-export function mergeForeshadowingSignals(signals: string[], searchResults: string): string {
+function mergeForeshadowingSignals(signals: string[], searchResults: string): string {
   const normalized = signals
     .map((signal) => signal.trim())
     .filter(Boolean)
@@ -342,7 +433,7 @@ export function mergeForeshadowingSignals(signals: string[], searchResults: stri
   return sections.filter(Boolean).join("\n\n")
 }
 
-export function buildChapterGoal(outline: string, chapterOutline: string, chapterNumber?: number): string {
+function buildChapterGoal(outline: string, chapterOutline: string, chapterNumber?: number): string {
   const parts: string[] = []
   const fromOutline = extractChapterGoal(outline, chapterNumber)
   const fromChapterOutline = extractChapterGoal(chapterOutline, chapterNumber)
@@ -351,7 +442,7 @@ export function buildChapterGoal(outline: string, chapterOutline: string, chapte
   return parts.join("\n")
 }
 
-export function buildMustDo(chapterGoal: string, previousChapterEnding: string, foreshadowingStates: string): string {
+function buildMustDo(chapterGoal: string, previousChapterEnding: string, foreshadowingStates: string): string {
   const items: string[] = []
   chapterGoal.split("\n").map((line) => line.trim()).filter(Boolean).forEach((line) => items.push(`- ${line}`))
   if (previousChapterEnding.trim()) {
@@ -366,15 +457,24 @@ export function buildMustDo(chapterGoal: string, previousChapterEnding: string, 
   return items.join("\n")
 }
 
-export function buildMustAvoid(canonRules: string, timeline: string, characterStates: string): string {
+export function buildMustAvoid(
+  canonRules: string,
+  timeline: string,
+  characterStates: string,
+  sourceCanon?: string,
+): string {
   const items: string[] = []
+  // 同人正典可能很长，这里只放一条指针式硬约束，正文见「原作正典」段，避免重复占预算。
+  if (sourceCanon?.trim()) {
+    items.push(i18n.t("novel.contextPack.mustAvoid.sourceCanon"))
+  }
   if (canonRules.trim()) items.push(i18n.t("novel.contextPack.mustAvoid.canonRules", { value: canonRules.trim() }))
   if (timeline.trim()) items.push(i18n.t("novel.contextPack.mustAvoid.timeline", { value: timeline.trim() }))
   if (characterStates.trim()) items.push(i18n.t("novel.contextPack.mustAvoid.characterStates", { value: characterStates.trim() }))
   return items.join("\n")
 }
 
-export function buildNextChapterAdvice(input: {
+function buildNextChapterAdvice(input: {
   chapterGoal: string
   recentSummaries: string[]
   previousChapterEnding: string
@@ -411,11 +511,30 @@ export function joinNonEmpty(parts: string[], separator: string): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(separator)
 }
 
+export function selectWritingEntitySearchOutline(input: {
+  chapterOutline?: string
+  volumeContext?: string
+  chapterGoal?: string
+  outline?: string
+}): string {
+  for (const candidate of [
+    input.chapterOutline,
+    input.volumeContext,
+    input.chapterGoal,
+    input.outline,
+  ]) {
+    const normalized = candidate?.trim() ?? ""
+    if (normalized) return normalized
+  }
+  return ""
+}
+
 function emptyPack(task: string): ContextPack {
   return {
     task,
     chapterGoal: "",
     outline: "",
+    entitySearchOutline: "",
     recentChapterContents: [],
     recentSummaries: [],
     previousChapterEnding: "",
@@ -430,6 +549,7 @@ function emptyPack(task: string): ContextPack {
     timeline: "",
     relatedSettings: "",
     canonRules: "",
+    sourceCanon: "",
     writingStyle: "",
     searchResults: "",
     graphSearchResults: "",
@@ -437,6 +557,14 @@ function emptyPack(task: string): ContextPack {
     mustAvoid: "",
     nextChapterAdvice: "",
     revisionDirectives: "",
+  }
+}
+
+export async function readOutlineContextLayers(pp: string, chapterNumber?: number): Promise<OutlineContextLayers> {
+  try {
+    return buildOutlineContextLayers(await loadOutlineDocumentIndex(pp), chapterNumber)
+  } catch {
+    return { full: "", project: "", task: "", materials: "" }
   }
 }
 
@@ -757,55 +885,6 @@ async function readVolumeContext(
   return readVolumeContextContent(pp, chapterNumber)
 }
 
-export async function searchRelevantContent(
-  pp: string,
-  task: string,
-  chapterNumber: number | undefined,
-  limit: number,
-): Promise<string> {
-  const tokens = tokenizeQuery(task)
-  const entityHints = tokens.filter(t => t.length >= 2).slice(0, 5)
-  const queryParts = [task]
-  if (chapterNumber) {
-    queryParts.push(`第${chapterNumber}章`)
-  }
-  if (entityHints.length > 0) {
-    queryParts.push(entityHints.join(" "), "伏笔", "人物", "设定", "时间线")
-  } else {
-    queryParts.push("伏笔", "人物", "设定")
-  }
-  const query = queryParts.join(" ")
-
-  const [keywordResults, indexResults, vectorResults] = await Promise.all([
-    searchWiki(pp, query).catch(() => []),
-    searchWiki(pp, `关键词索引 向量索引 ${task}`).catch(() => []),
-    runVectorSearchForContext(pp, query, limit).catch(() => []),
-  ])
-
-  const seen = new Set<string>()
-  const merged: string[] = []
-
-  const add = (title: string, snippet: string) => {
-    const key = `${title}|${snippet.slice(0, 50)}`
-    if (!seen.has(key)) {
-      seen.add(key)
-      merged.push(`- ${title}: ${snippet}`)
-    }
-  }
-
-  for (const r of keywordResults.slice(0, limit)) {
-    add(r.title, r.snippet ?? "")
-  }
-  for (const r of indexResults.slice(0, limit)) {
-    add(r.title, r.snippet ?? "")
-  }
-  for (const r of vectorResults.slice(0, limit)) {
-    add(r.title, r.snippet)
-  }
-
-  return merged.slice(0, Math.max(limit, limit * 2)).join("\n")
-}
-
 export async function searchRelevantContentUnified(
   pp: string,
   task: string,
@@ -895,61 +974,6 @@ export async function searchRelevantContentUnified(
   }
 
   return merged.slice(0, Math.max(limit * 2, limit)).join("\n")
-}
-
-async function runVectorSearchForContext(
-  pp: string,
-  query: string,
-  limit: number,
-): Promise<{ title: string; snippet: string; path: string }[]> {
-  const embCfg = useWikiStore.getState().embeddingConfig
-  if (!embCfg.enabled || !embCfg.model) return []
-
-  try {
-    const { searchByEmbedding } = await import("@/lib/embedding")
-    const vectorResults = await searchByEmbedding(pp, query, embCfg, Math.max(limit * 2, 10))
-    const relevantResults = selectRelevantNovelVectorResults(vectorResults, limit)
-    if (relevantResults.length === 0) return []
-
-    const items: { title: string; snippet: string; path: string }[] = []
-    const dirs = ["entities", "concepts", "sources", "synthesis", "comparison", "queries"]
-
-    for (const vr of relevantResults) {
-      let found = false
-      for (const dir of dirs) {
-        const tryPath = `${pp}/wiki/${dir}/${vr.id}.md`
-        try {
-          const content = await readFile(tryPath)
-          const title = content.match(/^#\s+(.+)/m)?.[1]?.trim()
-            ?? content.match(/^---\ntitle:\s*(.+)/m)?.[1]?.trim()
-            ?? vr.id
-          const matchedSnippet = buildNovelVectorSnippet(vr)
-          items.push({
-            title,
-            snippet: matchedSnippet || content.slice(0, 300).replace(/\n/g, " "),
-            path: tryPath,
-          })
-          found = true
-          break
-        } catch {}
-      }
-      if (!found) {
-        const tryPath = `${pp}/wiki/${vr.id}.md`
-        try {
-          const content = await readFile(tryPath)
-          const matchedSnippet = buildNovelVectorSnippet(vr)
-          items.push({
-            title: vr.id,
-            snippet: matchedSnippet || content.slice(0, 300).replace(/\n/g, " "),
-            path: tryPath,
-          })
-        } catch {}
-      }
-    }
-    return items
-  } catch {
-    return []
-  }
 }
 
 export async function searchGraphRelevantContent(
@@ -1048,7 +1072,7 @@ export async function searchGraphRelevantContent(
   }
 }
 
-export function extractChapterGoal(outline: string, chapterNumber?: number): string {
+function extractChapterGoal(outline: string, chapterNumber?: number): string {
   if (!chapterNumber || !outline) return ""
   const cleaned = outline.replace(/^---[\s\S]*?---\s*/m, "").trim()
   for (const line of cleaned.split(/\r?\n/)) {
@@ -1092,15 +1116,41 @@ const FIELD_CONFIGS: FieldConfig[] = [
   { titleKey: "novel.contextPack.characterStates", fieldKey: "characterStates" },
   { titleKey: "novel.contextPack.characterAppearance", fieldKey: "characterAppearance" },
   { titleKey: "novel.contextPack.characterAuras", fieldKey: "characterAuras" },
+  { titleKey: "novel.contextPack.personaSkills", fieldKey: "personaSkills" },
   { titleKey: "novel.contextPack.cognitionStates", fieldKey: "cognitionStates" },
   { titleKey: "novel.contextPack.foreshadowingStates", fieldKey: "foreshadowingStates" },
   { titleKey: "novel.contextPack.timeline", fieldKey: "timeline" },
   { titleKey: "novel.contextPack.relatedSettings", fieldKey: "relatedSettings" },
   { titleKey: "novel.contextPack.canonRules", fieldKey: "canonRules" },
+  { titleKey: "novel.contextPack.sourceCanon", fieldKey: "sourceCanon" },
   { titleKey: "novel.contextPack.writingStyle", fieldKey: "writingStyle" },
   { titleKey: "novel.contextPack.searchResults", fieldKey: "searchResults" },
   { titleKey: "novel.contextPack.graphSearchResults", fieldKey: "graphSearchResults" },
 ]
+
+/** 正典被预算裁掉时的统一提示。 */
+export const SOURCE_CANON_OVERFLOW_MESSAGE =
+  "上下文预算不足，原作正典未完整保留。请减少本次参考内容或选择更大上下文模型，已停止生成。"
+
+/** 正典溢出错误。调用方需要据此停机，而不是继续生成。 */
+export class SourceCanonOverflowError extends Error {
+  constructor(message: string = SOURCE_CANON_OVERFLOW_MESSAGE) {
+    super(message)
+    this.name = "SourceCanonOverflowError"
+  }
+}
+
+/**
+ * 正典是硬约束：静默丢掉它会让模型凭空编造原作事实，宁可停下来报错。
+ *
+ * 提示词有**两条**构建路径（`contextPackToPrompt` 与 `trim-context-plugin` 里的
+ * `trimContextPack`），守卫必须两条都装，只装一条会留下静默丢弃的缺口。
+ */
+export function assertSourceCanonPreserved(pack: ContextPack, prompt: string): void {
+  if (pack.sourceCanon?.trim() && !prompt.includes(pack.sourceCanon)) {
+    throw new SourceCanonOverflowError()
+  }
+}
 
 export function contextPackToPrompt(
   pack: ContextPack,
@@ -1108,6 +1158,13 @@ export function contextPackToPrompt(
   options?: { excludeOutline?: boolean; maxContextSize?: number },
 ): string {
   const result = trimContextPack(pack, tokenBudget, options)
+  if (pack.portablePersonalities?.length && (!pack.characterAuras || !result.prompt.includes(pack.characterAuras))) {
+    throw new Error("上下文预算不足，角色人格规则未完整保留。请缩小本次章节范围或选择更大上下文模型，已停止生成。")
+  }
+  if (pack.writingStyle?.startsWith("【已启用文风画像】") && !result.prompt.includes(pack.writingStyle)) {
+    throw new Error("上下文预算不足，已启用的文风画像未完整保留。请减少本次参考内容或选择更大上下文模型，已停止生成。")
+  }
+  assertSourceCanonPreserved(pack, result.prompt)
   return result.prompt
 }
 

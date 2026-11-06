@@ -1,7 +1,10 @@
+import { estimateContextTokens } from "@/lib/context-hub/token-estimator"
 import {
   resolveOutlineWorkflowMode,
   type OutlineWorkflowMode,
 } from "@/lib/agent/workflow-mode"
+import type { OutlineDiscussPhase } from "./outline-discuss-protocol"
+import type { OutlinePlanPhase } from "./outline-plan-protocol"
 
 export const OUTLINE_CONTEXT_REUSE_DISABLED_TOOLS = [
   "read_chapter",
@@ -18,17 +21,17 @@ export const OUTLINE_CONTEXT_REUSE_DISABLED_TOOLS = [
   "apply_skill",
 ] as const
 
-export type OutlineContextReuseMode = "refresh" | "reuse"
-export type OutlineContextPressureLevel = "low" | "medium" | "high"
-export type OutlineIntentPhase = "intent_analysis" | "generation" | "waiting_user_input"
+type OutlineContextReuseMode = "refresh" | "reuse"
+type OutlineContextPressureLevel = "low" | "medium" | "high"
+type OutlineIntentPhase = "intent_analysis" | "generation" | "waiting_user_input"
 
-export interface OutlineAgentHistoryMessage {
+interface OutlineAgentHistoryMessage {
   role: "user" | "assistant" | "tool" | "system"
   content: string
   reasoning_content?: string
 }
 
-export interface OutlineContextReuseInput {
+interface OutlineContextReuseInput {
   hasPriorAssistantAnswer: boolean
   attachedReferenceCount: number
   inputText: string
@@ -38,9 +41,11 @@ export interface OutlineContextReuseInput {
   systemGenerated?: boolean
   workflowMode?: OutlineWorkflowMode | null
   intentPhase?: OutlineIntentPhase
+  planPhase?: OutlinePlanPhase
+  discussPhase?: OutlineDiscussPhase
 }
 
-export interface OutlineContextReuseDecision {
+interface OutlineContextReuseDecision {
   mode: OutlineContextReuseMode
   disabledTools: string[]
   instruction: string
@@ -48,28 +53,35 @@ export interface OutlineContextReuseDecision {
   reason: string
 }
 
-export interface OutlineAgentHistoryInput {
+interface OutlineAgentHistoryInput {
   history: OutlineAgentHistoryMessage[]
   contextDecision: OutlineContextReuseDecision
   cachedSummary?: string
+  historyTokenBudget?: number
   summaryInSystem?: boolean
   workflowMode?: OutlineWorkflowMode | null
   intentPhase?: OutlineIntentPhase
+  planPhase?: OutlinePlanPhase
+  discussPhase?: OutlineDiscussPhase
   enableMultiAgent?: boolean
 }
 
 export function shouldShowOutlineWorkflowProcess(input: {
   workflowMode?: OutlineWorkflowMode | null
   intentPhase?: OutlineIntentPhase
+  planPhase?: OutlinePlanPhase
+  discussPhase?: OutlineDiscussPhase
   enableMultiAgent?: boolean
 }): boolean {
-  if (resolveOutlineWorkflowMode(input.workflowMode) !== "standard") return false
+  if (resolveOutlineWorkflowMode(input.workflowMode) === "fast") return false
   return input.intentPhase === "intent_analysis"
     || input.intentPhase === "generation"
+    || input.planPhase !== undefined
+    || input.discussPhase !== undefined
     || input.enableMultiAgent === true
 }
 
-export interface OutlineAgentHistoryPlan {
+interface OutlineAgentHistoryPlan {
   level: OutlineContextPressureLevel
   messages: OutlineAgentHistoryMessage[]
   instruction: string
@@ -79,12 +91,12 @@ export interface OutlineAgentHistoryPlan {
   showToolProcessOnError: boolean
 }
 
-export interface OutlineContextBudgetInput {
+interface OutlineContextBudgetInput {
   original: OutlineAgentHistoryMessage[]
   planned: OutlineAgentHistoryMessage[]
 }
 
-export interface OutlineContextBudget {
+interface OutlineContextBudget {
   originalTokens: number
   plannedTokens: number
   savedTokens: number
@@ -126,7 +138,7 @@ export function planOutlineContextReuse(input: OutlineContextReuseInput): Outlin
       "本轮是同一 AI 大纲会话的后续追问。",
       "请优先复用已有对话历史、上一轮最终结论和用户本轮新输入，不要重新读取项目资料、章节、大纲、记忆、推演、历史会话或 Skill。",
       "只有当用户明确要求重新读取资料，或本轮消息带有新的 @ 引用时，才应该进入刷新上下文流程。",
-      "请直接回答用户当前问题，保留必要推理结论，不要输出内部过程说明。",
+      "请直接回答用户当前问题，保留必要推理结论和你的判断依据，不要输出工具调用过程和流程说明。",
     ].join("\n"),
     sourceLabel: "已复用上次上下文",
     reason: "后续普通追问未附带新引用，也未要求重新读取资料。",
@@ -150,9 +162,11 @@ export function planOutlineAgentHistory(input: OutlineAgentHistoryInput): Outlin
   const totalChars = history.reduce((sum, message) => sum + message.content.length, 0)
   const level: OutlineContextPressureLevel =
     history.length > 6 || totalChars > 6_000 ? "high" : totalChars > 2_500 ? "medium" : "low"
+  const preserveHistory = (input.historyTokenBudget ?? 0) > 0
+    && history.reduce((sum, message) => sum + estimateContextTokens(message.content) + 4, 0) <= input.historyTokenBudget!
   const compactedMessages = level === "high" ? compactOutlineHistory(history) : history.slice(-4)
   const cachedSummary = input.cachedSummary?.trim()
-  const messages = cachedSummary
+  const messages = preserveHistory ? history : cachedSummary
     ? input.summaryInSystem
       ? compactedMessages.slice(-2)
       : [
@@ -164,7 +178,9 @@ export function planOutlineAgentHistory(input: OutlineAgentHistoryInput): Outlin
       ]
     : compactedMessages
   const instruction = [
-    level === "high"
+    preserveHistory
+      ? "已在预算内保留原始对话前缀，后续消息按顺序追加；不会为缓存无限扩大历史。"
+      : level === "high"
       ? "已压缩历史上下文：仅保留首轮目标、最近关键结论和最近对话，避免重复消耗 Token。"
       : "已裁剪历史上下文：仅保留最近有效对话，避免重复发送旧过程。",
     cachedSummary
@@ -222,6 +238,8 @@ function refreshReason(input: OutlineContextReuseInput): string {
   if (!input.hasPriorAssistantAnswer) return "首次生成需要建立上下文。"
   if (input.forceRefresh) return "用户手动要求强制刷新上下文。"
   if (input.enableMultiAgent) return "固定生成向导或多 Agent 任务需要完整上下文。"
+  if (input.planPhase) return "计划模式要素盘点需要读取项目已有大纲。"
+  if (input.discussPhase) return "共创讨论需要读取项目已有大纲再抛决策点。"
   if (shouldShowOutlineWorkflowProcess(input)) return "标准大纲工作流需要完整上下文。"
   if (input.attachedReferenceCount > 0) return "本轮带有新的引用资料。"
   if (REFRESH_KEYWORD_PATTERN.test(input.inputText.trim())) {

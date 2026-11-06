@@ -7,6 +7,7 @@ import {
   normalizeUserLlmMaxOutputTokens,
 } from "@/lib/llm-context-size"
 import { resolveCodexCliTimeoutMinutes } from "@/lib/codex-cli-timeout"
+import { resolveCodexSpeedMode } from "@/lib/codex-cli-speed"
 
 /**
  * Build a full LlmConfig from a preset template + the user's saved
@@ -31,6 +32,7 @@ export function resolveConfig(
   const localCliIsolation = ov.localCliIsolation === true
   const functionCallingEnabled = ov.functionCallingEnabled !== false
   const codexCliTimeoutMinutes = resolveCodexCliTimeoutMinutes(ov.codexCliTimeoutMinutes)
+  const codexSpeedMode = resolveCodexSpeedMode(ov.codexSpeedMode)
 
   let config: LlmConfig
 
@@ -76,7 +78,7 @@ export function resolveConfig(
       localCliIsolation: false,
       functionCallingEnabled,
     }
-  } else if (preset.provider === "claude-code" || preset.provider === "codex-cli") {
+  } else if (preset.provider === "claude-code" || preset.provider === "codex-cli" || preset.provider === "antigravity-cli") {
     // Subprocess transport — no apiKey, no endpoint URL. Model id is
     // passed straight to the local CLI. Claude can inherit its machine
     // default; Codex is pinned to QMAI's curated default unless the user
@@ -92,6 +94,7 @@ export function resolveConfig(
       reasoning,
       localCliIsolation,
       codexCliTimeoutMinutes: preset.provider === "codex-cli" ? codexCliTimeoutMinutes : undefined,
+      codexSpeedMode: preset.provider === "codex-cli" ? codexSpeedMode : undefined,
       functionCallingEnabled,
     }
   } else if (preset.provider === "cursor-cli") {

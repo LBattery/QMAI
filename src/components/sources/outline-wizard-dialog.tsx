@@ -9,12 +9,15 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
   getOutlineWizardGenres,
   getOutlineWizardValidationError,
+  isFanficRequest,
   OUTLINE_WIZARD_CHANNEL_OPTIONS,
+  OUTLINE_WIZARD_CREATION_OPTIONS,
+  OUTLINE_WIZARD_FANFIC_DEVIATIONS,
+  OUTLINE_WIZARD_FANFIC_MODE_OPTIONS,
   OUTLINE_WIZARD_LENGTH_OPTIONS,
   OUTLINE_WIZARD_MATERIAL_OPTIONS,
   OUTLINE_WIZARD_NARRATIVE_OPTIONS,
@@ -22,15 +25,24 @@ import {
   OUTLINE_WIZARD_TARGETS,
   OUTLINE_WIZARD_TASK_OPTIONS,
   type OutlineWizardChannel,
+  type OutlineWizardCreation,
   type OutlineWizardOption,
   type OutlineWizardRequest,
   type OutlineWizardExplicitField,
 } from "@/lib/novel/outline-wizard"
+import { getFanficSubGenreLabels } from "@/lib/novel/outline-genres"
+import { fanficCanonPath } from "@/lib/novel/fanfic-canon"
+import { fileExists } from "@/commands/fs"
+import { useGuideStore } from "@/lib/guide/guide-store"
+import { buildGuideDemoInspiration, pickGuideDemoNovel, readGuideDemoNovel, rememberGuideDemoNovel } from "@/lib/guide/guide-demo-novel"
+import { normalizePath } from "@/lib/path-utils"
 
 interface OutlineWizardDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (request: OutlineWizardRequest) => void
+  /** 项目路径，用于探测是否已有可复用的原作正典。 */
+  projectPath?: string
 }
 
 function firstGenre(channel: OutlineWizardChannel): string {
@@ -50,6 +62,12 @@ export function createDefaultOutlineWizardRequest(): OutlineWizardRequest {
     scale: "",
     narrative: "thirdPerson",
     materialSource: "none",
+    creation: "original",
+    fanficMode: "canon",
+    fanficCustomMode: "",
+    fanficSourceName: "",
+    fanficSourceMaterial: "",
+    fanficAllowedDeviations: [],
     explicit: {},
   }
 }
@@ -71,35 +89,21 @@ function OptionGroup<T extends string>({
   value: T
   onChange: (value: T) => void
 }) {
-  return (
-    <div className="space-y-2">
-      <Label>{label}</Label>
-      <div className="flex flex-wrap gap-2">
-        {options.map((option) => (
-          <Button
-            key={option.value}
-            type="button"
-            variant={value === option.value ? "default" : "outline"}
-            size="sm"
-            onClick={() => onChange(option.value)}
-          >
-            {option.label}
-          </Button>
-        ))}
-      </div>
-    </div>
-  )
+  return <label className="ui-test-wizard-field"><span>{label}</span><select aria-label={label} value={value} onChange={event => onChange(event.target.value as T)}>{options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
 }
 
 export function OutlineWizardDialog({
   open,
   onOpenChange,
   onSubmit,
+  projectPath,
 }: OutlineWizardDialogProps) {
   const [request, setRequest] = useState<OutlineWizardRequest>(() =>
     createDefaultOutlineWizardRequest(),
   )
   const [error, setError] = useState("")
+  // 项目里是否已有落盘正典：决定要不要显示「复用已有正典」。
+  const [hasExistingCanon, setHasExistingCanon] = useState(false)
   const genreOptions = useMemo(
     () => getOutlineWizardGenres(request.channel),
     [request.channel],
@@ -107,9 +111,38 @@ export function OutlineWizardDialog({
 
   useEffect(() => {
     if (!open) return
-    setRequest(createDefaultOutlineWizardRequest())
+    /*
+     * 新手引导：预填一段内置示例需求。
+     *
+     * 「故事灵感」是整份向导里唯一必须手写的字段，也是新用户最容易卡住的地方。
+     * 引导期间预填，用户可以直接提交看到结果；提交后走的是本地示例大纲
+     * （见 `outline-chat-panel.tsx#handleSubmitOutlineWizard`），不消耗 Token。
+     * 普通使用（引导已结束）时这里不动，仍然是空白表单。
+     */
+    const base = createDefaultOutlineWizardRequest()
+    if (useGuideStore.getState().status === "running") {
+      const novel = readGuideDemoNovel() ?? pickGuideDemoNovel()
+      rememberGuideDemoNovel(novel)
+      base.inspiration = buildGuideDemoInspiration(novel)
+    }
+    setRequest(base)
     setError("")
-  }, [open])
+    let cancelled = false
+    if (!projectPath) {
+      setHasExistingCanon(false)
+      return
+    }
+    void fileExists(fanficCanonPath(normalizePath(projectPath)))
+      .then((exists) => {
+        if (!cancelled) setHasExistingCanon(exists)
+      })
+      .catch(() => {
+        if (!cancelled) setHasExistingCanon(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, projectPath])
 
   function updateRequest(
     next: Partial<OutlineWizardRequest>,
@@ -137,6 +170,29 @@ export function OutlineWizardDialog({
     setError("")
   }
 
+  function handleCreationChange(creation: OutlineWizardCreation) {
+    setRequest((current) => ({
+      ...current,
+      creation,
+      // 同人默认落在「同人衍生」题材上；切回原创时若仍停在同人衍生，回到本频道首个题材。
+      genre: creation === "fanfic" ? "tongren" : current.genre === "tongren" ? firstGenre(current.channel) : current.genre,
+      // 切回原创时清掉全部同人字段：虽然消费点都有 isFanficRequest 门控，
+      // 但残留值一旦被别处直接读取就会误判成同人，不留这个陷阱。
+      ...(creation === "fanfic"
+        ? {}
+        : {
+            fanficMode: undefined,
+            fanficCustomMode: "",
+            fanficSourceName: "",
+            fanficSourceMaterial: "",
+            fanficAllowedDeviations: [],
+            fanficReuseCanon: false,
+          }),
+      explicit: { ...current.explicit, creation: true },
+    }))
+    setError("")
+  }
+
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const validationError = getOutlineWizardValidationError(request)
@@ -148,191 +204,83 @@ export function OutlineWizardDialog({
     onOpenChange(false)
   }
 
+  const fanfic = isFanficRequest(request)
+
   if (!open) return null
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        showCloseButton={false}
-        className="max-h-[85vh] w-[920px] max-w-[calc(100vw-32px)] overflow-hidden p-0 sm:max-w-[920px]"
-      >
-        <form onSubmit={handleSubmit} className="flex max-h-[85vh] flex-col">
-          <DialogHeader className="border-b px-5 py-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <DialogTitle>选择生成你想要的小说</DialogTitle>
-                <DialogDescription className="mt-1">
-                  先填写固定生成条件，再发送给 AI 大纲进行分析、追问和生成。
-                </DialogDescription>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => onOpenChange(false)}
-              >
-                关闭
-              </Button>
+      <DialogContent className="ui-test-outline-wizard">
+        <DialogHeader><DialogTitle>生成小说大纲</DialogTitle><DialogDescription>填写本次需求，发送到当前大纲会话；确认结果后再写入小说。</DialogDescription></DialogHeader>
+        <form onSubmit={handleSubmit}>
+          <div className="ui-test-wizard-scroll">
+            <div className="ui-test-wizard-grid">
+              <OptionGroup label="生成任务" options={OUTLINE_WIZARD_TASK_OPTIONS} value={request.task} onChange={task => updateRequest({ task }, ["task"])} />
+              <OptionGroup label="创作类型" options={OUTLINE_WIZARD_CREATION_OPTIONS} value={request.creation ?? "original"} onChange={handleCreationChange} />
+              <OptionGroup label="篇幅类型" options={OUTLINE_WIZARD_LENGTH_OPTIONS} value={request.length} onChange={length => updateRequest({ length }, ["length"])} />
+              <OptionGroup label="频道方向" options={OUTLINE_WIZARD_CHANNEL_OPTIONS} value={request.channel} onChange={handleChannelChange} />
+              <OptionGroup label="题材类型" options={genreOptions} value={request.genre} onChange={genre => updateRequest({ genre }, ["genre"])} />
             </div>
-          </DialogHeader>
-
-          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
-            <OptionGroup
-              label="生成任务"
-              options={OUTLINE_WIZARD_TASK_OPTIONS}
-              value={request.task}
-              onChange={(task) => updateRequest({ task }, ["task"])}
-            />
-
-            <OptionGroup
-              label="篇幅类型"
-              options={OUTLINE_WIZARD_LENGTH_OPTIONS}
-              value={request.length}
-              onChange={(length) => updateRequest({ length }, ["length"])}
-            />
-
-            <OptionGroup
-              label="频道方向"
-              options={OUTLINE_WIZARD_CHANNEL_OPTIONS}
-              value={request.channel}
-              onChange={handleChannelChange}
-            />
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="outline-wizard-genre">题材类型</Label>
-                <select
-                  id="outline-wizard-genre"
-                  value={request.genre}
-                  onChange={(event) => updateRequest({ genre: event.target.value }, ["genre"])}
-                  className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                >
-                  {genreOptions.map((genre) => (
-                    <option key={genre.value} value={genre.value}>
-                      {genre.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="outline-wizard-scale">作品规模</Label>
-                <Input
-                  id="outline-wizard-scale"
-                  value={request.scale}
-                  placeholder="例如：100章左右、30万字、AI 根据题材判断"
-                  onChange={(event) => updateRequest({ scale: event.target.value }, ["scale"])}
-                />
-              </div>
-            </div>
-
-            {request.genre === "custom" && (
-              <div className="space-y-2">
-                <Label htmlFor="outline-wizard-custom-genre">自定义题材</Label>
-                <Input
-                  id="outline-wizard-custom-genre"
-                  value={request.customGenre}
-                  placeholder="请输入你想要的题材"
-                  onChange={(event) =>
-                    updateRequest({ customGenre: event.target.value }, ["customGenre"])
-                  }
-                />
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <Label htmlFor="outline-wizard-inspiration">
-                故事灵感/处理要求
-              </Label>
-              <Textarea
-                id="outline-wizard-inspiration"
-                value={request.inspiration}
-                placeholder="写下故事灵感、主角处境、爽点方向，或说明要分析/修改/补全的处理要求"
-                className="min-h-28 resize-y"
-                onChange={(event) =>
-                  updateRequest({ inspiration: event.target.value }, ["inspiration"])
-                }
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label>核心卖点</Label>
-              <div className="flex flex-wrap gap-2">
-                {OUTLINE_WIZARD_SELLING_POINTS.map((sellingPoint) => (
-                  <Button
-                    key={sellingPoint}
-                    type="button"
-                    variant={
-                      request.sellingPoints.includes(sellingPoint)
-                        ? "default"
-                        : "outline"
-                    }
-                    size="sm"
-                    onClick={() =>
-                      updateRequest({
-                        sellingPoints: toggleListValue(
-                          request.sellingPoints,
-                          sellingPoint,
-                        ),
-                      }, ["sellingPoints"])
-                    }
-                  >
-                    {sellingPoint}
-                  </Button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>生成目标</Label>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                {OUTLINE_WIZARD_TARGETS.map((target) => (
-                  <label
-                    key={target}
-                    className="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-accent"
-                  >
+            {request.genre === "custom" && <label className="ui-test-wizard-field"><span>自定义题材</span><Input aria-label="自定义题材" value={request.customGenre} placeholder="请输入你想要的题材" onChange={event => updateRequest({ customGenre: event.target.value }, ["customGenre"])} /></label>}
+            {fanfic && (
+              <div className="ui-test-wizard-fanfic">
+                <p className="ui-test-wizard-fanfic-hint">
+                  同人创作的「原作既成事实」是硬约束。请填写原作与正典素材，生成时会把它们当作不可违背的正典，
+                  并要求先输出原作正典卡再写大纲。常见方向：{getFanficSubGenreLabels().join("、")}
+                </p>
+                <div className="ui-test-wizard-grid">
+                  <label className="ui-test-wizard-field">
+                    <span>原作名称（必填）</span>
+                    <Input aria-label="原作名称" value={request.fanficSourceName ?? ""} placeholder="例如：斗破苍穹" onChange={event => updateRequest({ fanficSourceName: event.target.value }, ["fanficSourceName"])} />
+                  </label>
+                  <OptionGroup label="同人模式" options={OUTLINE_WIZARD_FANFIC_MODE_OPTIONS} value={(request.fanficMode ?? "canon") as never} onChange={fanficMode => updateRequest({ fanficMode }, ["fanficMode"])} />
+                </div>
+                {request.fanficMode === "custom" && (
+                  <label className="ui-test-wizard-field">
+                    <span>自定义模式（必填）</span>
+                    <Input aria-label="自定义同人模式" value={request.fanficCustomMode ?? ""} placeholder="用一句话写清本作与原作的关系边界" onChange={event => updateRequest({ fanficCustomMode: event.target.value }, ["fanficCustomMode"])} />
+                  </label>
+                )}
+                {hasExistingCanon && (
+                  <label className="ui-test-wizard-field">
+                    <span>复用已有正典</span>
                     <input
                       type="checkbox"
-                      checked={request.targets.includes(target)}
-                      onChange={() =>
-                        updateRequest({
-                          targets: toggleListValue(request.targets, target),
-                        }, ["targets"])
-                      }
-                      className="h-4 w-4 accent-primary"
+                      aria-label="复用已有正典"
+                      checked={request.fanficReuseCanon === true}
+                      onChange={event => updateRequest({ fanficReuseCanon: event.target.checked }, ["fanficReuseCanon"])}
                     />
-                    <span>{target}</span>
+                    <span className="ui-test-wizard-fanfic-hint">
+                      项目里已有 .novel/fanfic-canon.md。勾选后直接复用它，无需重新粘贴素材，
+                      也不会重复编译。
+                    </span>
                   </label>
-                ))}
+                )}
+                <label className="ui-test-wizard-field">
+                  <span>原作素材{request.fanficReuseCanon ? "（复用正典时可留空）" : "（必填）"}</span>
+                  <Textarea aria-label="原作素材" value={request.fanficSourceMaterial ?? ""} placeholder="粘贴原作的关键设定、人物小传、时间线，或原作正文节选。超长素材会被分片编译成正典。" onChange={event => updateRequest({ fanficSourceMaterial: event.target.value }, ["fanficSourceMaterial"])} />
+                </label>
+                <div className="ui-test-wizard-field">
+                  <span>容许偏离（不选则一切按原作正典处理）</span>
+                  <div className="ui-test-wizard-chips">
+                    {OUTLINE_WIZARD_FANFIC_DEVIATIONS.map(item => (
+                      <button type="button" key={item} aria-pressed={(request.fanficAllowedDeviations ?? []).includes(item)} onClick={() => updateRequest({ fanficAllowedDeviations: toggleListValue(request.fanficAllowedDeviations ?? [], item) }, ["fanficAllowedDeviations"])}>{item}</button>
+                    ))}
+                  </div>
+                </div>
               </div>
+            )}
+            <label className="ui-test-wizard-field"><span>故事灵感 / 处理要求</span><Textarea aria-label="故事灵感/处理要求" data-guide="outline.wizard.inspiration" value={request.inspiration} placeholder={fanfic ? "写下你想在原作世界里写的新戏：谁、在什么时间点、要解决什么问题…" : "写下故事灵感、主角处境，或说明要分析、修改、补全的要求…"} onChange={event => updateRequest({ inspiration: event.target.value }, ["inspiration"])} /></label>
+            <div className="ui-test-wizard-field"><span>核心卖点</span><div className="ui-test-wizard-chips">{OUTLINE_WIZARD_SELLING_POINTS.map(point => <button type="button" key={point} aria-pressed={request.sellingPoints.includes(point)} onClick={() => updateRequest({ sellingPoints: toggleListValue(request.sellingPoints, point) }, ["sellingPoints"])}>{point}</button>)}</div></div>
+            <div className="ui-test-wizard-field"><span>生成目标（至少一项）</span><div className="ui-test-wizard-chips">{OUTLINE_WIZARD_TARGETS.map(target => <button type="button" key={target} aria-pressed={request.targets.includes(target)} onClick={() => updateRequest({ targets: toggleListValue(request.targets, target) }, ["targets"])}>{target}</button>)}</div></div>
+            <div className="ui-test-wizard-grid">
+              <label className="ui-test-wizard-field"><span>作品规模</span><Input aria-label="作品规模" value={request.scale} placeholder="例如：100章左右 / 30万字" onChange={event => updateRequest({ scale: event.target.value }, ["scale"])} /></label>
+              <OptionGroup label="叙事方式" options={OUTLINE_WIZARD_NARRATIVE_OPTIONS} value={request.narrative} onChange={narrative => updateRequest({ narrative }, ["narrative"])} />
             </div>
-
-            <OptionGroup
-              label="叙事方式"
-              options={OUTLINE_WIZARD_NARRATIVE_OPTIONS}
-              value={request.narrative}
-              onChange={(narrative) => updateRequest({ narrative }, ["narrative"])}
-            />
-
-            <OptionGroup
-              label="已有资料来源"
-              options={OUTLINE_WIZARD_MATERIAL_OPTIONS}
-              value={request.materialSource}
-              onChange={(materialSource) => updateRequest({ materialSource }, ["materialSource"])}
-            />
-
-            {error ? (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
-              </div>
-            ) : null}
+            <OptionGroup label="已有资料来源" options={OUTLINE_WIZARD_MATERIAL_OPTIONS} value={request.materialSource} onChange={materialSource => updateRequest({ materialSource }, ["materialSource"])} />
+            {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           </div>
-
-          <DialogFooter className="mx-0 mb-0">
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              取消
-            </Button>
-            <Button type="submit">确定生成</Button>
-          </DialogFooter>
+          <DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button type="submit" data-guide="outline.wizard.submit">提交需求</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>

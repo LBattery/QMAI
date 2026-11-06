@@ -7,14 +7,14 @@ const source = readFileSync(resolve(__dirname, "llm-provider-section.tsx"), "utf
 describe("LLM provider model controls", () => {
   it("keeps fetched model selection wired into the LLM provider panel", () => {
     expect(source).toContain('import { fetchLlmModelList } from "@/lib/settings-model-list"')
-    expect(source).toContain('import { useBatchModelTest } from "../hooks/use-batch-model-test"')
-    expect(source).toContain('import { ModelSelectInput } from "../model-select-input"')
+    expect(source).toContain('import { useUiTestProviderBatch } from "@/components/uitest/models/provider-batch"')
+    expect(source).toContain('import { mergeProviderModels, removeProviderModel } from "@/components/uitest/models/provider-data"')
 
     expect(source).toContain("const [modelOptions, setModelOptions] = useState<string[]>([])")
     expect(source).toContain("await fetchLlmModelList(resolvedConfig)")
     expect(source).toContain("runBatchTest(modelsToTest, (modelId) => ({ ...resolvedConfig, model: modelId }))")
-    expect(source).toContain("<ModelSelectInput")
-    expect(source).toContain('selectPlaceholder={t("settings.sections.shared.modelSelectPlaceholder")}')
+    expect(source).toContain("<UiTestProviderModelInput")
+    expect(source).toContain('aria-label="模型"')
   })
 
   it("shows separate controls for fetching models and testing the selected model", () => {
@@ -32,9 +32,36 @@ describe("LLM provider model controls", () => {
     expect(source).toContain('settings.sections.llm.functionCalling.label')
   })
 
+  it("starts cursor-api-proxy via npx @latest instead of a global install", () => {
+    expect(source).toContain('t("settings.sections.llm.cliStatus.cursorProxyNpxHint")')
+    expect(source).not.toContain("npm i -g cursor-api-proxy")
+  })
+
+  it("exposes Cursor agent version check and update", () => {
+    expect(source).toContain("checkCursorAgentUpdate")
+    expect(source).toContain("updateCursorAgent")
+    expect(source).toContain('t("settings.sections.llm.cliStatus.cursorCheckUpdate")')
+    expect(source).toContain('t("settings.sections.llm.cliStatus.cursorUpdateNow")')
+    expect(source).toContain("await detect({ silent: true })")
+  })
+
   it("keeps Codex CLI isolated and requires app-server dynamic tools", () => {
     expect(source).toContain('const showLocalCliIsolation = preset.provider === "claude-code"')
     expect(source).toContain("r.installed && r.appServerReady === true && r.dynamicToolsReady === true")
     expect(source).toContain('invoke<DetectResult>("codex_cli_detect")')
+  })
+
+  it("exposes the persisted Codex standard and fast speed switch", () => {
+    expect(source).toContain("resolveCodexSpeedMode(ov.codexSpeedMode)")
+    expect(source).toContain('role="switch"')
+    expect(source).toContain('codexSpeedMode: codexFastEnabled ? "standard" : "fast"')
+    expect(source).toContain('settings.sections.llm.codexSpeedFast')
+  })
+
+  it("does not expose Cursor Fast or reasoning controls", () => {
+    expect(source).not.toContain("resolveCursorSpeedMode")
+    expect(source).not.toContain("cursorSpeedMode")
+    expect(source).toContain('{preset.provider !== "cursor-cli" && preset.provider !== "antigravity-cli" && (')
+    expect(source).toContain("<ReasoningControls")
   })
 })

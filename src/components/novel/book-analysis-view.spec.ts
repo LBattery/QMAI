@@ -39,31 +39,21 @@ const mocks = vi.hoisted(() => {
 
   const initializeProject = vi.fn()
   const createBatch = vi.fn()
-  const continueTask = vi.fn()
-  const regenerateTask = vi.fn()
-  const cancelImportTask = vi.fn()
-  const cancelAllQueued = vi.fn()
-  const deleteFailedTask = vi.fn()
-  const renameCompletedTask = vi.fn()
   const dispose = vi.fn()
-  const initializePipelineProject = vi.fn()
-  const createAwaitingRangeTask = vi.fn()
-  const configureTaskRange = vi.fn()
-  const startPipelineTask = vi.fn()
-  const pausePipelineTask = vi.fn()
-  const continuePipelineTask = vi.fn()
-  const retryPipelineChunk = vi.fn()
-  const cancelPipelineTask = vi.fn()
-  const setPanelCollapsed = vi.fn()
   const triggerSidebarRefresh = vi.fn()
   const setSelectedLibraryBookId = vi.fn()
   const setCurrentResult = vi.fn()
   const setShowResultViewer = vi.fn()
   const clearRecognition = vi.fn()
   const reloadLibraryState = vi.fn()
-  const handleLibraryExtractStyle = vi.fn()
   const handleLibraryReextractCharacters = vi.fn()
   const loadBookStoryFrameworkChapters = vi.fn()
+  const createAwaitingRangeTask = vi.fn()
+  const loadChapterList = vi.fn()
+  const streamChat = vi.fn()
+  const bridgeStoryFramework = vi.fn()
+  const buildStoryFrameworkDraft = vi.fn()
+  const upsertStoryFramework = vi.fn()
 
   return {
     candidates,
@@ -107,58 +97,46 @@ const mocks = vi.hoisted(() => {
       revision: 0,
       initializeProject,
       createBatch,
-      continueTask,
-      regenerateTask,
-      cancelTask: cancelImportTask,
-      cancelAllQueued,
-      deleteFailedTask,
-      renameCompletedTask,
-      setPanelCollapsed,
       dispose,
-    },
-    pipelineState: {
-      tasks: [],
-      chunks: [],
-      initializeProject: initializePipelineProject,
-      createAwaitingRangeTask,
-      configureTaskRange,
-      startTask: startPipelineTask,
-      pauseTask: pausePipelineTask,
-      continueTask: continuePipelineTask,
-      retryFailedChunk: retryPipelineChunk,
-      cancelTask: cancelPipelineTask,
     },
     initializeProject,
     createBatch,
-    continueTask,
-    regenerateTask,
-    cancelImportTask,
-    cancelAllQueued,
-    deleteFailedTask,
-    renameCompletedTask,
     dispose,
-    initializePipelineProject,
-    createAwaitingRangeTask,
-    configureTaskRange,
-    startPipelineTask,
-    pausePipelineTask,
-    continuePipelineTask,
-    retryPipelineChunk,
-    cancelPipelineTask,
-    setPanelCollapsed,
     triggerSidebarRefresh,
     setSelectedLibraryBookId,
     setCurrentResult,
     setShowResultViewer,
     clearRecognition,
     reloadLibraryState,
-    handleLibraryExtractStyle,
     handleLibraryReextractCharacters,
     loadBookStoryFrameworkChapters,
+    createAwaitingRangeTask,
+    loadChapterList,
+    streamChat,
+    bridgeStoryFramework,
+    buildStoryFrameworkDraft,
+    upsertStoryFramework,
+    pipelineState: {
+      tasks: [] as unknown[],
+      chunks: [] as unknown[],
+      progresses: {} as Record<string, unknown>,
+      initializeProject: vi.fn(async () => {}),
+      createAwaitingRangeTask,
+      configureTaskRange: vi.fn(async () => {}),
+      setTaskRecognizedCharacters: vi.fn(async () => {}),
+      failTask: vi.fn(async () => {}),
+      confirmCharacterSelection: vi.fn(async () => {}),
+      setRuntimeProgress: vi.fn(),
+      startTask: vi.fn(async () => {}),
+      pauseTask: vi.fn(async () => {}),
+      continueTask: vi.fn(async () => {}),
+      retryFailedChunk: vi.fn(async () => {}),
+      cancelTask: vi.fn(async () => {}),
+      dispose: vi.fn(async () => {}),
+    },
     reloadedLibraryState: libraryState,
     libraryParams: null as any,
     inputDialogProps: null as any,
-    taskPanelProps: null as any,
     layoutProps: null as any,
     chapterPanelProps: null as any,
   }
@@ -180,14 +158,6 @@ vi.mock("@/stores/book-analysis-store", () => {
   return { useBookAnalysisStore }
 })
 
-vi.mock("@/stores/book-analysis-import-store", () => {
-  const useBookAnalysisImportStore = Object.assign(
-    (selector: (state: typeof mocks.importState) => unknown) => selector(mocks.importState),
-    { getState: () => mocks.importState },
-  )
-  return { useBookAnalysisImportStore }
-})
-
 vi.mock("@/stores/book-analysis-pipeline-store", () => {
   const useBookAnalysisPipelineStore = Object.assign(
     (selector: (state: typeof mocks.pipelineState) => unknown) => selector(mocks.pipelineState),
@@ -196,14 +166,20 @@ vi.mock("@/stores/book-analysis-pipeline-store", () => {
   return { useBookAnalysisPipelineStore }
 })
 
+vi.mock("@/stores/book-analysis-import-store", () => {
+  const useBookAnalysisImportStore = Object.assign(
+    (selector: (state: typeof mocks.importState) => unknown) => selector(mocks.importState),
+    { getState: () => mocks.importState },
+  )
+  return { useBookAnalysisImportStore }
+})
+
 vi.mock("./hooks/use-library-operations", () => ({
   useLibraryOperations: (params: any) => {
     mocks.libraryParams = params
     return {
-      styleExtracting: false,
       addingToSoul: false,
       reloadLibraryState: mocks.reloadLibraryState,
-      handleLibraryExtractStyle: mocks.handleLibraryExtractStyle,
       handleLibraryToggleStyle: vi.fn(),
       handleLibraryAddSkillsToSoul: vi.fn(),
       handleLibraryDeleteBook: vi.fn(),
@@ -242,25 +218,6 @@ vi.mock("./book-analysis-input-dialog", async () => {
           onClick: () => void props.onSubmit(mocks.candidates),
         },
         "提交批量导入",
-      )
-    },
-  }
-})
-
-vi.mock("./book-analysis-import-task-panel", async () => {
-  const React = await import("react")
-  return {
-    BookAnalysisImportTaskPanel: (props: any) => {
-      mocks.taskPanelProps = props
-      return React.createElement("div", { "data-testid": "批量任务面板" },
-        React.createElement("button", { type: "button", onClick: () => props.onCollapsedChange(true) }, "收起任务"),
-        React.createElement("button", { type: "button", onClick: () => props.onContinue("task-continue") }, "继续任务"),
-        React.createElement("button", { type: "button", onClick: () => props.onRegenerate("task-regenerate") }, "重新生成任务"),
-        React.createElement("button", { type: "button", onClick: () => props.onCancel("task-cancel") }, "取消任务"),
-        React.createElement("button", { type: "button", onClick: () => props.onCancelAllQueued("batch-1") }, "取消批次等待"),
-        React.createElement("button", { type: "button", onClick: () => props.onDeleteFailed("task-failed") }, "删除失败任务"),
-        React.createElement("button", { type: "button", onClick: () => props.onRenameCompleted("task-completed", "新名字") }, "重命名完成任务"),
-        React.createElement("button", { type: "button", onClick: () => props.onOpenBook("book-1") }, "打开导入作品"),
       )
     },
   }
@@ -311,21 +268,28 @@ vi.mock("@/lib/novel/model-resolver", () => ({ resolveDefaultModel: () => ({}) }
 vi.mock("@/lib/novel/book-analysis/story-framework-extraction", () => ({
   loadBookStoryFrameworkChapters: mocks.loadBookStoryFrameworkChapters,
   buildBookStoryFrameworkPrompt: vi.fn(),
-  buildPlotFrameworkDraftFromBookStoryOutput: vi.fn(),
+  buildPlotFrameworkDraftFromBookStoryOutput: mocks.buildStoryFrameworkDraft,
 }))
 
 vi.mock("@/lib/novel/plot-framework-library", () => ({
   loadPlotFrameworkLibrary: vi.fn().mockResolvedValue({ frameworks: [] }),
-  upsertPlotFramework: vi.fn(),
+  upsertPlotFramework: mocks.upsertStoryFramework,
+}))
+/**
+ * 「旧框架入口」是第三个发布方：它也要把框架桥接进 storyFrameworkBinding 读的那个存储
+ * （.qmai/simulations/frameworks/）。这里打桩桥接函数，只验接线与入参。
+ */
+vi.mock("@/lib/novel/story-simulation/plot-framework-bridge", () => ({
+  bridgePlotFrameworkToStoryFramework: mocks.bridgeStoryFramework,
 }))
 
-vi.mock("@/lib/llm-client", () => ({ streamChat: vi.fn() }))
+vi.mock("@/lib/llm-client", () => ({ streamChat: mocks.streamChat }))
 vi.mock("@/lib/has-usable-llm", () => ({ hasUsableLlm: () => true }))
 vi.mock("@/lib/toast", () => ({
   toast: { info: vi.fn(), success: vi.fn(), error: vi.fn() },
 }))
 
-import { BookAnalysisView } from "./book-analysis-view"
+import { LegacyBookAnalysisView as BookAnalysisView } from "./book-analysis-view"
 
 type ActGlobal = typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const actGlobal = globalThis as ActGlobal
@@ -395,38 +359,26 @@ beforeEach(() => {
   mocks.reloadedLibraryState = mocks.libraryState
   mocks.libraryParams = null
   mocks.inputDialogProps = null
-  mocks.taskPanelProps = null
   mocks.layoutProps = null
   mocks.chapterPanelProps = null
 
   mocks.initializeProject.mockReset().mockResolvedValue(undefined)
   mocks.createBatch.mockReset().mockResolvedValue(undefined)
-  mocks.continueTask.mockReset().mockResolvedValue(undefined)
-  mocks.regenerateTask.mockReset().mockResolvedValue(undefined)
-  mocks.cancelImportTask.mockReset().mockResolvedValue(undefined)
-  mocks.cancelAllQueued.mockReset().mockResolvedValue(undefined)
-  mocks.deleteFailedTask.mockReset().mockResolvedValue(undefined)
-  mocks.renameCompletedTask.mockReset().mockResolvedValue(undefined)
   mocks.dispose.mockReset().mockResolvedValue(undefined)
-  mocks.initializePipelineProject.mockReset().mockResolvedValue(undefined)
-  mocks.createAwaitingRangeTask.mockReset().mockResolvedValue(null)
-  mocks.configureTaskRange.mockReset().mockResolvedValue(undefined)
-  mocks.startPipelineTask.mockReset().mockResolvedValue(undefined)
-  mocks.pausePipelineTask.mockReset().mockResolvedValue(undefined)
-  mocks.continuePipelineTask.mockReset().mockResolvedValue(undefined)
-  mocks.retryPipelineChunk.mockReset().mockResolvedValue(undefined)
-  mocks.cancelPipelineTask.mockReset().mockResolvedValue(undefined)
-  mocks.setPanelCollapsed.mockReset()
   mocks.triggerSidebarRefresh.mockReset().mockImplementation(() => { mocks.oldState.sidebarRefreshCounter += 1 })
   mocks.setSelectedLibraryBookId.mockReset().mockImplementation((id: string | null) => { mocks.oldState.selectedLibraryBookId = id })
   mocks.setCurrentResult.mockReset()
   mocks.setShowResultViewer.mockReset()
   mocks.clearRecognition.mockReset()
-  mocks.handleLibraryExtractStyle.mockReset()
   mocks.handleLibraryReextractCharacters.mockReset()
+  mocks.createAwaitingRangeTask.mockReset().mockResolvedValue({ id: "pipeline-task-1" })
+  mocks.loadChapterList.mockReset().mockResolvedValue([])
   mocks.loadBookStoryFrameworkChapters.mockReset().mockResolvedValue([
     { id: "chapter-1", title: "第一章", order: 1, content: "正文" },
   ])
+  mocks.bridgeStoryFramework.mockReset().mockResolvedValue(undefined)
+  mocks.buildStoryFrameworkDraft.mockReset().mockReturnValue(null)
+  mocks.upsertStoryFramework.mockReset()
   mocks.reloadLibraryState.mockReset().mockImplementation(async () => {
     const next = mocks.reloadedLibraryState
     mocks.libraryParams.setLibraryState(next)
@@ -451,14 +403,12 @@ describe("BookAnalysisView 批量导入运行时接线", () => {
   it("挂载和项目切换时初始化对应项目，切换页面时保留后台调度器", async () => {
     await renderView()
     expect(mocks.initializeProject).toHaveBeenCalledWith("E:/项目甲")
-    expect(mocks.initializePipelineProject).toHaveBeenCalledWith("E:/项目甲")
 
     mocks.wikiState.project = { id: "project-b", name: "项目乙", path: "F:/项目乙" }
     await rerenderView()
 
     expect(mocks.dispose).not.toHaveBeenCalled()
     expect(mocks.initializeProject).toHaveBeenLastCalledWith("F:/项目乙")
-    expect(mocks.initializePipelineProject).toHaveBeenLastCalledWith("F:/项目乙")
 
     await act(async () => {
       root.unmount()
@@ -563,29 +513,8 @@ describe("BookAnalysisView 批量导入运行时接线", () => {
     expect(mocks.inputDialogProps.open).toBe(true)
   })
 
-  it("任务面板把每个动作的任务或批次 ID 传给批量 Store", async () => {
-    await renderView()
-
-    await clickButton("收起任务")
-    await clickButton("继续任务")
-    await clickButton("重新生成任务")
-    await clickButton("取消任务")
-    await clickButton("取消批次等待")
-    await clickButton("删除失败任务")
-    await clickButton("重命名完成任务")
-
-    expect(mocks.setPanelCollapsed).toHaveBeenCalledWith(true)
-    expect(mocks.continueTask).toHaveBeenCalledWith("task-continue")
-    expect(mocks.regenerateTask).toHaveBeenCalledWith("task-regenerate")
-    expect(mocks.cancelImportTask).toHaveBeenCalledWith("task-cancel")
-    expect(mocks.cancelAllQueued).toHaveBeenCalledWith("batch-1")
-    expect(mocks.deleteFailedTask).toHaveBeenCalledWith("task-failed")
-    expect(mocks.renameCompletedTask).toHaveBeenCalledWith("task-completed", "新名字")
-  })
-
   it("打开 A 后普通选择 B 不回跳并同步状态", async () => {
     await renderView()
-    await clickButton("打开导入作品")
     await clickButton("选择角色")
     await clickButton("选择普通作品B")
     await rerenderView()
@@ -593,7 +522,7 @@ describe("BookAnalysisView 批量导入运行时接线", () => {
     expect(mocks.oldState.selectedLibraryBookId).toBe("book-2")
     expect(mocks.setCurrentResult).toHaveBeenLastCalledWith(expect.objectContaining({ bookId: "book-2" }))
     expect(mocks.layoutProps.selectedCharacterId).toBeNull()
-    expect(mocks.clearRecognition).toHaveBeenCalledTimes(2)
+    expect(mocks.clearRecognition).toHaveBeenCalledTimes(1)
   })
 
   it("旧角色、文风、框架和历史结果入口仍可触发", async () => {
@@ -605,12 +534,80 @@ describe("BookAnalysisView 批量导入运行时接线", () => {
     await clickButton("旧框架入口")
 
     expect(mocks.handleLibraryReextractCharacters).toHaveBeenCalledTimes(1)
-    expect(mocks.handleLibraryExtractStyle).toHaveBeenCalledTimes(1)
+    // 旧文风入口不再走单轮提取，统一走 pipeline 的 style skill
+    expect(mocks.createAwaitingRangeTask).toHaveBeenCalledWith(
+      expect.objectContaining({ bookId: "book-1", selectedSkills: ["style"] }),
+    )
     expect(mocks.loadBookStoryFrameworkChapters).toHaveBeenCalledWith(mocks.libraryState.books[0].path)
     expect(host.querySelector('[data-testid="章节选择面板"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="历史结果查看器"]')).not.toBeNull()
 
     await clickButton("关闭历史结果")
     expect(mocks.setShowResultViewer).toHaveBeenCalledWith(false)
+  })
+})
+
+describe("BookAnalysisView 故事框架提取后的桥接落盘", () => {
+  const framework = {
+    id: "framework-book-1-1700000000000", title: "长夜 · 故事机制", line: "main" as const,
+    beats: { hook: "钩子", buildup: "铺垫", payoff: "爽点", endingHook: "结尾钩子" },
+    rangeChapterIds: ["chapter-1"], characters: [], foreshadowing: [], reusableTemplate: "",
+    directionHints: "", handcraftHints: "", createdAt: 1700000000000, updatedAt: 1700000000000,
+  }
+
+  it("提取成功后把入库后的框架桥接进仿真框架存储，否则这条入口只写了一半", async () => {
+    mocks.buildStoryFrameworkDraft.mockReturnValue(framework)
+    // 真实 upsertPlotFramework 会补默认值后返回同一份内容；这里用返回值区分「传进去的那份」。
+    const saved = { ...framework, title: "长夜 · 故事机制（已归一化）" }
+    mocks.upsertStoryFramework.mockResolvedValue(saved)
+    await renderView()
+    await clickButton("旧框架入口")
+
+    await act(async () => {
+      await mocks.chapterPanelProps.onConfirm(["chapter-1"])
+    })
+
+    expect(mocks.upsertStoryFramework).toHaveBeenCalledWith("E:/项目甲", framework)
+    // 桥接必须拿到 upsert 的返回值：id 由它派生，取错就是绑定之后静默空串。
+    expect(mocks.bridgeStoryFramework).toHaveBeenCalledWith("E:/项目甲", saved)
+  })
+
+  it("提取失败（AI 输出缺四段）时不写任何东西，也不会去桥接", async () => {
+    mocks.buildStoryFrameworkDraft.mockReturnValue(null)
+    await renderView()
+    await clickButton("旧框架入口")
+
+    await act(async () => {
+      await mocks.chapterPanelProps.onConfirm(["chapter-1"])
+    })
+
+    expect(mocks.upsertStoryFramework).not.toHaveBeenCalled()
+    expect(mocks.bridgeStoryFramework).not.toHaveBeenCalled()
+  })
+})
+
+describe("BookAnalysisView 故事框架思考-only 重试", () => {
+  it("故事框架提取遇到思考-only 时关掉思考重试一次", async () => {
+    // 第 1 次响应只回思考诊断（迁移前这里没有任何重试，用户只拿到这条 toast）。
+    mocks.streamChat.mockImplementationOnce(async (_config: unknown, _messages: unknown, callbacks: any) => {
+      callbacks.onError(new Error("模型只输出了 17,331 字符的思考内容，但没有输出正文。"))
+    })
+    // 重试那一轮正常返回正文。
+    mocks.streamChat.mockImplementation(async (_config: unknown, _messages: unknown, callbacks: any) => {
+      callbacks.onToken("## 钩子\n示例框架\n## 铺垫\n示例\n## 爽点\n示例\n## 结尾钩子\n示例")
+      callbacks.onDone()
+    })
+
+    await renderView()
+    await clickButton("旧框架入口")
+    const onConfirm = mocks.chapterPanelProps.onConfirm
+    await act(async () => {
+      await onConfirm(["chapter-1"])
+    })
+
+    expect(mocks.streamChat).toHaveBeenCalledTimes(2)
+    // 第 0 次是未关思考的原始尝试，第 1 次才是关思考的重试。
+    expect(mocks.streamChat.mock.calls[0][4]).toBeUndefined()
+    expect((mocks.streamChat.mock.calls[1][4] as { reasoning?: unknown }).reasoning).toEqual({ mode: "off" })
   })
 })

@@ -62,10 +62,6 @@ const zhI18n = readFileSync(
   resolve(__dirname, "../i18n/zh.json"),
   "utf8",
 )
-const enI18n = readFileSync(
-  resolve(__dirname, "../i18n/en.json"),
-  "utf8",
-)
 
 describe("writing settings still reach runtime", () => {
   it("persists novelConfig, feedback window, and chat history immediately from the writing settings panel", () => {
@@ -109,21 +105,32 @@ describe("writing settings still reach runtime", () => {
     expect(deepChapter).not.toContain("runPreviousChaptersAnalysis")
   })
 
+  it("gates chapter writing web search with a writing-settings switch, not strict mode alone", () => {
+    expect(novelSection).toContain("writingWebSearchEnabled")
+    expect(wikiStore).toContain("writingWebSearchEnabled")
+    expect(projectStore).toContain("writingWebSearchEnabled")
+    expect(zhI18n).toContain("writingWebSearchEnabled")
+    expect(zhI18n).toContain("writingWebSearchEnabled")
+    expect(deepChapter).toContain("novelConfig.writingWebSearchEnabled")
+    expect(deepChapter).toContain("workflowProfile.mode !== \"fast\" && novelConfig.writingWebSearchEnabled")
+    expect(deepChapter).not.toContain("workflowProfile.mode === \"strict\"")
+    expect(chatPanel).toContain("writingWebSearchEnabled")
+  })
+
   it("deletes the dead deepChapterReview switch instead of keeping an unused config field", () => {
     expect(novelSection).not.toContain("deepChapterReview")
     expect(wikiStore).not.toContain("deepChapterReview")
     expect(projectStore).not.toContain("deepChapterReview")
     expect(zhI18n).not.toContain("deepChapterReview")
-    expect(enI18n).not.toContain("deepChapterReview")
+    expect(zhI18n).not.toContain("deepChapterReview")
     expect(deepChapter).toContain("const shouldRunAiReview = workflowProfile.runAiReview")
     expect(deepChapter).not.toContain("novelConfig.deepChapterReview")
   })
 
-  it("keeps community summary, ingest-on-save, review effort, and task models on live paths", () => {
+  it("keeps community summary, review effort, and task models on live paths", () => {
     expect(communitySummary).toContain("novelConfig.communitySummaryEnabled")
     expect(communitySummary).toContain("novelConfig.communitySummaryInterval")
     expect(chapterIngest).toContain("novelConfig.communitySummaryAsync")
-    expect(previewPanel).toContain("novelConfig.autoIngestOnSave")
     expect(reviewAdapter).toContain("reviewReasoningEffort")
     expect(modelResolver).toContain("review: novelConfig.reviewModel")
     expect(modelResolver).toContain("summary: novelConfig.summaryModel")
@@ -134,5 +141,42 @@ describe("writing settings still reach runtime", () => {
     expect(revisionFeedback).toContain("config.previousChapterCarryEnabled")
     expect(revisionFeedback).toContain("config.lookbackChapterCount")
     expect(revisionFeedback).toContain("config.lookbackIncludeMustFixOnly")
+  })
+
+  /*
+   * 保存为正式章节不再自动提取记忆（用户要求：它与章节/大纲的「提取记忆」按钮
+   * 是同一件事，重复）。这道断言是**防回归**：把四处一起钉住，
+   * 谁日后想把这个开关加回来，必须先在这里看到「它已被有意移除」。
+   *
+   * 断言的是**代码形态**而不是裸词：上面那些移除原因说明留在注释里，
+   * 注释里当然会出现这个字段名；只有真把字段/开关加回来才会命中这些模式。
+   */
+  /*
+   * 丙-4b：新章节灵感提示开关。
+   *
+   * 与上面 `writingWebSearchEnabled` 那条同风格：把一个新开关的五个落点
+   * （设置界面、store 字段、默认值文件、落盘归一化、中文文案）一起钉住。
+   * 只钉其中两三处，日后最容易漏的恰恰是 `normalizeNovelConfig` ——
+   * 漏了它，老配置读回来字段是 `undefined`，`if (enabled)` 这种写法
+   * 会把开关默认成**关**，而界面上开关仍显示开。
+   */
+  it("把新章节灵感提示开关的每个落点都钉住", () => {
+    expect(novelSection).toContain("inspirationHintEnabled")
+    expect(wikiStore).toContain("inspirationHintEnabled")
+    expect(projectStore).toContain("inspirationHintEnabled")
+    expect(zhI18n).toContain('"inspirationHintEnabled"')
+    expect(zhI18n).toContain('"inspirationHintEnabledHint"')
+  })
+
+  it("keeps ingest-on-save deleted instead of letting the duplicate path return", () => {
+    expect(previewPanel).not.toContain("novelConfig.autoIngestOnSave")
+    expect(novelSection).not.toContain("novelConfig.autoIngestOnSave")
+    expect(novelSection).not.toContain("autoIngestOnSaveHint")
+    // `autoIngestOnSave:` 同时盯住 NovelConfig 的字段声明与 DEFAULT_NOVEL_CONFIG 的默认值。
+    expect(wikiStore).not.toContain("autoIngestOnSave:")
+    expect(projectStore).not.toContain("autoIngestOnSave:")
+    expect(zhI18n).not.toContain('"autoIngestOnSave"')
+    // 手动路径必须还在：删掉的是自动触发，不是「提取记忆」这个功能本身。
+    expect(previewPanel).toContain("handleReingest")
   })
 })

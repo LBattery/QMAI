@@ -1,0 +1,626 @@
+/**
+ * 工具栏图标的源码守卫。
+ *
+ * ── 为什么是源码断言而不是渲染断言 ──
+ * 一键排版按钮只在「选中章节」时才渲染，而章节工具栏的图标是
+ * 一层 JSX 里的字面量。渲染断言需要把整个 PreviewPanel 的依赖
+ * （项目、文件内容、章节状态、Tauri IPC）都造出来，代价远高于收益，
+ * 而且它测的仍然是同一行字面量。这里直接钉住那一行。
+ *
+ * ── 这条守卫防的是什么 ──
+ * 用户明确提出「一键排版的图标与正文字体的图标不能设置为一样」。
+ * 当前两处都用 lucide 的 Type，是一模一样的图标。这条断言让
+ * "改回去 / 新增按钮时又抄了 Type" 立刻变红。
+ */
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
+import { describe, expect, it } from "vitest"
+
+const source = readFileSync(resolve(__dirname, "preview-panel.tsx"), "utf8")
+
+/**
+ * 取某个 aria-label 按钮的**完整片段**（不是"那一行"）。
+ *
+ * 为什么必须跨行：按钮常被排成多行 ——
+ *   <button … aria-label="字体设置" …>
+ *     <Type aria-hidden="true" />
+ *   </button>
+ * 只取命中 aria-label 的那一行，<Type /> 就落在视野之外，
+ * 「这个按钮用了哪个图标」的断言会**假红**：报错看着像"图标没换"，
+ * 其实只是排版换行了。反过来也一样 —— 一键排版按钮若被排成多行，
+ * 它的 not.toContain("<Type") 会因为同一原因假绿。
+ *
+ * 做法：从命中 aria-label 的那行起累加，直到该 <button> 闭合。
+ *
+ * ── occurrence 参数：为什么必须有（这是实测出来的一个真盲区）──
+ * 这个函数原先用 `findIndex`，也就是**只取第一处**匹配。
+ * 而「字体设置」在源码里有**两处**：章节工具栏一处、大纲一处。
+ * 于是 Task 11 的变异验证发现：**只把大纲那处的图标改回 WandSparkles，
+ * 全部守卫依然全绿** —— 大纲那一处从没进入任何断言的视野。
+ *
+ * 这正好和本次要修的缺陷同类：用户原话是「一键排版的图标与正文字体的图标
+ * 两个不能设置为一样」，而"两处入口"是用户明确要求的。
+ * 只守住章节那处，等于把"大纲里又抄错了图标"这类回归放走 ——
+ * 而它恰恰是**用户在界面上能直接看到**的那种错。
+ *
+ * 所以加 occurrence（1 起算）。找不到第 occurrence 处时**抛错**而不是
+ * 回退到第一处：静默回退会让"入口被删掉"这种情况继续假绿。
+ *
+ * ── ⚠ 命中点必须锚定到 <button>（代码质量审查 I5）──
+ * 原先只匹配 `aria-label="字体设置"`，于是**浮层容器**那一行
+ * （`<div … role="dialog" aria-label="字体设置">`）也会命中 ——
+ * 「字体设置」实际有 **3** 处命中（章节按钮 / 大纲按钮 / 浮层容器），
+ * 而不是注释里说的 2 处。后果是：把大纲按钮删掉后，
+ * `buttonBlock("字体设置", 2)` **不会抛错**，而是返回浮层容器那一段，
+ * 用例最后因为 `toContain("Type")` 为假而红 —— 仍然会红，
+ * 但报错指向"图标不对"，而真实原因是"大纲入口没了"。
+ * 与注释承诺的定位能力不符，会让后来者查错方向。
+ *
+ * 现在要求命中行同时含有 `<button`。这样 3 处命中里只剩真正的两个按钮。
+ * ⚠️ 连带约定：按钮必须写成**单行**（`<button … aria-label="…" …>`），
+ * 拆成多行会让这里查不到它 —— preview-panel.tsx 里两个字体设置按钮
+ * 都按这个写法，改动时别把它排成多行。
+ *
+ * ── ⚠ 2026-10-15：occurrence 的「第 1 处 / 第 2 处」语义已失效，改用 scope ──
+ * 用户要求「将字体设置图标也移上去」：大纲那处从"大纲工具栏里的独立按钮"
+ * 并入了 `outlineMemoryActions`（双格式顶栏用），在文件里的位置随之
+ * **排到章节那处的前面**。于是原来的映射（1=章节、2=大纲）正好反过来 ——
+ * 两条用例会各自测到**对方**的入口，却因为两处按钮文本逐字相同而
+ * **照样全绿**（与上面那段盲区是同一种失效方式）。
+ *
+ * 现在不按行序、改按**区块**定位：entry 落在哪个变量定义区里，是**结构**
+ * 决定的（见下面 OUTLINE_ACTIONS_SCOPE / EDITOR_JSX_SCOPE），
+ * 搬动按钮顺序不会再骗过它。
+ */
+function buttonBlock(ariaLabel: string, occurrence = 1, scope: string = source): string {
+  if (!Number.isInteger(occurrence) || occurrence < 1) {
+    throw new Error(`occurrence 必须是 1 起的整数，收到 ${occurrence}`)
+  }
+  const lines = scope.split(/\r?\n/)
+  let seen = 0
+  let start = -1
+  for (let i = 0; i < lines.length; i++) {
+    /*
+     * 同时要求 <button：把浮层容器（role="dialog" aria-label="字体设置"）
+     * 排除在外。少了这个条件，"第 2 处"会取错东西。
+     */
+    if (lines[i].includes("<button") && lines[i].includes(`aria-label="${ariaLabel}"`)) {
+      seen += 1
+      if (seen === occurrence) {
+        start = i
+        break
+      }
+    }
+  }
+  if (start < 0) {
+    throw new Error(`找不到第 ${occurrence} 处按钮：${ariaLabel}（共找到 ${seen} 处）`)
+  }
+  const collected: string[] = []
+  for (let i = start; i < lines.length; i++) {
+    collected.push(lines[i])
+    if (lines[i].includes("</button>")) break
+  }
+  return collected.join("\n")
+}
+
+/**
+ * 取 [startNeedle, endNeedle) 之间的源码片段（两端都是首次出现处）。
+ *
+ * 为什么需要它：见上面 buttonBlock 注释末尾 —— 「字体设置」两处入口在
+ * 文件里的先后顺序已随 2026-10-15 的改动互换，occurrence 不再可靠。
+ * 这里用**变量定义区**做锚点，把两处入口按结构分开。
+ */
+function sliceBetween(startNeedle: string, endNeedle: string): string {
+  const start = source.indexOf(startNeedle)
+  if (start < 0) throw new Error(`找不到区块起点：${startNeedle}`)
+  const end = source.indexOf(endNeedle, start + startNeedle.length)
+  if (end < 0) throw new Error(`找不到区块终点：${endNeedle}`)
+  return source.slice(start, end)
+}
+
+/** 大纲「提取记忆 / 查看记忆 / 字体设置」三枚动作的定义区（双格式顶栏用） */
+const OUTLINE_ACTIONS_SCOPE = sliceBetween(
+  "const outlineMemoryActions",
+  "if (loadedFilePath !== selectedFile)",
+)
+
+/**
+ * 编辑器 JSX 区：章节工具栏那处「字体设置」在这里。
+ * 大纲分支不再单独渲染它（已并入上面的 actions），所以这个区块里只剩章节
+ * 一处 —— 章节入口被删时 buttonBlock 会抛错。
+ */
+const EDITOR_JSX_SCOPE = sliceBetween("const uiTestEditorElement", "\n  return (")
+
+/**
+ * 取出片段里用到的 lucide 图标组件名（形如 `<WandSparkles ... />`）。
+ *
+ * 为什么需要它：用户的原话是「一键排版的图标与正文字体的图标两个不能
+ * 设置为一样」—— 这是个**图标层面**的不变量。直接比较两段按钮文本
+ * 是证明不了它的（下面那条注释里有详细说明），必须把图标名取出来比。
+ */
+function iconNamesIn(block: string): string[] {
+  const names = new Set<string>()
+  for (const m of block.matchAll(/<([A-Z][A-Za-z0-9]*)\s/g)) {
+    /* 排除 HTML 标签与属性名；lucide 图标都是 PascalCase 且没有小写开头 */
+    names.add(m[1])
+  }
+  return [...names]
+}
+
+describe("章节与大纲工具栏图标", () => {
+  it("一键排版用魔法棒图标，不再是字体图标", () => {
+    const line = buttonBlock("一键排版")
+    expect(line).toContain("WandSparkles")
+    // 两处图标撞车正是本次要修的缺陷
+    expect(line).not.toContain("<Type")
+  })
+
+  it("章节工具栏的字体设置用 Type 图标，且与一键排版不是同一个", () => {
+    const line = buttonBlock("字体设置", 1, EDITOR_JSX_SCOPE)
+    expect(line).toContain("Type")
+    expect(line).not.toContain("WandSparkles")
+    /*
+     * 这里原本写的是 `expect(buttonBlock("一键排版")).not.toBe(line)`。
+     * 那是一条**恒真断言**，代码质量审查 C1 发现的：
+     * 两段片段是用**不同的 needle**（不同的 aria-label）定位的，
+     * 所以它们的首行必然不同，字符串**永远不可能相等**。
+     * 实测把它改成"一键排版也用 Type"（即用户投诉的撞车场景），
+     * 那一行**照样通过** —— 它对声称保护的不变量零鉴别力，只贡献一行绿。
+     *
+     * 改成直接比较**图标名**：这才是用户提的那个不变量
+     * （「一键排版的图标与正文字体的图标两个不能设置为一样」），
+     * 而且它对撞车场景真的会红。
+     */
+    const fanIcon = iconNamesIn(line)
+    const formatIcon = iconNamesIn(buttonBlock("一键排版", 1, EDITOR_JSX_SCOPE))
+    expect(fanIcon, "「字体设置」应恰好用一个图标组件").toHaveLength(1)
+    expect(formatIcon, "「一键排版」应恰好用一个图标组件").toHaveLength(1)
+    expect(fanIcon[0], "两处图标不能是同一个组件").not.toBe(formatIcon[0])
+    expect(fanIcon[0]).toBe("Type")
+    expect(formatIcon[0]).toBe("WandSparkles")
+  })
+
+  /*
+   * 大纲那一处**必须单独钉**（2026-10-15 起它住在 `outlineMemoryActions` 里，
+   * 与「提取记忆 / 查看记忆」一起渲染在双格式顶栏）。
+   *
+   * 上面那条用的是章节工具栏那处。实测变异：只把大纲那处的图标改成
+   * WandSparkles，全部守卫**依然全绿** —— 因为大纲那处从来没进入任何
+   * 断言的视野（buttonBlock 原先只取第一处）。
+   *
+   * 而用户的要求是**两处入口**都要有、且图标都不能与一键排版撞车：
+   * 「大纲当中也要有这个设置功能」（之后又追加「将字体设置图标也移上去」）。
+   * 所以这一条不是重复，它守的是另一半。删掉它，大纲入口就能悄悄退化成
+   * 魔法棒图标。
+   */
+  it("大纲的字体设置也用 Type 图标，同样不与一键排版撞车", () => {
+    const outline = buttonBlock("字体设置", 1, OUTLINE_ACTIONS_SCOPE)
+    expect(outline).toContain("Type")
+    expect(outline).not.toContain("WandSparkles")
+    /*
+     * 这里**故意不加**
+     * `expect(outline).not.toBe(buttonBlock("字体设置", 1, EDITOR_JSX_SCOPE))`。
+     * 我第一版加了它，结果是假红：章节与大纲那两段按钮的文本
+     * **逐字节相同**（同一套 className / title / onClick / 同一个 <Type />），
+     * 就像两处入口本来就该长一样。
+     *
+     * 而"它们是不是同一段被取到两次"这个担心，其实由 scope 机制本身
+     * 解决了：两个 scope 是**不相交**的源码区间，取不出同一段。
+     * 真正需要防的是"大纲入口被删掉"——那种情况下
+     * buttonBlock("字体设置", 1, OUTLINE_ACTIONS_SCOPE) 会**抛错**
+     * （该区块里找不到按钮），用例照样红。
+     */
+  })
+
+  it("章节与大纲都能打开字体设置浮层", () => {
+    // 两处入口都调同一个打开函数（共用同一个面板，含同一份值）
+    expect(source.match(/openBodyFontPopover\(event\.currentTarget\)/g)?.length).toBe(2)
+  })
+
+  /*
+   * 丙-2a：「生成章节细纲」的入口落进章节工具栏，三个动作图标必须两两不同。
+   *
+   * 用户此前已经为「字体设置 vs 一键排版」提过一次同样的要求
+   * （「一键排版的图标与正文字体的图标两个不能设置为一样」）。新增第三个
+   * 图标动作时，同样的撞车风险会以新组合再出现一次（拿 Type 或 WandSparkles
+   * 去当"生成"图标是最省事的写法），所以这里用**两两互不相同**的方式钉住，
+   * 而不是只比较新按钮与其中某一个。
+   */
+  it("生成章节细纲用灯泡图标，与字体设置、一键排版三者互不相同", () => {
+    const block = buttonBlock("生成章节细纲")
+    expect(block).toContain("Lightbulb")
+    expect(block).not.toContain("<Type")
+    expect(block).not.toContain("WandSparkles")
+
+    const generationIcon = iconNamesIn(block)
+    expect(generationIcon, "「生成章节细纲」应恰好用一个图标组件").toHaveLength(1)
+    expect(generationIcon[0]).toBe("Lightbulb")
+
+    // 两两互不相同：任何两个复用同一个组件都会红
+    const icons = {
+      // 三个图标同屏的是**章节工具栏**，所以这三处都锚定 EDITOR_JSX_SCOPE
+      字体设置: iconNamesIn(buttonBlock("字体设置", 1, EDITOR_JSX_SCOPE))[0],
+      一键排版: iconNamesIn(buttonBlock("一键排版", 1, EDITOR_JSX_SCOPE))[0],
+      生成章节细纲: generationIcon[0],
+    }
+    expect(new Set(Object.values(icons)).size, `三个图标撞车了：${JSON.stringify(icons)}`).toBe(3)
+  })
+
+  /*
+   * 丙-2c：这是一次**有意识**的删除，不是「顺手删掉」。
+   *
+   * 丙-2a 加这条守卫时的注释原文是：
+   *   「入口是**新增**，不是搬家 —— 本批之后大纲面板的空白态入口必须原样还在。
+   *     删掉它是后续单独一步（**要人确认章节区那条链路真的可用**），
+   *     这条守卫就是防止"顺手删掉"在没有验证的情况下发生。」
+   *
+   * 那句话点名的**前置条件现在已经满足**：
+   *   · 丙-2a 已把入口落到章节区标题栏（本文件上面那条灯泡图标守卫钉住图标），
+   *   · 丙-2b 已验证章节区那条链路真的可用（`preview-panel.event-outline.spec.tsx`
+   *     的行为用例覆盖：点按钮 → 弹向导 → 提交生成 → 卡片出现在章节区 →
+   *     确认后直接写出正文）。
+   * 所以按约定执行「后续单独一步」：删除大纲面板那一侧的入口与整条死链。
+   *
+   * 因此这条守卫**方向反转**：从「入口必须还在」改成「入口必须不再有」。
+   *
+   * ⚠️ 反转**不是**绕过。若为了让测试变绿而保留一个空引用（例如把
+   * `EventOutlineWizardDialog` 的 import 留着不用），那是骗测试；这里钉的是
+   * 「三个符号在面板源码里一个都不剩」。
+   *
+   * ⚠️ 同时必须留**正向对照**：`EventOutlineCard` 与 `extractEventOutlineData`
+   * 仍要在（老会话的 `.qmai/outline-chats.json` 里已有事件细纲助手消息，卡片要继续渲染）。
+   * 没有这两条，把整个文件清空也能让上面的 not.toContain 全绿。
+   */
+  it("大纲面板已不再提供事件细纲入口，但仍渲染旧会话的事件细纲卡片", () => {
+    const panel = readFileSync(resolve(__dirname, "../sources/outline-chat-panel.tsx"), "utf8")
+    expect(panel).not.toContain("onGenerateEventOutline")
+    expect(panel).not.toContain("setEventOutlineWizardOpen(true)")
+    expect(panel).not.toContain("EventOutlineWizardDialog")
+    // 正向对照：卡片渲染这条路必须留着（「不能新建」≠「不再渲染」）
+    expect(panel).toContain("EventOutlineCard")
+    expect(panel).toContain("extractEventOutlineData")
+
+    /*
+     * 共享组件那一侧的同一个洞也要堵上。
+     *
+     * `UiTestAiEmpty` 是**空白态里唯一**承载过「生成章节细纲」按钮的组件
+     * —— 注意不是「唯一承载该按钮的组件」：章节区工具栏那枚在
+     * `preview-panel.tsx` 里，它不是空白态。原注释写成「唯一承载」与源码不符，本批更正。
+     * 只删调用点、把可选 prop 留在签名里，会得到一个没有任何调用方、
+     * 却仍能从别处接线的按钮 —— 下一个人照样能把它接回大纲面板。
+     * `tsc` 抓不到这件事（可选 prop 没人传是合法的），所以这里用源码钉。
+     *
+     * ── ⚠️ 这条守卫的效力边界（按审查的实测改写，不再自称"最强形式"）──
+     * 它钉的是**源码里的名字与字面量**，不是行为。实测过的绕过方式：
+     * 换一个 prop 名（如 `onGenerateChapterOutline`）、文案写成 **JSX 表达式**
+     * `{"生成章节细纲"}` —— `onGenerateEventOutline` 与 `>生成章节细纲<` 两条断言
+     * 都拦不住它。所以这里**补上带 ASCII 引号的字面量断言**，它正好堵住这种绕过；
+     * 但换成模板串、变量拼接仍然能绕过去 —— 源码扫描做不到"证明不存在等价入口"。
+     * 这条守卫的真实价值是**拿掉现成的接线点**，让再接线这件事必须显式发生。
+     *
+     * 真正的**行为**背书不在这里，而在 `outline-chat-panel.spec.tsx` 的
+     * 「空会话只提供「生成小说大纲」一个入口，不再提供「生成章节细纲」」：
+     * 它渲染整个面板并断言空白态的按钮文案集合，只要有人把它接回空白态
+     * （无论换成什么名字）那条用例必红。两者分工不同，都要在。
+     * 反过来说：只加一个**没有任何调用方**的可选 prop 不产生任何可观察行为，
+     * 所以不存在能拦住它的行为断言 —— 那正是这里保留源码扫描的原因。
+     *
+     * 正向对照：「生成小说大纲」必须还在，否则把整个组件删空也能绿。
+     */
+    const shared = readFileSync(resolve(__dirname, "../uitest/ui-test-ai-parts.tsx"), "utf8")
+    expect(shared).not.toContain("onGenerateEventOutline")
+    // 按钮本体也得走：断言的是 JSX 文本节点（`>生成章节细纲<`），
+    // 而不是「文件里出现过这四个字」—— 上面那段说明本来就要提它。
+    expect(shared).not.toContain(">生成章节细纲<")
+    /*
+     * 上面两条只管住了「同一个名字 + 同一种写法」。这里补上带 ASCII 引号的文案字面量：
+     * 文件里一旦出现 `"生成章节细纲"`，就说明有声明或接线在用这个文案
+     * （DOM 文本节点、title、aria-label 都一样）。
+     * ⚠️ 上面那段说明里的「生成章节细纲」用的是「」直角引号，**不算**命中；
+     * 这份文件目前只有那两处说明提过它。
+     */
+    expect(shared, "文案换一种写法（JSX 表达式标签 `{\"生成章节细纲\"}`）同样要拦住")
+      .not.toContain('"生成章节细纲"')
+    expect(shared).toContain(">生成小说大纲<")
+  })
+})
+
+/*
+ * ── 下面这一组是「值接线」守卫，补的是审查发现的一个真缺口 ──
+ *
+ * 浮层里的 6 个控件共用正文一套值。这些值有三处"手抄"：
+ *   ① `value={{ fontPx: uiBodyFontPx, … }}`   —— 读
+ *   ② `case "fontPx": setUiBodyFontPx(…)`      —— 写
+ *   ③ `saveUiBodyFontPx(s.uiBodyFontPx)`       —— 落盘
+ * 三处都容易"串味"（把 lineHeight 接成 safeBottom）。
+ *
+ * 为什么现有守卫一条都抓不住：**6 个值全是 number**（fontFamily 除外），
+ * 所以串味之后 tsc 照样过、case 都在、`= key` 穷尽收尾也照样过。
+ * 审查实测了 6 个变异（读串味、写串味、落盘串味、漏一个落盘、漏一个 case、
+ * 以及漏一个 case 导致的错配），全部**保持绿**。而它们的用户可见后果是：
+ *   · 拖「行间距」结果「字号」动了（读串味）
+ *   · 改「行间距」实际改的是「字间距」（写串味）
+ *   · 某个设置**永远存不下去**，重开软件就回退（漏落盘）
+ * 都是"设置莫名其妙"那种很难归因的毛病。
+ *
+ * 本仓库已有先例：App.tsx 那份同样的映射**是有配对守卫的**
+ * （interface-sidebar-nav.spec.ts 的 APPLIED 数组）。Task 11 在
+ * preview-panel.tsx 里新增的是**第三份**拷贝，当时没配上守卫 ——
+ * 这里补上，与那份对齐。
+ */
+describe("字体设置浮层的值接线（三处手抄必须各自配对）", () => {
+  /*
+   * 取 `applyBodyTypographyChange` 里那个 switch 的**每个 case 的完整 case 体**。
+   *
+   * ── 为什么不能用"逐行找 `case "X":` 独占一行 + 取其后第一条语句" ──
+   * 那个版本有**两个**实测出来的毛病（代码质量审查 I2、I3）：
+   *
+   * I2「格式耦合 → 假红」：它要求 `case "X":` 独占一行。
+   *   把 switch 改写成同样合法的单行形式
+   *       case "fontPx": setUiBodyFontPx(next as number); break
+   *   或块体形式
+   *       case "fontPx": { … }
+   *   实测会**抛错「找不到 case "fontPx"」** —— 语义等价的重排让守卫假红。
+   *   而假红的代价是让人去放宽断言（本仓库明确记录过这个坑）。
+   *
+   * I3「只看第一条语句 → 漏判」：保留正确的 setter 之后再补一行
+   *   错误的 setter（两种串味同时发生），实测**守卫全绿**。
+   *   用户可见后果与单纯串味一样。
+   *
+   * 现在改成：先把整个 case 体切出来（允许同行写法），再在**整段体**上断言
+   * 「应当调用的那个 setter 在」且「任何**别的** setUiBody* setter 都不在」。
+   * 这样既不怕重排，也抓得住多写的那一行。
+   */
+  function caseBodies(): Map<string, string> {
+    const src = source.replace(/\r\n/g, "\n")
+
+    /* 定位到 applyBodyTypographyChange 里的 switch，避免撞上别的 switch */
+    const fnIdx = src.indexOf("const applyBodyTypographyChange")
+    if (fnIdx < 0) throw new Error("找不到 applyBodyTypographyChange")
+    const switchIdx = src.indexOf("switch (key) {", fnIdx)
+    if (switchIdx < 0) throw new Error("applyBodyTypographyChange 里找不到 switch (key) {")
+
+    /* 花括号配平找 switch 的收尾 */
+    const open = src.indexOf("{", switchIdx)
+    let depth = 0
+    let close = -1
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === "{") depth += 1
+      else if (src[i] === "}") {
+        depth -= 1
+        if (depth === 0) { close = i; break }
+      }
+    }
+    if (close < 0) throw new Error("switch 的花括号没配平")
+    const body = src.slice(open + 1, close)
+
+    /*
+     * 按 `case "X":` 切段。允许 case 与语句同行、也允许块体 ——
+     * 只要求 `case "X":` 后面紧跟可选空白。
+     */
+    const result = new Map<string, string>()
+    const re = /case\s+"([A-Za-z0-9_]+)"\s*:/g
+    const marks: Array<{ name: string; at: number }> = []
+    let m: RegExpExecArray | null
+    while ((m = re.exec(body)) !== null) marks.push({ name: m[1], at: m.index })
+    if (marks.length === 0) throw new Error("一个 case 都没找到 —— 守卫的定位逻辑可能失效了")
+    for (let i = 0; i < marks.length; i++) {
+      const from = marks[i].at
+      const to = i + 1 < marks.length ? marks[i + 1].at : body.length
+      result.set(marks[i].name, body.slice(from, to))
+    }
+    return result
+  }
+
+  it("switch 的每个 case 各自调用同名的 setter（且不夹带别的 setter）", () => {
+    const bodies = caseBodies()
+    const ALL_SETTERS = [
+      "setUiBodyFontFamily",
+      "setUiBodyFontPx",
+      "setUiBodyLineHeight",
+      "setUiBodyLetterSpacing",
+      "setUiBodyMarginX",
+      "setUiBodySafeBottom",
+    ] as const
+
+    for (const [key, setter] of [
+      ["fontFamily", "setUiBodyFontFamily"],
+      ["fontPx", "setUiBodyFontPx"],
+      ["lineHeight", "setUiBodyLineHeight"],
+      ["letterSpacing", "setUiBodyLetterSpacing"],
+      ["marginX", "setUiBodyMarginX"],
+      ["safeBottom", "setUiBodySafeBottom"],
+    ] as const) {
+      const b = bodies.get(key)
+      expect(b, `switch 里应有 case "${key}"`).toBeDefined()
+      /*
+       * ① 应当调用的那个 setter 必须在（并核对它收到的是 next，
+       *    而不是某个写死的常量 —— 那也是一种"看着对其实错"）。
+       */
+      expect(b!, `${key} 的 case 体应调用 ${setter}(next…)`).toContain(`${setter}(next`)
+      /*
+       * ② **任何别的** setUiBody* setter 都不许出现在这同一段体里。
+       *    这一条是 I3 的修复：保留正确语句再补一行串味，现在会红。
+       */
+      for (const other of ALL_SETTERS) {
+        if (other === setter) continue
+        expect(
+          b!.includes(other),
+          `${key} 的 case 体里不该出现 ${other}（串味会让那一半设置被写错）`,
+        ).toBe(false)
+      }
+    }
+  })
+
+  it("value 对象的 6 个字段各自对着正确的 store 字段", () => {
+    // 串味之后这里必须红：值都是 number，tsc 拦不住
+    for (const [field, storeField] of [
+      ["fontPx", "uiBodyFontPx"],
+      ["lineHeight", "uiBodyLineHeight"],
+      ["letterSpacing", "uiBodyLetterSpacing"],
+      ["marginX", "uiBodyMarginX"],
+      ["safeBottom", "uiBodySafeBottom"],
+    ] as const) {
+      expect(source).toContain(`${field}: ${storeField}`)
+    }
+    expect(source).toContain("fontFamily: uiBodyFontFamily")
+  })
+
+  it("落盘时每个字段各自读同名的 store 字段", () => {
+    /*
+     * 「读回来了却忘了写回」是本仓库记录过的、最难发现的一类
+     * （编译过、界面不报错、只有"重开软件设置回退"一个症状）。
+     * 这里连"读哪个字段"一起钉住：把 saveUiBodyLineHeight(s.uiBodyFontPx)
+     * 写错、或整行删掉，都必须红。
+     */
+    for (const [saver, storeField] of [
+      ["saveUiBodyFontFamily", "s.uiBodyFontFamily"],
+      ["saveUiBodyFontPx", "s.uiBodyFontPx"],
+      ["saveUiBodyLineHeight", "s.uiBodyLineHeight"],
+      ["saveUiBodyLetterSpacing", "s.uiBodyLetterSpacing"],
+      ["saveUiBodyMarginX", "s.uiBodyMarginX"],
+      ["saveUiBodySafeBottom", "s.uiBodySafeBottom"],
+    ] as const) {
+      expect(source).toContain(`${saver}(${storeField})`)
+    }
+  })
+})
+
+/**
+ * ── 标题栏的「默认设置」按钮（用户第 4 条要求）──
+ *
+ * 用户原话：「在字体设置的右侧，也就是关闭按钮旁边，增加一个『默认设置』。」
+ *
+ * 这个按钮同时承担了另一件事：它是**回到「跟随窗口」的唯一入口**。
+ * 原先左右边距下面有一个「改回跟随窗口」按钮可单独把 marginX 设回 null，
+ * 用户要求删掉它（见 body-typography-fields.spec.tsx 里那条反向断言），
+ * 于是现在只有「默认设置」能把 marginX 复位到 null。
+ * 两件事合在一起，让这个按钮成了"设置回不去"的唯一出路 ——
+ * 它一旦失灵，用户只能手改配置文件。所以它必须被钉住。
+ *
+ * ── 为什么用结构切分而不是逐行文本断言 ──
+ * 与同文件 `caseBodies()` 同一理由：`resetBodyTypographyToDefaults` 里的
+ * 6 行写成什么排版都合法（一行一句 / 块体 / 换行方式），
+ * 逐行断言会因为**格式**假红，那会逼人去放宽判据。
+ * 这里只要求"这 6 个键各被复位一次、且值取自 DEFAULT_* 常量"。
+ */
+describe("字体设置浮层的「默认设置」按钮", () => {
+  /** 切出 `resetBodyTypographyToDefaults` 的函数体（按花括号配平）。 */
+  function resetBody(): string {
+    const src = source.replace(/\r\n/g, "\n")
+    const fnIdx = src.indexOf("const resetBodyTypographyToDefaults")
+    if (fnIdx < 0) throw new Error("找不到 resetBodyTypographyToDefaults —— 守卫的定位逻辑可能失效了")
+    const open = src.indexOf("{", fnIdx)
+    if (open < 0) throw new Error("resetBodyTypographyToDefaults 后面找不到 {")
+    let depth = 0
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === "{") depth += 1
+      else if (src[i] === "}") {
+        depth -= 1
+        // 深度归零的那个 `}` 是 useCallback 的箭头函数体收尾
+        if (depth === 0) return src.slice(open + 1, i)
+      }
+    }
+    throw new Error("resetBodyTypographyToDefaults 的花括号没配平")
+  }
+
+  it("按钮存在、带可访问名，且排在关闭按钮**之前**（在它左边）", () => {
+    // 按钮本体：有 aria-label 才可被读屏与自动化找到
+    expect(source, "浮层里应有 aria-label=\"默认设置\" 的按钮").toContain('aria-label="默认设置"')
+
+    /*
+     * "在关闭按钮旁边"——断言两者在**同一个容器**里且默认设置在左。
+     * 只断言"两个字符串都存在"是空转的：把默认设置丢到面板最底下
+     * （值也照样复位）同样会绿，但用户看到的位置就不是他要求的那个了。
+     */
+    const headIdx = source.indexOf('className="body-font-popover__head"')
+    expect(headIdx, "找不到浮层标题栏容器").toBeGreaterThan(-1)
+    const actionsIdx = source.indexOf('className="body-font-popover__actions"', headIdx)
+    expect(actionsIdx, "找不到标题栏右侧的动作区容器").toBeGreaterThan(headIdx)
+
+    const resetIdx = source.indexOf('aria-label="默认设置"', actionsIdx)
+    const closeIdx = source.indexOf('aria-label="关闭字体设置"', actionsIdx)
+    expect(resetIdx, "「默认设置」必须在标题栏的动作区里（关闭按钮旁边）").toBeGreaterThan(actionsIdx)
+    expect(closeIdx, "找不到关闭按钮").toBeGreaterThan(actionsIdx)
+    expect(resetIdx, "「默认设置」必须排在关闭按钮之前（即显示在它的左侧）").toBeLessThan(closeIdx)
+  })
+
+  it("一次复位全部 6 个参数，且值取自 font-settings 的默认常量", () => {
+    const body = resetBody()
+
+    /*
+     * ① 6 个键一个都不能少。
+     * 漏一个的后果很隐蔽：按钮"看起来能用"，只是那一项没回去 ——
+     * 用户会以为是自己没点中。所以逐个断言，而不是数一下调用次数。
+     */
+    const keys = ["fontFamily", "fontPx", "lineHeight", "letterSpacing", "marginX", "safeBottom"] as const
+    for (const key of keys) {
+      expect(body, `「默认设置」必须复位 ${key}`).toContain(`applyBodyTypographyChange("${key}"`)
+    }
+    // 反向：不许夹带第 7 个键（真加了应当先更新这里，而不是默默多写）
+    const called = [...body.matchAll(/applyBodyTypographyChange\(\s*"([A-Za-z0-9_]+)"/g)].map((m) => m[1])
+    expect(
+      called.sort(),
+      "「默认设置」复位的键集合必须恰好是这 6 个（多一个少一个都要先改这条判据）",
+    ).toEqual([...keys].sort())
+
+    /*
+     * ② 值必须来自 DEFAULT_* 常量。
+     * 写 18 / 1.95 / 51 这种字面量的后果：日后改默认档只改了控件初值，
+     * 改不到这个按钮 —— 出现"点『默认设置』得到的不是默认值"。
+     */
+    for (const constName of [
+      "DEFAULT_BODY_FONT_FAMILY",
+      "DEFAULT_BODY_FONT_PX",
+      "DEFAULT_BODY_LINE_HEIGHT",
+      "DEFAULT_BODY_LETTER_SPACING",
+      "DEFAULT_BODY_MARGIN_X",
+      "DEFAULT_BODY_SAFE_BOTTOM",
+    ]) {
+      expect(body, `「默认设置」必须用 ${constName} 而不是写字面量`).toContain(constName)
+    }
+    // 反向：函数体里不许出现裸数字/裸字符串当参数
+    expect(
+      body,
+      "「默认设置」的函数体里不该出现数字字面量（默认值必须只有一个来源）",
+    ).not.toMatch(/applyBodyTypographyChange\(\s*"[A-Za-z0-9_]+"\s*,\s*[\d"']/)
+
+    /*
+     * ③ `marginX` 的默认值必须是 null（= 跟随窗口），否则
+     * "回到跟随窗口"这条唯一的出路就断了。
+     * 断言的是**常量本身**而不是这里的用法，因为判据属于 font-settings。
+     *
+     * ⚠ 正则要容忍类型标注：真实声明是
+     * `export const DEFAULT_BODY_MARGIN_X: number | null = null`
+     * —— 只写 `=\s*null` 会假红（我第一版就这么写的，实测确实红了）。
+     */
+    const fontSettings = readFileSync(resolve(__dirname, "../../lib/font-settings.ts"), "utf8")
+    expect(
+      fontSettings,
+      "DEFAULT_BODY_MARGIN_X 必须是 null —— 它是「回到跟随窗口」的唯一来源",
+    ).toMatch(/export const DEFAULT_BODY_MARGIN_X\s*(?::[^=]+)?=\s*null/)
+  })
+
+  it("「改回跟随窗口」按钮已删除，且不再是任何地方的复位路径", () => {
+    /*
+     * 用户第 5 条：「改回跟随窗口删除了」。
+     *
+     * ⚠ 这条断言必须**先去掉注释**。源码里正解释着"那个按钮已经删掉了、
+     * 现在靠默认设置复位"，注释里就写着「改回跟随窗口」这几个字 ——
+     * 直接对原文 toContain 会因为说明文字而报红（我第一版就是这样）。
+     */
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+    expect(code, "「改回跟随窗口」按钮必须已删除").not.toContain("改回跟随窗口")
+    expect(code, "它的 aria-label 也必须一并删掉").not.toContain("左右边距跟随窗口")
+
+    // 反向控制：清洗不能把真代码也吃掉
+    expect(
+      ('.a { x: 1 } // 改回跟随窗口\n<button aria-label="左右边距跟随窗口" />')
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/[^\n]*/g, "$1"),
+      "反向控制：清洗只该去掉注释，真按钮必须留下",
+    ).toContain("左右边距跟随窗口")
+  })
+})

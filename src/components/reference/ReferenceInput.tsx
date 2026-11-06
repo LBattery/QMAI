@@ -7,21 +7,27 @@ import {
   type MutableRefObject,
   type ReactNode,
 } from "react"
+import { createPortal } from "react-dom"
+import { EditorContextMenu, type EditorContextAction } from "@/components/editor/editor-context-menu"
 import { ArrowUp, AtSign, Square } from "lucide-react"
 import { isImeComposing } from "@/lib/keyboard-utils"
+import { UI_TEST_STORAGE_PREFIX } from "@/lib/ui-test"
 import type { ReferenceToken } from "@/lib/reference/types"
 import { ReferenceChip } from "./ReferenceChip"
 
 export type InsertReferenceTokens = ((tokens: ReferenceToken[]) => void) | null
 
-const REFERENCE_INPUT_HEIGHT_KEY = "qmai-reference-input-height"
-// Keep enough space below the workflow-mode trigger for its three-option menu.
-// Saved heights from older versions are clamped to this new lower bound.
-const DEFAULT_REFERENCE_INPUT_HEIGHT = 192
-const MIN_REFERENCE_INPUT_HEIGHT = 192
+const REFERENCE_INPUT_HEIGHT_KEY = `${UI_TEST_STORAGE_PREFIX}reference-input-height`
+// 正式版保留模式菜单所需的原高度；测试版按图稿使用独立高度与偏好。
+const DEFAULT_REFERENCE_INPUT_HEIGHT = 128
+const MIN_REFERENCE_INPUT_HEIGHT = 112
 const MAX_REFERENCE_INPUT_HEIGHT = 300
 
+const CLIPBOARD_ACTIONS = ["copy", "cut", "paste"] as const
+
 interface ReferenceInputProps {
+  enableClipboardMenu?: boolean
+  clipboardScope?: string | null
   value?: string
   tokens: ReferenceToken[]
   placeholder?: string
@@ -37,6 +43,7 @@ interface ReferenceInputProps {
   onStop?: () => void
   onAtTrigger?: () => void
   insertTokensRef?: MutableRefObject<InsertReferenceTokens>
+  renderTextOverlay?: (text: string) => ReactNode
 }
 
 function clampInputHeight(height: number): number {
@@ -58,6 +65,8 @@ function saveInputHeight(height: number) {
 
 export function ReferenceInput({
   value,
+  enableClipboardMenu = false,
+  clipboardScope,
   tokens,
   placeholder = "输入提示词，或 @ 引用内容...",
   disabled = false,
@@ -72,8 +81,11 @@ export function ReferenceInput({
   onStop,
   onAtTrigger,
   insertTokensRef,
+  renderTextOverlay,
 }: ReferenceInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const [clipboardMenu, setClipboardMenu] = useState<{ x: number; y: number; start: number; end: number; value: string; scope?: string | null; input: HTMLTextAreaElement } | null>(null)
+  const [clipboardError, setClipboardError] = useState("")
   const isControlled = value !== undefined
   const [draft, setDraft] = useState("")
   const [inputHeight, setInputHeight] = useState(loadSavedInputHeight)
@@ -88,6 +100,55 @@ export function ReferenceInput({
     },
     [isControlled, onChange],
   )
+
+  const clipboardContextRef = useRef({ scope: clipboardScope, tokens, notifyChange })
+  clipboardContextRef.current = { scope: clipboardScope, tokens, notifyChange }
+  useEffect(() => { setClipboardMenu(null); setClipboardError("") }, [clipboardScope, inputDisabled])
+
+  const closeClipboardMenu = useCallback(() => {
+    setClipboardMenu(null)
+    textareaRef.current?.focus()
+  }, [])
+
+  const openClipboardMenu = (input: HTMLTextAreaElement, x: number, y: number) => {
+    if (!enableClipboardMenu || inputDisabled) return
+    const rect = input.getBoundingClientRect()
+    setClipboardError("")
+    setClipboardMenu({ x: x || rect.left + 12, y: y || rect.top + 12, start: input.selectionStart, end: input.selectionEnd, value: input.value, scope: clipboardScope, input })
+  }
+
+  const runClipboardAction = async (action: EditorContextAction) => {
+    if (!clipboardMenu || !CLIPBOARD_ACTIONS.some(item => item === action)) return
+    const snapshot = clipboardMenu
+    const selected = snapshot.value.slice(snapshot.start, snapshot.end)
+    const label = action === "copy" ? "复制" : action === "cut" ? "剪切" : "粘贴"
+    try {
+      if (action !== "paste") {
+        if (!selected) return
+        await navigator.clipboard.writeText(selected)
+        if (action === "copy") return
+      }
+      const inserted = action === "paste" ? await navigator.clipboard.readText() : ""
+      const input = textareaRef.current
+      if (!input || input !== snapshot.input || !input.isConnected || input.disabled || clipboardContextRef.current.scope !== snapshot.scope) return
+      if (input.value !== snapshot.value) {
+        setClipboardError("输入内容已变化，本次操作已取消，请重新选择文字。")
+        return
+      }
+      input.focus()
+      input.setSelectionRange(snapshot.start, snapshot.end)
+      // 原生插入保留桌面WebView撤销栈；不支持时仍通过原onChange链路更新。
+      let insertedNatively = false
+      try { insertedNatively = typeof document.execCommand === "function" && document.execCommand("insertText", false, inserted) } catch { /* 使用原输入更新链路 */ }
+      if (!insertedNatively) {
+        input.setRangeText(inserted, snapshot.start, snapshot.end, "end")
+        clipboardContextRef.current.notifyChange(input.value, clipboardContextRef.current.tokens)
+      }
+      input.setSelectionRange(snapshot.start + inserted.length, snapshot.start + inserted.length)
+    } catch {
+      if (textareaRef.current === snapshot.input) setClipboardError(`${label}失败，请检查剪贴板权限后重试。`)
+    }
+  }
 
   const updateTokens = useCallback(
     (nextTokens: ReferenceToken[]) => {
@@ -132,6 +193,11 @@ export function ReferenceInput({
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (isImeComposing(event)) return
+      if (enableClipboardMenu && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+        event.preventDefault()
+        openClipboardMenu(event.currentTarget, 0, 0)
+        return
+      }
 
       if (event.key === "@" && !event.ctrlKey && !event.metaKey) {
         event.preventDefault()
@@ -144,7 +210,7 @@ export function ReferenceInput({
         handleSubmit()
       }
     },
-    [handleSubmit, onAtTrigger],
+    [handleSubmit, onAtTrigger, enableClipboardMenu, inputDisabled, clipboardScope],
   )
 
   const handleResizePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -157,7 +223,7 @@ export function ReferenceInput({
     const pointerId = event.pointerId
     const previousCursor = document.body.style.cursor
     let savedHeight = startHeight
-    document.body.style.cursor = "ns-resize"
+    document.body.style.cursor = "row-resize"
 
     try {
       handle.setPointerCapture(pointerId)
@@ -205,13 +271,18 @@ export function ReferenceInput({
     [handleRemoveToken, tokens],
   )
 
+  /*
+   * `data-guide="chat.reference"`：新手引导的 @ 引用靶点。
+   * 章节面板与大纲面板共用这个输入框，两处的 @ 引用是同一件事（引用章节 /
+   * 大纲 / 记忆），所以共用一个锚点不会指错；两个面板互斥渲染，不会同时命中。
+   */
   return (
-    <div className="overflow-hidden rounded-lg border bg-background shadow-sm focus-within:ring-2 focus-within:ring-ring">
+    <div className="overflow-hidden rounded-lg border bg-background shadow-sm" data-guide="chat.reference">
       <div
         role="separator"
         aria-label="拖动调整输入框高度"
         title="拖动调整输入框高度，双击恢复默认高度"
-        className="flex h-2 cursor-ns-resize items-center justify-center bg-muted/20 transition-colors hover:bg-muted/50"
+        className="flex h-2 cursor-row-resize items-center justify-center bg-muted/20 transition-colors hover:bg-muted/50"
         onPointerDown={handleResizePointerDown}
         onDoubleClick={resetInputHeight}
       >
@@ -224,26 +295,57 @@ export function ReferenceInput({
             {renderedTokens}
           </div>
         ) : null}
+        {renderTextOverlay ? (
+          <div className="ui-test-command-overlay" aria-hidden="true">{renderTextOverlay(text)}</div>
+        ) : null}
         <textarea
           ref={textareaRef}
           value={text}
           className="w-full resize-none overflow-y-auto bg-transparent px-0 py-1 text-sm text-foreground outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed disabled:opacity-50"
           style={{ height: inputHeight, maxHeight: inputHeight }}
           placeholder={placeholder}
+          spellCheck={false}
           disabled={inputDisabled}
           rows={1}
+          onContextMenu={enableClipboardMenu ? (event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            openClipboardMenu(event.currentTarget, event.clientX, event.clientY)
+          } : undefined}
           onChange={handleTextareaChange}
           onKeyDown={handleKeyDown}
           aria-label="引用输入框"
         />
       </div>
 
+      {clipboardError ? <p role="status" className="px-3 py-1 text-xs text-destructive">{clipboardError}</p> : null}
+      {enableClipboardMenu && clipboardMenu && !inputDisabled ? createPortal(
+        <EditorContextMenu position={clipboardMenu} actions={CLIPBOARD_ACTIONS} disabled={{ copy: clipboardMenu.start === clipboardMenu.end, cut: clipboardMenu.start === clipboardMenu.end }} onAction={action => void runClipboardAction(action)} onClose={closeClipboardMenu} />,
+        document.body,
+      ) : null}
       <div
         data-reference-input-footer
         className="flex items-center justify-between gap-2 border-t px-2 py-1.5"
       >
         {leftFooterControls ? (
-          <div className="flex min-w-0 shrink-0 items-center gap-2">
+          /*
+           * 左控件组的间距：`gap-0.5`（2px），不是原来的 `gap-2`（8px）。
+           *
+           * 用户实机反馈「两个图标之间相隔的距离都太大了」。8px 只是**其中一半**原因：
+           * 每个图标按钮自己还有内边距（32px 方框装 14–16px 图标 = 每侧 8–9px），
+           * 所以图标墨迹之间实际有 25–29px。两处一起收才有用：
+           *   · 这里 8px → 2px；
+           *   · 图标按钮 32px → 28px（与同一行里本来就是 28px 的
+           *     「上下文用量」圆环和 @ 按钮统一）。
+           * 结果是墨迹间距约 16px，与常见工具栏一致。
+           *
+           * 为什么留 2px 而不是 0：相邻按钮的 `hover:bg-accent` 圆角底会连成一整块，
+           * 看起来像一个按钮而不是两个。
+           *
+           * ⚠️ 这个组件是**两个** AI 面板（章节写作区、大纲区）共用的左组，
+           * 所以改这一条两边同时生效 —— 用户要的正是「大纲当中的间距也一样」。
+           */
+          <div className="flex min-w-0 shrink-0 items-center gap-0.5">
             {leftFooterControls}
           </div>
         ) : null}

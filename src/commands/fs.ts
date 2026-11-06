@@ -187,7 +187,7 @@ export async function getFileMd5(path: string): Promise<string> {
   return invoke<string>("get_file_md5", { path })
 }
 
-export interface FileBase64 {
+interface FileBase64 {
   base64: string
   mimeType: string
 }
@@ -209,18 +209,35 @@ export async function createProject(
   return { id, name: raw.name, path: raw.path }
 }
 
-export async function openProject(path: string): Promise<WikiProject> {
+export async function openProjectFolder(path: string): Promise<void> {
+  if (useWebFs()) return getWebFs().openProjectFolder(path)
+  return invoke<void>("open_project_folder", { path })
+}
+
+export async function renameProject(path: string, name: string): Promise<WikiProject> {
   const raw = useWebFs()
-    ? await getWebFs().openProject(path)
-    : await invoke<RawProject>("open_project", { path })
+    ? await (await import("@/lib/web-service-fs")).webServiceFs.renameProject(path, name)
+    : await invoke<RawProject>("rename_project", { path, name })
   const id = await ensureProjectId(raw.path)
   await upsertProjectInfo(id, raw.path, raw.name)
   return { id, name: raw.name, path: raw.path }
 }
 
-export async function openProjectFolder(path: string): Promise<void> {
-  if (useWebFs()) return getWebFs().openProjectFolder(path)
-  return invoke<void>("open_project_folder", { path })
+export async function moveProjectToSystemTrash(path: string): Promise<void> {
+  if (useWebFs()) throw new Error("Web 版暂不支持移入系统回收站，请在文件管理器中操作。")
+  return invoke<void>("move_project_to_system_trash", { path })
+}
+
+export async function saveProjectCover(path: string, source: string): Promise<string> {
+  if (useWebFs()) return (await import("@/lib/web-service-fs")).webServiceFs.saveProjectCover(path, source)
+  return invoke<string>("save_project_cover", { path, source })
+}
+
+export async function openProject(path: string): Promise<WikiProject> {
+  const raw = useWebFs() ? await getWebFs().openProject(path) : await invoke<RawProject>("open_project", { path })
+  const id = await ensureProjectId(raw.path)
+  await upsertProjectInfo(id, raw.path, raw.name)
+  return { id, name: raw.name, path: raw.path }
 }
 
 export async function openFileLocation(path: string): Promise<void> {

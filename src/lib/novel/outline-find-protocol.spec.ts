@@ -1,3 +1,4 @@
+import { splitOutlineFindProtocolForCache } from "./outline-find-protocol"
 import { describe, expect, it } from "vitest"
 import {
   buildOutlineFindProtocol,
@@ -15,6 +16,8 @@ describe("outline-find-protocol", () => {
     expect(text).toContain("按文件夹分流（主路径")
     expect(text).toContain("章纲：本章主候选")
     expect(text).toContain("设定：写作硬约束")
+    expect(text).toContain("材料：本章或本卷的辅助资料，不是章纲")
+    expect(text).toContain("不要按文件夹整夹 read_outline")
     expect(text).toContain("兼容（非强制）")
     expect(text).toContain("overview≈大纲")
     expect(text).toContain("read_outline")
@@ -58,5 +61,24 @@ describe("outline-find-protocol", () => {
     expect(stripped).toContain("keep me")
     expect(stripped).not.toContain("大纲定位协议")
     expect(stripped).not.toContain("list_outlines")
+  })
+})
+
+
+describe("快速写作定位协议缓存分离", () => {
+  it("仅移动定位协议，保留其后快速模式和权限要求", () => {
+    const make = (chapter: number) => `固定软件规则\n${buildOutlineFindProtocol(chapter)}\n快速模式仍只输出正文。\n禁止未确认写入。`
+    const first = splitOutlineFindProtocolForCache(make(1), 1)
+    const second = splitOutlineFindProtocolForCache(make(2), 2)
+    expect(first.stableRules).toBe(second.stableRules)
+    expect(first.stableRules).toContain("快速模式仍只输出正文")
+    expect(first.stableRules).toContain("禁止未确认写入")
+    expect(first.stableRules).not.toContain("本次写作目标")
+    expect(first.dynamicRules).toBe(buildOutlineFindProtocol(1))
+    expect(second.dynamicRules).toBe(buildOutlineFindProtocol(2))
+  })
+
+  it("已由插件分离的规则不重复添加定位协议", () => {
+    expect(splitOutlineFindProtocolForCache("固定规则", 2)).toEqual({ stableRules: "固定规则", dynamicRules: "" })
   })
 })

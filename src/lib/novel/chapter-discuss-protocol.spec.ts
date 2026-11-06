@@ -1,0 +1,376 @@
+import { describe, expect, it } from "vitest"
+import {
+  CHAPTER_DISCUSS_MARKER_CLOSE,
+  CHAPTER_DISCUSS_MARKER_OPEN,
+  buildChapterDiscussExecutionPrompt,
+  buildChapterDiscussCustomPrompt,
+  buildChapterDiscussPhaseSystemRules,
+  buildChapterDiscussPlanBlueprint,
+  buildChapterDiscussRegeneratePrompt,
+  buildChapterDiscussRepairMessages,
+  findLatestChapterDiscussProtocol,
+  hasChapterDiscussRepairableContent,
+  isChapterDiscussProtocol,
+  parseChapterDiscussProtocol,
+  stripChapterDiscussMarkers,
+  validateChapterDiscussProtocol,
+  type ChapterDiscussDirection,
+  type ChapterDiscussProtocol,
+} from "./chapter-discuss-protocol"
+import { OUTLINE_FIND_CHAPTER_INTENTS } from "./outline-find-protocol"
+import { routeTask } from "./task-router"
+
+function direction(overrides: Partial<ChapterDiscussDirection> = {}): ChapterDiscussDirection {
+  return {
+    id: "d1",
+    storyType: "复仇线",
+    title: "血债血偿",
+    summary: "前".repeat(200),
+    ...overrides,
+  }
+}
+
+function protocol(overrides: Partial<ChapterDiscussProtocol> = {}): ChapterDiscussProtocol {
+  return {
+    status: "needs_choice",
+    module: "第3章",
+    judgment: "需要在第三章完成一次转折",
+    directions: [
+      direction({ id: "d1", storyType: "复仇线" }),
+      direction({ id: "d2", storyType: "悬念反转", title: "真凶另有其人" }),
+      direction({ id: "d3", storyType: "情感升温", title: "并肩之夜" }),
+    ],
+    preferenceId: "d1",
+    preferenceReason: "最贴合前文伏笔",
+    ...overrides,
+  }
+}
+
+function block(payload: object): string {
+  return `${CHAPTER_DISCUSS_MARKER_OPEN}\n${JSON.stringify(payload)}\n${CHAPTER_DISCUSS_MARKER_CLOSE}`
+}
+
+describe("parseChapterDiscussProtocol", () => {
+  it("returns none when there is no marker", () => {
+    expect(parseChapterDiscussProtocol("先读前文，再给方向。")).toEqual({ kind: "none" })
+  })
+
+  it("parses a complete protocol block and normalizes directions", () => {
+    const outcome = parseChapterDiscussProtocol(`关键判断在这里。\n${block({
+      status: "needs_choice",
+      module: "第3章",
+      judgment: "需要转折",
+      directions: [
+        { id: "d1", storyType: "复仇线", title: "血债血偿", summary: "前".repeat(200) },
+        { storyType: "悬念反转", title: "真凶另有其人", summary: "前".repeat(200) },
+      ],
+      preferenceId: "d1",
+      preferenceReason: "贴合伏笔",
+    })}`)
+    expect(outcome.kind).toBe("valid")
+    if (outcome.kind !== "valid") return
+    expect(outcome.protocol.module).toBe("第3章")
+    expect(outcome.protocol.directions).toHaveLength(2)
+    expect(outcome.protocol.directions[1].id).toBe("d2")
+    expect(outcome.protocol.preferenceId).toBe("d1")
+  })
+
+  it("falls back to an unclosed block (streaming truncation)", () => {
+    const outcome = parseChapterDiscussProtocol(
+      `${CHAPTER_DISCUSS_MARKER_OPEN}\n{"status":"needs_choice","module":"第3章","judgment":"判断","directions":[],"preferenceId":"","preferenceReason":""}`,
+    )
+    expect(outcome.kind).toBe("valid")
+  })
+
+  it("accepts an unclosed block that still has trailing content", () => {
+    const outcome = parseChapterDiscussProtocol(
+      `${CHAPTER_DISCUSS_MARKER_OPEN}\n{"status":"needs_choice","module":"第3章","judgment":"判断","directions":[],"preferenceId":"","preferenceReason":""}\n后面还有一段正文`,
+    )
+    expect(outcome.kind).toBe("valid")
+  })
+
+  it("accepts a fenced block without the closing marker", () => {
+    const outcome = parseChapterDiscussProtocol(
+      `判断。\n${CHAPTER_DISCUSS_MARKER_OPEN}\n\`\`\`json\n{"status":"insufficient","module":"第3章","judgment":"缺前文"}\n\`\`\``,
+    )
+    expect(outcome.kind).toBe("valid")
+    if (outcome.kind !== "valid") return
+    expect(outcome.protocol.status).toBe("insufficient")
+  })
+
+  it("rejects a truncated block", () => {
+    expect(parseChapterDiscussProtocol(`${CHAPTER_DISCUSS_MARKER_OPEN}\n{"status":"needs_choice","directions":[`))
+      .toEqual({ kind: "invalid", error: "章节共创协议 JSON 不完整或缺失" })
+  })
+
+  it("rejects unparseable JSON", () => {
+    expect(parseChapterDiscussProtocol(`${CHAPTER_DISCUSS_MARKER_OPEN}\n{不是 JSON}\n${CHAPTER_DISCUSS_MARKER_CLOSE}`))
+      .toEqual({ kind: "invalid", error: "章节共创协议 JSON 无法解析" })
+  })
+
+  it("rejects a missing or unknown status", () => {
+    const outcome = parseChapterDiscussProtocol(block({ module: "第3章", directions: [] }))
+    expect(outcome).toEqual({ kind: "invalid", error: "章节共创协议缺少有效的 status 字段" })
+  })
+})
+
+describe("validateChapterDiscussProtocol", () => {
+  it("accepts a proper needs_choice protocol", () => {
+    expect(validateChapterDiscussProtocol(protocol()).kind).toBe("needs_choice")
+  })
+
+  it("rejects fewer than three directions", () => {
+    const result = validateChapterDiscussProtocol(protocol({
+      directions: [direction({ id: "d1" }), direction({ id: "d2", storyType: "悬念反转" })],
+    }))
+    expect(result.kind).toBe("invalid")
+    if (result.kind !== "invalid") return
+    expect(result.error).toContain("3-4 个方向")
+  })
+
+  it("rejects more than four directions", () => {
+    const result = validateChapterDiscussProtocol(protocol({
+      directions: [
+        direction({ id: "d1", storyType: "复仇线" }),
+        direction({ id: "d2", storyType: "悬念反转" }),
+        direction({ id: "d3", storyType: "情感升温" }),
+        direction({ id: "d4", storyType: "势力升级" }),
+        direction({ id: "d5", storyType: "意外重逢" }),
+      ],
+    }))
+    expect(result.kind).toBe("invalid")
+  })
+
+  it("rejects a direction missing its story type", () => {
+    const result = validateChapterDiscussProtocol(protocol({
+      directions: [
+        direction({ id: "d1", storyType: "" }),
+        direction({ id: "d2", storyType: "悬念反转" }),
+        direction({ id: "d3", storyType: "情感升温" }),
+      ],
+    }))
+    expect(result.kind).toBe("invalid")
+    if (result.kind !== "invalid") return
+    expect(result.error).toContain("缺少故事类型")
+  })
+
+  it("rejects duplicated story types", () => {
+    const result = validateChapterDiscussProtocol(protocol({
+      directions: [
+        direction({ id: "d1", storyType: "复仇线" }),
+        direction({ id: "d2", storyType: "复仇线" }),
+        direction({ id: "d3", storyType: "情感升温" }),
+      ],
+    }))
+    expect(result.kind).toBe("invalid")
+    if (result.kind !== "invalid") return
+    expect(result.error).toContain("故事类型重复")
+  })
+
+  it("只有几乎空着的介绍才算不合格（不再卡每项字数）", () => {
+    const result = validateChapterDiscussProtocol(protocol({
+      directions: [
+        direction({ id: "d1", storyType: "复仇线", summary: "太短了" }),
+        direction({ id: "d2", storyType: "悬念反转" }),
+        direction({ id: "d3", storyType: "情感升温" }),
+      ],
+    }))
+    expect(result.kind).toBe("invalid")
+    if (result.kind !== "invalid") return
+    expect(result.error).toContain("几乎是空的")
+  })
+
+  /*
+   * 用户 2026-10-21：「协议最好不要每一项都有字数限制，有些介绍字数没那么长」。
+   * 一句六七十字、但把走向讲完的介绍（比如「他连夜出城，半路被拦，靠旧身份骗过守军，
+   * 天亮前赶到码头」）必须放行 —— 原来的 180 字门槛会把它判成格式无效。
+   */
+  it("短而完整的介绍直接通过：六七十字讲清走向不再被判无效", () => {
+    // 三条都在 40-80 字之间：原来的 180 字门槛会把它们全部判成格式无效。
+    const result = validateChapterDiscussProtocol(protocol({
+      directions: [
+        direction({ id: "d1", storyType: "复仇线", summary: "他连夜出城，半路被巡夜的人拦下，靠旧身份骗过守军；天亮前赶到码头，船已经开走，只能改走旱路追。" }),
+        direction({ id: "d2", storyType: "悬念反转", summary: "留在城里的人开始互相猜疑，线索一点点指向副手；沈砚没有当场揭穿，先把人稳住再放长线。" }),
+        direction({ id: "d3", storyType: "情感升温", summary: "两人在码头重逢，谁也没先说明来意，只交换了一件旧物；那件东西让对方确认了彼此还站在同一边。" }),
+      ],
+    }))
+    expect(result.kind).toBe("needs_choice")
+  })
+
+  it("rejects a preference id that points at no direction", () => {
+    const result = validateChapterDiscussProtocol(protocol({ preferenceId: "d9" }))
+    expect(result.kind).toBe("invalid")
+    if (result.kind !== "invalid") return
+    expect(result.error).toContain("AI 推荐")
+  })
+
+  it("allows an empty preference id (no recommendation)", () => {
+    expect(validateChapterDiscussProtocol(protocol({ preferenceId: "", preferenceReason: "" })).kind)
+      .toBe("needs_choice")
+  })
+
+  it("treats insufficient with directions as invalid", () => {
+    expect(validateChapterDiscussProtocol(protocol({ status: "insufficient" })).kind).toBe("invalid")
+  })
+
+  it("treats insufficient without a judgement as invalid", () => {
+    const result = validateChapterDiscussProtocol(protocol({
+      status: "insufficient",
+      directions: [],
+      judgment: "",
+    }))
+    expect(result.kind).toBe("invalid")
+  })
+
+  it("accepts insufficient with a reason and no directions", () => {
+    const result = validateChapterDiscussProtocol(protocol({
+      status: "insufficient",
+      directions: [],
+      judgment: "前两章信息不足，无法推演第三章",
+    }))
+    expect(result.kind).toBe("insufficient")
+  })
+})
+
+describe("stripChapterDiscussMarkers", () => {
+  it("removes a complete block", () => {
+    const text = `判断。\n${block({ status: "needs_choice" })}\n结尾`
+    expect(stripChapterDiscussMarkers(text)).toBe("判断。\n\n结尾")
+  })
+
+  it("removes an unclosed trailing block", () => {
+    const text = `判断。\n${CHAPTER_DISCUSS_MARKER_OPEN}\n{"status":"needs_choice"}`
+    expect(stripChapterDiscussMarkers(text).includes("chapter_discuss")).toBe(false)
+  })
+})
+
+describe("isChapterDiscussProtocol", () => {
+  it("keeps a complete protocol", () => {
+    expect(isChapterDiscussProtocol(protocol())).toBe(true)
+  })
+
+  it("rejects structural damage", () => {
+    expect(isChapterDiscussProtocol(null)).toBe(false)
+    expect(isChapterDiscussProtocol({ ...protocol(), status: "ready" })).toBe(false)
+    expect(isChapterDiscussProtocol({ ...protocol(), directions: [{ id: 1 }] })).toBe(false)
+  })
+})
+
+describe("findLatestChapterDiscussProtocol", () => {
+  it("returns the last non-null protocol", () => {
+    const older = protocol({ judgment: "旧的" })
+    const newer = protocol({ judgment: "新的" })
+    expect(findLatestChapterDiscussProtocol([
+      { chapterDiscussProtocol: older },
+      { chapterDiscussProtocol: null },
+      { chapterDiscussProtocol: newer },
+    ])?.judgment).toBe("新的")
+  })
+})
+
+describe("prompt builders", () => {
+  it("scopes the discuss rules to the chapter and embeds the marker", () => {
+    const rules = buildChapterDiscussPhaseSystemRules("第3章")
+    expect(rules).toContain("第3章")
+    expect(rules).toContain(CHAPTER_DISCUSS_MARKER_OPEN)
+    expect(rules).toContain("禁止调用 run_chapter_workflow")
+  })
+
+  it("builds an execution prompt in a writing voice", () => {
+    const prompt = buildChapterDiscussExecutionPrompt({
+      module: "第3章",
+      direction: direction({ title: "血债血偿" }),
+    })
+    expect(prompt).toContain("第3章")
+    expect(prompt).toContain("血债血偿")
+    expect(prompt).toContain("续写")
+  })
+
+  it("turns a direction into a plan blueprint", () => {
+    const blueprint = buildChapterDiscussPlanBlueprint(direction({ storyType: "复仇线", title: "血债血偿" }))
+    expect(blueprint).toContain("复仇线")
+    expect(blueprint).toContain("血债血偿")
+  })
+
+  it("builds an execution prompt that routes to a chapter-writing intent", () => {
+    // 回归：选定方向后的执行 prompt 必须能被 routeTask 识别为章节写作，
+    // 否则生成轮不会强制调用 run_chapter_workflow，出不了正文。
+    const prompt = buildChapterDiscussExecutionPrompt({
+      module: "第3章",
+      direction: direction({ title: "血债血偿" }),
+    })
+    expect(OUTLINE_FIND_CHAPTER_INTENTS.has(routeTask(prompt).intent)).toBe(true)
+  })
+
+  it("lists the previous batch when regenerating", () => {
+    const prompt = buildChapterDiscussRegeneratePrompt({
+      module: "第3章",
+      previous: [{ storyType: "复仇线", title: "血债血偿" }],
+    })
+    expect(prompt).toContain("复仇线")
+    expect(prompt).toContain("完全不同")
+  })
+
+  it("embeds the author's own idea when asking for a custom re-roll", () => {
+    const prompt = buildChapterDiscussCustomPrompt({
+      module: "第3章",
+      idea: "我想让主角这次主动认输，把节奏压下来",
+    })
+    expect(prompt).toContain("我想让主角这次主动认输，把节奏压下来")
+    expect(prompt).toContain("第3章")
+    expect(prompt).toContain("chapter_discuss")
+  })
+
+  /*
+   * 用户 2026-10-13 反馈：共创给出的「后续走向」AI 味太重——介绍里全是
+   * 「编号派实战杀器」「战时编号器测试母片」这类生造名词，标题写成「雷霆碎锁」这样的
+   * 四字对仗，读一眼就知道是 AI 写的。用户要的是「用初中生/小学生都能懂的大白话，
+   * 只讲清楚故事怎么发展」。
+   *
+   * 这几条守卫钉的是**可执行的约束词**，不是「不要 AI 腔」这种空话：语言水平、
+   * 禁自造名词、禁四字对仗标题，且必须给出正反两个例子（模型照着例子写）。
+   * 任一环节（主规则 / 换一批 / 其他想法 / 补协议）漏掉，重推的那一批就会退回 AI 腔。
+   */
+  it("要求方向介绍用大白话：禁自造名词、禁四字对仗标题", () => {
+    const rules = buildChapterDiscussPhaseSystemRules("第3章")
+    expect(rules).toContain("大白话")
+    expect(rules).toContain("禁止自造名词")
+    expect(rules).toContain("初中生读一遍就懂")
+    // 反面例子（对仗标题）与正面例子（一句话标题）都要在，否则模型不知道写成什么样才对
+    expect(rules).toContain("雷霆碎锁")
+    expect(rules).toContain("藏起来，然后反杀回收队")
+  })
+
+  it("换一批与其他想法都要重申大白话，避免重推时回到 AI 腔", () => {
+    const reroll = buildChapterDiscussRegeneratePrompt({ module: "第3章", previous: [] })
+    expect(reroll).toContain("大白话")
+    expect(reroll).toContain("不要自造名词")
+    const custom = buildChapterDiscussCustomPrompt({ module: "第3章", idea: "节奏压下来" })
+    expect(custom).toContain("大白话")
+    expect(custom).toContain("不要自造名词")
+  })
+})
+
+describe("repair helpers", () => {
+  it("only repairs substantial content without a marker", () => {
+    expect(hasChapterDiscussRepairableContent("")).toBe(false)
+    expect(hasChapterDiscussRepairableContent("好的。")).toBe(false)
+    expect(hasChapterDiscussRepairableContent("一".repeat(200))).toBe(true)
+    expect(hasChapterDiscussRepairableContent(block({ status: "needs_choice" }))).toBe(false)
+  })
+
+  it("emits a repair template that the parser accepts", () => {
+    const messages = buildChapterDiscussRepairMessages({ content: "一".repeat(200), module: "第3章" })
+    expect(messages).toHaveLength(1)
+    expect(messages[0].content).toContain(CHAPTER_DISCUSS_MARKER_OPEN)
+    expect(messages[0].content).toContain(CHAPTER_DISCUSS_MARKER_CLOSE)
+    expect(messages[0].content).toContain("不要复述原回复")
+    expect(messages[0].content).not.toContain("原样保留")
+  })
+
+  it("补协议轮也必须把介绍改回大白话，否则补出来的仍是 AI 腔", () => {
+    const messages = buildChapterDiscussRepairMessages({ content: "一".repeat(200), module: "第3章" })
+    expect(messages[0].content).toContain("大白话")
+    expect(messages[0].content).toContain("禁止自造名词")
+  })
+})

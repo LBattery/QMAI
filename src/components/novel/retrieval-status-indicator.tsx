@@ -114,13 +114,13 @@ export function RetrievalStatusIndicator({ status, onRefresh, isRefreshing = fal
                       {status.chapterNumbers.maybeOutdated.slice(0, 20).map((ch) => (
                         <span
                           key={ch}
-                          className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                          className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[0.625rem] text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
                         >
                           第{ch}章
                         </span>
                       ))}
                       {status.chapterNumbers.maybeOutdated.length > 20 && (
-                        <span className="text-[10px] text-muted-foreground">
+                        <span className="text-[0.625rem] text-muted-foreground">
                           +{status.chapterNumbers.maybeOutdated.length - 20} 章
                         </span>
                       )}
@@ -134,13 +134,13 @@ export function RetrievalStatusIndicator({ status, onRefresh, isRefreshing = fal
                       {status.chapterNumbers.conflict.slice(0, 20).map((ch) => (
                         <span
                           key={ch}
-                          className="rounded-full border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
+                          className="rounded-full border border-red-200 bg-red-50 px-1.5 py-0.5 text-[0.625rem] text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
                         >
                           第{ch}章
                         </span>
                       ))}
                       {status.chapterNumbers.conflict.length > 20 && (
-                        <span className="text-[10px] text-muted-foreground">
+                        <span className="text-[0.625rem] text-muted-foreground">
                           +{status.chapterNumbers.conflict.length - 20} 章
                         </span>
                       )}

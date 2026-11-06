@@ -1,11 +1,119 @@
+// @vitest-environment jsdom
+import { act } from "react"
+import { createRoot, type Root } from "react-dom/client"
 import { renderToStaticMarkup } from "react-dom/server"
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { ContextTracePanel } from "./context-trace-panel"
 import type { ContextTrace } from "@/lib/agent/context-trace"
 import type { ContextHubSnapshotRef } from "@/lib/context-hub/types"
 
+// 上下文中控的文字摘要已按下列提交改为「用量入口 + 点击弹层」：
+// - 5c0f0a6 feat(ui): 调整章节大纲与写作界面（UiTestGenerationStats 取代旧的单行摘要）
+// - 26f80ee fix(ui): 调整对话输入框与界面资源（删除「上下文中控」标题与本地资料复用率/估算少发送文案）
+// 因此这里改为断言用量入口与弹层里的真实数字，口径（本地复用率、缓存命中、输入/输出）不变。
+interface MountedPanel {
+  host: HTMLDivElement
+  root: Root
+}
+
+const mountedPanels: MountedPanel[] = []
+
+beforeEach(() => {
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+})
+
+afterEach(async () => {
+  for (const entry of mountedPanels.splice(0)) {
+    await act(async () => entry.root.unmount())
+    entry.host.remove()
+  }
+})
+
+async function mountTracePanel(
+  trace: ContextTrace,
+  contextHubSnapshot?: ContextHubSnapshotRef,
+): Promise<HTMLDivElement> {
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  const root = createRoot(host)
+  await act(async () => {
+    root.render(<ContextTracePanel trace={trace} contextHubSnapshot={contextHubSnapshot} />)
+  })
+  mountedPanels.push({ host, root })
+  return host
+}
+
+function usageButton(host: HTMLElement): HTMLButtonElement {
+  const button = host.querySelector<HTMLButtonElement>("button[aria-label='查看本轮用量']")
+  expect(button).not.toBeNull()
+  return button as HTMLButtonElement
+}
+
+async function openUsagePopover(host: HTMLElement): Promise<void> {
+  const button = usageButton(host)
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+  })
+}
+
+function usagePopoverRows(host: HTMLElement): Array<[string | null | undefined, string | null | undefined]> {
+  const popover = host.querySelector<HTMLElement>("[role='dialog'][aria-label='本轮用量']")
+  expect(popover).not.toBeNull()
+  return Array.from((popover as HTMLElement).children).map((row) => [
+    row.querySelector("span")?.textContent,
+    row.querySelector("strong")?.textContent,
+  ])
+}
+
 describe("ContextTracePanel selected skills", () => {
-  it("renders local cache and token composition without claiming a provider hit", () => {
+  it("renders provider, model, finish reason, all tool calls and fallback status", () => {
+    const trace: ContextTrace = {
+      id: "trace-required-workflow",
+      startedAt: 1,
+      finishedAt: 5,
+      status: "error",
+      toolCalls: [],
+      contextInfo: {
+        intent: "write_chapter",
+        confidence: 1,
+        routeSource: "default",
+        loadedSources: [],
+        blockedSources: [],
+        retrievalHits: [],
+        trimmedSections: [],
+        requiredToolDiagnostics: {
+          requiredTools: ["run_chapter_workflow"],
+          satisfiedTools: [],
+          missingTools: ["run_chapter_workflow"],
+          fallbackAttempted: true,
+          fallbackTool: "run_chapter_workflow",
+          fallbackStatus: "error",
+          fallbackError: "正文为空",
+          provider: "custom",
+          model: "deepseek-chat",
+          reasoningMode: "enabled",
+          roundsUsed: 2,
+          finishReasons: ["tool_calls", "stop"],
+          observedToolCalls: [
+            { round: 1, index: 0, name: "read_outline" },
+            { round: 1, index: 1, name: "run_chapter_workflow" },
+          ],
+        },
+      },
+    }
+
+    const html = renderToStaticMarkup(<ContextTracePanel trace={trace} />)
+
+    expect(html).toContain("必调工作流诊断")
+    expect(html).toContain("deepseek-chat")
+    expect(html).toContain("tool_calls、stop")
+    expect(html).toContain("工具调用（2）")
+    expect(html).toContain("read_outline")
+    expect(html).toContain("run_chapter_workflow")
+    expect(html).toContain("正文为空")
+  })
+
+  it("renders local cache and token composition without claiming a provider hit", async () => {
     const trace: ContextTrace = {
       id: "trace-context-hub",
       startedAt: 1,
@@ -21,7 +129,7 @@ describe("ContextTracePanel selected skills", () => {
         retrievalHits: [],
         trimmedSections: [],
         contextHub: {
-          cacheHits: 4, reloaded: 1, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0,
+          cacheHits: 4, reloaded: 1, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0, cacheableHits: 4, cacheableLoaded: 5,
           stableTokens: 1200,
           summaryTokens: 180,
           dynamicTokens: 420,
@@ -34,22 +142,27 @@ describe("ContextTracePanel selected skills", () => {
       },
     }
 
-    const html = renderToStaticMarkup(<ContextTracePanel trace={trace} />)
+    const host = await mountTracePanel(trace)
 
-    expect(html).toContain("上下文中控")
-    expect(html).not.toContain("4ms")
-    expect(html).toContain("本轮数据源：命中 4，重载 1，无数据 0，fallback 0，失败 0")
-    expect(html).toContain("稳定核心 1,200 Token")
-    expect(html).toContain("会话摘要 180 Token")
-    expect(html).toContain("动态片段 420 Token")
-    expect(html).toContain("上下文压缩预计减少 1,400 Token（44%）")
-    expect(html).toContain("已发送本地稳定核心，是否命中以供应商返回为准")
-    expect(html).toContain("供应商前缀：不可判断")
-    expect(html).toContain("实际用量不可用")
-    expect(html).not.toContain("供应商已确认命中")
+    // 该期望于 26f80ee 随「调整对话输入框与界面资源」变更：文字摘要改为用量入口
+    expect(host.textContent).not.toContain("上下文中控")
+    expect(host.textContent).not.toContain("本地资料复用率")
+    expect(host.textContent).not.toContain("估算少发送约")
+    expect(host.textContent).not.toContain("4ms")
+    // 没有供应商用量总账时只显示「未提供」，不把本地复用数字冒充供应商缓存命中
+    expect(usageButton(host).textContent).toBe("未提供")
+    await openUsagePopover(host)
+    expect(usagePopoverRows(host)).toEqual([
+      ["缓存命中", "80%"],
+      ["未缓存输入", "未提供"],
+      ["缓存读取", "未提供"],
+      ["输出", "未提供"],
+    ])
+    expect(host.textContent).not.toContain("本轮数据源")
+    expect(host.textContent).not.toContain("供应商已确认命中")
   })
 
-  it("only reports a confirmed provider hit when cached token usage exists", () => {
+  it("shows single-line summary with zero hits when provider cache was not hit", async () => {
     const trace: ContextTrace = {
       id: "trace-provider-cache-hit",
       startedAt: 1,
@@ -65,7 +178,7 @@ describe("ContextTracePanel selected skills", () => {
         retrievalHits: [],
         trimmedSections: [],
         contextHub: {
-          cacheHits: 0, reloaded: 2, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0,
+          cacheHits: 0, reloaded: 2, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0, cacheableHits: 0, cacheableLoaded: 2,
           stableTokens: 900,
           summaryTokens: 0,
           dynamicTokens: 300,
@@ -82,14 +195,25 @@ describe("ContextTracePanel selected skills", () => {
       },
     }
 
-    const html = renderToStaticMarkup(<ContextTracePanel trace={trace} />)
+    const host = await mountTracePanel(trace)
 
-    expect(html).toContain("低置信度扩展：已启用")
-    expect(html).toContain("供应商已确认命中 768 Token（输入占比 50%）")
-    expect(html).toContain("供应商新写入缓存 256 Token")
+    // 该期望于 26f80ee 随「调整对话输入框与界面资源」变更：
+    // 旧 providerInputTokens/providerCachedTokens 明细不再参与展示，只有供应商用量总账才成数字
+    expect(host.textContent).not.toContain("本地资料复用率")
+    expect(host.textContent).not.toContain("估算少发送约")
+    expect(usageButton(host).textContent).toBe("未提供")
+    await openUsagePopover(host)
+    expect(usagePopoverRows(host)).toEqual([
+      ["缓存命中", "0%"],
+      ["未缓存输入", "未提供"],
+      ["缓存读取", "未提供"],
+      ["输出", "未提供"],
+    ])
+    expect(host.textContent).not.toContain("低置信度扩展")
+    expect(host.textContent).not.toContain("供应商已确认命中")
   })
 
-  it("labels Codex thread totals and does not show the outer round as a request count", () => {
+  it("shows single-line summary and hides Codex thread diagnostics", async () => {
     const trace: ContextTrace = {
       id: "trace-codex-thread-total",
       startedAt: 1,
@@ -104,7 +228,7 @@ describe("ContextTracePanel selected skills", () => {
         retrievalHits: [],
         trimmedSections: [],
         contextHub: {
-          cacheHits: 1, reloaded: 0, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0,
+          cacheHits: 1, reloaded: 0, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0, cacheableHits: 1, cacheableLoaded: 1,
           stableTokens: 100,
           summaryTokens: 0,
           dynamicTokens: 20,
@@ -130,14 +254,27 @@ describe("ContextTracePanel selected skills", () => {
       },
     }
 
-    const html = renderToStaticMarkup(<ContextTracePanel trace={trace} />)
+    const host = await mountTracePanel(trace)
 
-    expect(html).toContain("Codex 线程累计实际用量：内部请求数不可判断")
-    expect(html).toContain("输入 3,676,375")
-    expect(html).not.toContain("请求 1")
+    // 该期望于 26f80ee 随「调整对话输入框与界面资源」变更：累计用量改为用量入口 + 弹层
+    expect(host.textContent).not.toContain("本地资料复用率")
+    expect(host.textContent).not.toContain("本次命中 1 项")
+    expect(host.textContent).not.toContain("命中率 100%")
+    expect(usageButton(host).textContent).toBe("7.2M tokens")
+    await openUsagePopover(host)
+    expect(usagePopoverRows(host)).toEqual([
+      ["缓存命中", "96.1%"],
+      ["未缓存输入", "143,063 tokens"],
+      ["缓存读取", "3,533,312 tokens"],
+      ["输出", "7,926 tokens"],
+    ])
+    expect(host.textContent).not.toContain("估算少发送约")
+    // 没有截断就没有「节省」，不能显示 0 Token 这种无意义口径
+    expect(host.textContent).not.toContain("节省约")
+    expect(host.textContent).not.toContain("Codex 线程累计实际用量")
   })
 
-  it("uses the shared cache viewer when a persisted snapshot reference exists", () => {
+  it("shows single-line summary when a persisted snapshot reference exists", async () => {
     const trace: ContextTrace = {
       id: "trace-snapshot",
       startedAt: 1,
@@ -158,7 +295,7 @@ describe("ContextTracePanel selected skills", () => {
       surface: "ai-chat",
       createdAt: 10,
       stats: {
-        cacheHits: 2, reloaded: 1, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0,
+        cacheHits: 2, reloaded: 1, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0, cacheableHits: 2, cacheableLoaded: 3,
         stableTokens: 100,
         summaryTokens: 20,
         dynamicTokens: 30,
@@ -170,15 +307,23 @@ describe("ContextTracePanel selected skills", () => {
       },
     }
 
-    const html = renderToStaticMarkup(
-      <ContextTracePanel trace={trace} contextHubSnapshot={contextHubSnapshot} />,
-    )
+    const host = await mountTracePanel(trace, contextHubSnapshot)
 
-    expect(html).toContain("展开上下文中控")
-    expect(html).toContain("本轮数据源：命中 2，重载 1，无数据 0，fallback 0，失败 0")
+    // 该期望于 26f80ee 随「调整对话输入框与界面资源」变更：持久化快照同样只走用量入口
+    expect(host.textContent).not.toContain("上下文中控")
+    expect(host.textContent).not.toContain("估算少发送约")
+    expect(usageButton(host).textContent).toBe("未提供")
+    await openUsagePopover(host)
+    expect(usagePopoverRows(host)).toEqual([
+      ["缓存命中", "66.7%"],
+      ["未缓存输入", "未提供"],
+      ["缓存读取", "未提供"],
+      ["输出", "未提供"],
+    ])
+    expect(host.textContent).not.toContain("展开上下文中控")
   })
 
-  it("renders sanitized per-request prefix, timing and cache diagnostics", () => {
+  it("shows single-line summary and hides request cache diagnostics", async () => {
     const trace: ContextTrace = {
       id: "trace-request-cache",
       startedAt: 1,
@@ -193,7 +338,7 @@ describe("ContextTracePanel selected skills", () => {
         retrievalHits: [],
         trimmedSections: [],
         contextHub: {
-          cacheHits: 1, reloaded: 0, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0,
+          cacheHits: 1, reloaded: 0, empty: 0, fallbackUsed: 0, readFailed: 0, writeFailed: 0, cacheableHits: 1, cacheableLoaded: 1,
           stableTokens: 100,
           summaryTokens: 20,
           dynamicTokens: 30,
@@ -241,13 +386,21 @@ describe("ContextTracePanel selected skills", () => {
       },
     }
 
-    const html = renderToStaticMarkup(<ContextTracePanel trace={trace} />)
+    const host = await mountTracePanel(trace)
 
-    expect(html).toContain("供应商前缀：未变化")
-    expect(html).toContain("请求缓存与间隔（2，另省略 4）")
-    expect(html).toContain("开始间隔")
-    expect(html).toContain("TTFT")
-    expect(html).toContain("abcdef0123")
+    // 该期望于 26f80ee 随「调整对话输入框与界面资源」变更：请求明细不再进概览，只留用量入口
+    expect(host.textContent).not.toContain("本地资料复用率")
+    expect(host.textContent).not.toContain("估算少发送约")
+    expect(usageButton(host).textContent).toBe("未提供")
+    await openUsagePopover(host)
+    expect(usagePopoverRows(host)).toEqual([
+      ["缓存命中", "100%"],
+      ["未缓存输入", "未提供"],
+      ["缓存读取", "未提供"],
+      ["输出", "未提供"],
+    ])
+    expect(host.textContent).not.toContain("供应商前缀")
+    expect(host.textContent).not.toContain("请求缓存与间隔")
   })
 
   it("renders web search trace entries in the overview", () => {
@@ -368,44 +521,6 @@ describe("ContextTracePanel selected skills", () => {
     expect(html).toContain("auto")
     expect(html).toContain("Write Chapter")
     expect(html).toContain("confirm")
-  })
-
-  it("renders MCP call summaries in the overview", () => {
-    const trace: ContextTrace = {
-      id: "trace-mcp",
-      startedAt: 1,
-      finishedAt: 5,
-      status: "done",
-      toolCalls: [],
-      contextInfo: {
-        intent: "character_query",
-        confidence: 0.9,
-        routeSource: "default",
-        loadedSources: [],
-        blockedSources: [],
-        retrievalHits: [],
-        trimmedSections: [],
-        mcpCalls: [
-          {
-            serverId: "graph",
-            serverName: "Graph MCP",
-            toolName: "query",
-            status: "error",
-            summary: "not available",
-            message: "MCP 调用失败，普通 AI 会话可以继续。",
-            calledAt: 100,
-          },
-        ],
-      },
-    }
-
-    const html = renderToStaticMarkup(<ContextTracePanel trace={trace} />)
-
-    expect(html).toContain("MCP 调用")
-    expect(html).toContain("Graph MCP")
-    expect(html).toContain("query")
-    expect(html).toContain("error")
-    expect(html).toContain("普通 AI 会话可以继续")
   })
 
   it("renders AI mode label when postWriteCheckMeta source is ai", () => {

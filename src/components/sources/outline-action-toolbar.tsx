@@ -18,6 +18,7 @@ import {
 } from "@/lib/novel/outline-generation"
 import { cn } from "@/lib/utils"
 import { toast } from "@/lib/toast"
+import { openDefaultModelSettings } from "@/lib/open-settings"
 import { useImportProgressStore } from "@/stores/import-progress-store"
 import { useOutlineGenerationStore } from "@/stores/outline-generation-store"
 import { useInspirationNotesStore } from "@/stores/inspiration-notes-store"
@@ -85,7 +86,7 @@ export function OutlineActionToolbar({
       onBulkIngestResult?.(formatBulkOutlineIngestResult(result))
     } catch (err) {
       if (err instanceof OutlineIngestNotReadyError) {
-        toast.error(err.message)
+        toast.error(err.message, { onClick: openDefaultModelSettings })
         onBulkIngestResult?.(err.message)
         return
       }

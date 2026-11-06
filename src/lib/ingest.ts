@@ -108,16 +108,16 @@ interface LongSourceCheckpoint {
 // tests. The live pipeline goes through parseFileBlocks() below, which
 // handles classes of LLM output this regex silently drops (see H1/H3/H5
 // in src/lib/ingest-parse.test.ts).
-export const FILE_BLOCK_REGEX = /---FILE:\s*([^\n]+?)\s*---\n([\s\S]*?)---END FILE---/g
+const FILE_BLOCK_REGEX = /---FILE:\s*([^\n]+?)\s*---\n([\s\S]*?)---END FILE---/g
 
 /** One FILE block extracted from an LLM's stage-2 output. */
-export interface ParsedFileBlock {
+interface ParsedFileBlock {
   path: string
   content: string
 }
 
 /** What the parser produced, with any non-fatal issues surfaced. */
-export interface ParseFileBlocksResult {
+interface ParseFileBlocksResult {
   blocks: ParsedFileBlock[]
   /** Human-readable notes for blocks we refused or couldn't close. Each
    *  one is also console.warn'd. UI can surface these so users see that
@@ -223,6 +223,9 @@ const FENCE_LINE = /^\s{0,3}(```+|~~~+)/
  * This parser fixes every one except H2 (which is fundamentally a
  * stream-budget problem), and at least surfaces H2 as a warning so the
  * user isn't left wondering why a page is missing.
+ *
+ * Exported for tests（2026-08-24 的 `01aab5f` 在收口"未使用导出"时误摘了它，
+ * 但 33 项路径安全/块解析断言依赖直接单测该函数，故恢复导出）。
  */
 export function parseFileBlocks(text: string): ParseFileBlocksResult {
   // H1 fix: normalize CRLF to LF before anything else. Cheap and
@@ -323,7 +326,7 @@ export function parseFileBlocks(text: string): ParseFileBlocksResult {
  * Build the language rule for ingest prompts.
  * Uses the user's configured output language, falling back to source content detection.
  */
-export function languageRule(sourceContent: string = ""): string {
+function languageRule(sourceContent: string = ""): string {
   return buildLanguageDirective(sourceContent)
 }
 
@@ -1715,7 +1718,7 @@ async function analyzeLongSourceInChunks(
  * Step 1 prompt: AI reads the source and produces a structured analysis.
  * This is the "discussion" step — the AI reasons about the source before writing wiki pages.
  */
-export function buildAnalysisPrompt(
+function buildAnalysisPrompt(
   purpose: string,
   index: string,
   sourceContent: string = "",
@@ -1776,7 +1779,7 @@ export function buildAnalysisPrompt(
 /**
  * Step 2 prompt: AI takes its own analysis and generates wiki files + review items.
  */
-export function buildGenerationPrompt(schema: string, purpose: string, index: string, sourceFileName: string, overview?: string, sourceContent: string = ""): string {
+function buildGenerationPrompt(schema: string, purpose: string, index: string, sourceFileName: string, overview?: string, sourceContent: string = ""): string {
   // Use original filename (without extension) as the source summary page name
   const sourceBaseName = sourceFileName.replace(/\.[^.]+$/, "")
   const novelMode = useWikiStore.getState().novelMode
@@ -1846,7 +1849,7 @@ export function buildGenerationPrompt(schema: string, purpose: string, index: st
       "## Novel-specific frontmatter fields",
       "When the page represents a novel chapter or outline, also include:",
       "  • chapter_number — integer, sequential chapter number (e.g. 1, 2, 3)",
-      "  • chapter_status — one of: outline | draft | revised | final",
+      "  • chapter_status — one of: draft | final",
       "  • outline_type   — one of: chapter-outline | volume-outline | story-outline (only for outline pages)",
       "",
       "Example chapter frontmatter:",
@@ -2162,100 +2165,6 @@ async function reembedSourceSummary(pp: string, fileName: string): Promise<void>
       err instanceof Error ? err.message : err,
     )
   }
-}
-
-export async function startIngest(
-  projectPath: string,
-  sourcePath: string,
-  llmConfig: LlmConfig,
-  signal?: AbortSignal,
-): Promise<void> {
-  const pp = normalizePath(projectPath)
-  const sp = normalizePath(sourcePath)
-  const store = getStore()
-  store.setMode("ingest")
-  store.setIngestSource(sp)
-  store.clearMessages()
-  // 清理所有流式状态
-  const activeId = store.activeConversationId
-  if (activeId) store.clearStreaming(activeId)
-
-  // Extract embedded images upfront — independent of the LLM call
-  // that follows. Done eagerly here (rather than in
-  // `executeIngestWrites`) so the images are on disk before the user
-  // even sees the analysis stream, and the cost is only paid once
-  // per source: a follow-up `executeIngestWrites` will reuse the
-  // already-extracted set rather than re-running Office image extraction.
-  // Failure-tolerant — `extractAndSaveSourceImages` returns [] on
-  // any error and logs internally; we never want image extraction
-  // to break the ingest chat flow.
-  void extractAndSaveSourceImages(pp, sp).catch((err) => {
-    console.warn(
-      `[startIngest:images] 预提取失败，文件 "${getFileName(sp)}"：`,
-      err instanceof Error ? err.message : err,
-    )
-  })
-
-  const [sourceContent, schema, purpose, index] = await Promise.all([
-    tryReadFile(sp),
-    tryReadFile(`${pp}/wiki/schema.md`),
-    tryReadFile(`${pp}/wiki/purpose.md`),
-    tryReadFile(`${pp}/wiki/index.md`),
-  ])
-
-  const fileName = getFileName(sp)
-
-  const systemPrompt = [
-    "You are a knowledgeable assistant helping to build a wiki from source documents.",
-    "",
-    languageRule(sourceContent),
-    "",
-    purpose ? `## Wiki Purpose\n${purpose}` : "",
-    schema ? `## Wiki Schema\n${schema}` : "",
-    index ? `## Current Wiki Index\n${index}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n")
-
-  const userMessage = [
-    `I'm ingesting the following source file into my wiki: **${fileName}**`,
-    "",
-    "Please read it carefully and present the key takeaways, important concepts, and information that would be valuable to capture in the wiki. Highlight anything that relates to the wiki's purpose and schema.",
-    "",
-    "---",
-    `**File: ${fileName}**`,
-    "```",
-    sourceContent || "(empty file)",
-    "```",
-  ].join("\n")
-
-  store.addMessage("user", userMessage)
-  const convId = store.activeConversationId
-  if (convId) store.startStreaming(convId)
-
-  let accumulated = ""
-
-  await streamChat(
-    llmConfig,
-    [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userMessage },
-    ],
-    {
-      onToken: (token) => {
-        accumulated += token
-        const cid = getStore().activeConversationId
-        if (cid) getStore().appendStreamToken(token, cid)
-      },
-      onDone: () => {
-        getStore().finalizeStream(accumulated)
-      },
-      onError: (err) => {
-        getStore().finalizeStream(`Error during ingest: ${err.message}`)
-      },
-    },
-    signal,
-  )
 }
 
 export async function executeIngestWrites(

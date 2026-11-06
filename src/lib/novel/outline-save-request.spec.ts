@@ -1,13 +1,29 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  attachOutlineHtml,
   characterDraftsToSaveRequests,
+  excludeEventOutlineSaveRequests,
   extractBodyContent,
+  extractHtmlBlocks,
   formatOutlineSaveParseFeedback,
   mergeOutlineSaveRequests,
   parseOutlineSaveRequests,
+  renderOutlineHtmlForPath,
   saveOutlineSaveRequests,
   splitConfirmRequiredSaveRequests,
+  type OutlineSaveRequest,
+  type OutlineSaveRequestFileType,
 } from "./outline-save-request"
+import { getDefaultFolderForOutlineFileType } from "./outline-save-classifier"
+
+/**
+ * `attachOutlineHtml` 的入参形状，直接由生产签名推导（`Parameters<...>[0]`）。
+ *
+ * 该函数的返回类型就是泛型 T，所以必须显式标注调用点：直接传对象字面量时，
+ * T 会被推成 `{ fileType: string; content: string }` 这类没有 htmlContent 的窄类型，
+ * 测试就访问不到生产函数实际会补上的那个字段了。
+ */
+type AttachOutlineHtmlInput = Parameters<typeof attachOutlineHtml>[0]
 
 const SAMPLE_CHAPTER_OUTLINE = [
   "# 章纲-第001章",
@@ -23,6 +39,14 @@ const SAMPLE_CHAPTER_OUTLINE = [
   "",
   "## 章尾钩子",
   "门外传来脚步声",
+].join("\n")
+
+const GEMINI_OUTLINE_THOUGHT_DUMP = [
+  "I'm currently focused on defining the project scope and the requested chapter outline.",
+  "",
+  "**Examining the Narrative Details**",
+  "",
+  "I'm now analyzing the source text and identifying the required plot points.",
 ].join("\n")
 
 describe("outline-save-request", () => {
@@ -52,6 +76,41 @@ describe("outline-save-request", () => {
       fileType: "chapter-outline",
       writeMode: "create",
     })
+  })
+
+  it("清理保存请求 content 中前置的 Gemini 思考摘要", () => {
+    const result = parseOutlineSaveRequests(JSON.stringify({
+      outlineSaveRequest: {
+        targetFolder: "章纲",
+        fileName: "章纲-第001章.md",
+        fileType: "chapter-outline",
+        writeMode: "create",
+        referencedSkills: [],
+        sourceIntent: "生成第001章章纲",
+        content: `${GEMINI_OUTLINE_THOUGHT_DUMP}\n\n${SAMPLE_CHAPTER_OUTLINE}`,
+      },
+    }))
+
+    expect(result.errors).toEqual([])
+    expect(result.requests).toHaveLength(1)
+    expect(result.requests[0]?.content).toBe(SAMPLE_CHAPTER_OUTLINE)
+  })
+
+  it("拒绝 content 仅包含 Gemini 思考摘要的保存请求", () => {
+    const result = parseOutlineSaveRequests(JSON.stringify({
+      outlineSaveRequest: {
+        targetFolder: "大纲",
+        fileName: "总纲.md",
+        fileType: "outline",
+        writeMode: "create",
+        referencedSkills: [],
+        sourceIntent: "生成总纲",
+        content: GEMINI_OUTLINE_THOUGHT_DUMP,
+      },
+    }))
+
+    expect(result.requests).toHaveLength(0)
+    expect(result.errors).toContain("第 1 个保存请求的 content 仅包含模型思考过程。")
   })
 
   it("未闭合 json 围栏时仍能回收完整保存请求", () => {
@@ -137,6 +196,100 @@ describe("outline-save-request", () => {
       .toBe("# 章纲-第001章\n\n正文\n")
   })
 
+  it("append 模式必须真的追加（confirmed 下也不能覆盖已有内容）", async () => {
+    /*
+     * 回归点：append 的契约是「追加到文件末尾」（提示词与 AI_OUTLINE_OUTPUT_PROTOCOL.md），
+     * 但旧实现里 `confirmed` 分支直接 `writeFile(targetPath, content)` —— 覆盖写。
+     * 唯一调用点恒传 `confirmed: true`，于是用户已有的伏笔台账 / 设定更新记录
+     * 会被这一轮新增的一小段整个替换掉，且 .md 没有版本历史，无法恢复。
+     */
+    const written = new Map<string, string>()
+    const existing = new Set(["C:/book/wiki/outlines/设定/伏笔.md"])
+    const original = "# 伏笔台账\n\n## 第一章\n\n- 门后的脚步声\n"
+
+    const result = await saveOutlineSaveRequests({
+      outlineRoot: "C:/book/wiki/outlines",
+      requests: [{
+        targetFolder: "设定",
+        fileName: "伏笔.md",
+        fileType: "foreshadowing",
+        writeMode: "append",
+        referencedSkills: [],
+        sourceIntent: "追加第三章伏笔",
+        content: "## 第三章\n\n- 井口的刻痕",
+      }],
+      confirmed: true,
+      createDirectory: async () => {},
+      fileExists: async (path) => existing.has(path),
+      readFile: async () => original,
+      writeFile: async (path, content) => {
+        written.set(path, content)
+      },
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.saved.map((item) => item.path)).toEqual(["C:/book/wiki/outlines/设定/伏笔.md"])
+    const merged = written.get("C:/book/wiki/outlines/设定/伏笔.md") ?? ""
+    // 旧内容必须还在，新内容必须接在后面
+    expect(merged).toContain("门后的脚步声")
+    expect(merged).toContain("井口的刻痕")
+    expect(merged.indexOf("门后的脚步声")).toBeLessThan(merged.indexOf("井口的刻痕"))
+    // 只有一份 H1，不能是「两份文件头拼在一起」
+    expect(merged.match(/^# 伏笔台账$/gm)).toHaveLength(1)
+  })
+
+  it("append 模式下文件不存在时按新文件写入", async () => {
+    const written = new Map<string, string>()
+
+    const result = await saveOutlineSaveRequests({
+      outlineRoot: "C:/book/wiki/outlines",
+      requests: [{
+        targetFolder: "设定",
+        fileName: "伏笔.md",
+        fileType: "foreshadowing",
+        writeMode: "append",
+        referencedSkills: [],
+        sourceIntent: "追加伏笔",
+        content: "# 伏笔台账\n\n- 第一条",
+      }],
+      confirmed: true,
+      createDirectory: async () => {},
+      fileExists: async () => false,
+      readFile: async () => "",
+      writeFile: async (path, content) => {
+        written.set(path, content)
+      },
+    })
+
+    expect(result.errors).toEqual([])
+    expect(written.get("C:/book/wiki/outlines/设定/伏笔.md")).toBe("# 伏笔台账\n\n- 第一条\n")
+  })
+
+  it("append 模式下文件已存在却读不到原文时跳过写入，绝不用覆盖写顶掉旧内容", async () => {
+    const writeFile = vi.fn()
+
+    const result = await saveOutlineSaveRequests({
+      outlineRoot: "C:/book/wiki/outlines",
+      requests: [{
+        targetFolder: "设定",
+        fileName: "伏笔.md",
+        fileType: "foreshadowing",
+        writeMode: "append",
+        referencedSkills: [],
+        sourceIntent: "追加伏笔",
+        content: "## 第三章\n\n- 井口的刻痕",
+      }],
+      confirmed: true,
+      createDirectory: async () => {},
+      fileExists: async () => true,
+      writeFile,
+    })
+
+    expect(writeFile).not.toHaveBeenCalled()
+    expect(result.saved).toEqual([])
+    expect(result.skipped.join("\n")).toContain("缺少追加读取能力")
+  })
+
   it.each(["replace", "patch"] as const)("未确认时继续跳过 %s 写入", async (writeMode) => {
     const writeFile = vi.fn()
 
@@ -213,7 +366,8 @@ describe("outline-save-request", () => {
       confidence: "low",
     }], "保存人物小传")
 
-    expect(requests).toEqual([{
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({
       targetFolder: "人物小传",
       fileName: "角色-男主-林辰.md",
       fileType: "character",
@@ -221,7 +375,43 @@ describe("outline-save-request", () => {
       referencedSkills: ["JueseSkill/character-design"],
       sourceIntent: "保存人物小传",
       content: "# 角色-男主-林辰\n\n正文",
-    }])
+    })
+    // 多 Agent 路径现在会由软件侧补一份同名 .html 角色卡
+    expect(requests[0].htmlContent).toContain("角色-男主-林辰")
+  })
+
+  it("人物草稿自带 htmlContent（characterProfileData 预渲染）时优先使用", () => {
+    const requests = characterDraftsToSaveRequests([{
+      id: "男主:林辰",
+      characterName: "林辰",
+      roleType: "男主",
+      fileName: "角色-男主-林辰.md",
+      content: "# 林辰\n\n正文",
+      selected: true,
+      confidence: "high",
+      htmlContent: "<!DOCTYPE html><html><body>CUSTOM-PROFILE</body></html>",
+    }], "保存人物小传")
+    expect(requests[0].htmlContent).toContain("CUSTOM-PROFILE")
+  })
+
+  it("人物草稿解析不出结构化档案时也必须有 HTML（否则勾选框可用却拿不到 .html）", () => {
+    /*
+     * 人物确认框的 HTML 勾选框在 mode==="character" 时是无条件可用的
+     * ——它不检查 htmlContent。所以这里若留空，就是最坏的一种缺口：
+     * 用户能勾、也确实勾了，最后却没有 .html 文件，而界面不会说任何话。
+     */
+    const requests = characterDraftsToSaveRequests([{
+      id: "路人:甲",
+      characterName: "甲",
+      roleType: "路人",
+      fileName: "角色-路人-甲.md",
+      // 没有任何可解析的字段结构，角色卡解析器会返回 null
+      content: "甲。",
+      selected: true,
+      confidence: "low",
+    }], "保存人物小传")
+    expect(requests[0].htmlContent?.trim()).toBeTruthy()
+    expect(requests[0].htmlContent).toContain("<html")
   })
 
   it("所有大纲类型均需用户确认，禁止静默自动保存", () => {
@@ -610,5 +800,1046 @@ describe("outline-save-request", () => {
     expect(result.errors).toEqual([])
     expect(result.requests).toHaveLength(1)
     expect(result.requests[0].content).toContain("夺宝筑基")
+  })
+
+  it("透传 htmlContent 字段（卷纲折叠树 HTML）", () => {
+    const html = "<!DOCTYPE html><html><body><h1>折叠树</h1></body></html>"
+    const result = parseOutlineSaveRequests([
+      "```json",
+      JSON.stringify({
+        outlineSaveRequest: {
+          targetFolder: "卷纲",
+          fileName: "卷纲-第01卷.md",
+          fileType: "volume-outline",
+          writeMode: "create",
+          referencedSkills: ["DagangSkill/juangangzhedieshu"],
+          sourceIntent: "生成第01卷卷纲",
+          content: "# 卷纲-第01卷\n\n## 卷目标",
+          htmlContent: html,
+        },
+      }),
+      "```",
+    ].join("\n"))
+
+    expect(result.errors).toEqual([])
+    expect(result.requests).toHaveLength(1)
+    expect(result.requests[0].htmlContent).toBe(html)
+  })
+
+  it("htmlContent 缺失时从 ```html 围栏兜底提取", () => {
+    const html = "<!DOCTYPE html><html><body><h1>折叠树</h1></body></html>"
+    const result = parseOutlineSaveRequests([
+      "# 卷纲-第01卷",
+      "",
+      "## 卷目标",
+      "大高潮",
+      "",
+      "```html",
+      html,
+      "```",
+      "",
+      "```json",
+      JSON.stringify({
+        outlineSaveRequest: {
+          targetFolder: "卷纲",
+          fileName: "卷纲-第01卷.md",
+          fileType: "volume-outline",
+          writeMode: "create",
+          referencedSkills: [],
+          sourceIntent: "生成第01卷卷纲",
+          content: "# 卷纲-第01卷",
+        },
+      }),
+      "```",
+    ].join("\n"))
+
+    expect(result.errors).toEqual([])
+    expect(result.requests).toHaveLength(1)
+    expect(result.requests[0].htmlContent).toBe(html)
+  })
+
+  it("extractBodyContent 排除 ```html 围栏，不污染 MD 正文", () => {
+    const body = extractBodyContent([
+      "# 卷纲-第01卷",
+      "",
+      "## 卷目标",
+      "大高潮",
+      "",
+      "```html",
+      "<!DOCTYPE html><html><body><h1>折叠树</h1></body></html>",
+      "```",
+    ].join("\n"))
+
+    expect(body).toContain("# 卷纲-第01卷")
+    expect(body).not.toContain("<html")
+    expect(body).not.toContain("```")
+  })
+
+  it("extractHtmlBlocks 提取多个 html 块，首个非空优先", () => {
+    expect(extractHtmlBlocks("```html\n<a></a>\n```\n正文\n```html\n<b></b>\n```")).toEqual([
+      "<a></a>",
+      "<b></b>",
+    ])
+    expect(extractHtmlBlocks("没有 html 块")).toEqual([])
+  })
+
+  it("extractHtmlBlocks 不误抓 ```json / 无语言标记的围栏", () => {
+    expect(extractHtmlBlocks('```json\n{"a":1}\n```')).toEqual([])
+    expect(extractHtmlBlocks("```\n随便一段\n```")).toEqual([])
+    expect(extractHtmlBlocks('```json\n{"volumeOutlineData":{}}\n```\n```html\n<html></html>\n```')).toEqual([
+      "<html></html>",
+    ])
+  })
+
+  it("saveOutlineSaveRequests 按 formats 落盘 .md 与伴生 .html", async () => {
+    const written: Array<{ path: string; content: string }> = []
+    const result = await saveOutlineSaveRequests({
+      outlineRoot: "/root",
+      confirmed: true,
+      formats: { md: true, html: true },
+      requests: [{
+        targetFolder: "卷纲",
+        fileName: "卷纲-第01卷.md",
+        fileType: "volume-outline",
+        writeMode: "create",
+        referencedSkills: [],
+        sourceIntent: "测试",
+        content: "# 卷纲-第01卷",
+        htmlContent: "<!DOCTYPE html><html></html>",
+      }],
+      createDirectory: async () => {},
+      fileExists: async () => false,
+      writeFile: async (path: string, content: string) => { written.push({ path, content }) },
+    })
+
+    expect(result.saved.map((item) => item.fileName)).toEqual(["卷纲-第01卷.md", "卷纲-第01卷.html"])
+    expect(written.map((item) => item.path)).toEqual([
+      "/root/卷纲/卷纲-第01卷.md",
+      "/root/卷纲/卷纲-第01卷.html",
+    ])
+  })
+
+  it("saveOutlineSaveRequests 只勾选 HTML 时仅落盘 .html", async () => {
+    const written: Array<{ path: string }> = []
+    await saveOutlineSaveRequests({
+      outlineRoot: "/root",
+      confirmed: true,
+      formats: { md: false, html: true },
+      requests: [{
+        targetFolder: "卷纲",
+        fileName: "卷纲-第01卷.md",
+        fileType: "volume-outline",
+        writeMode: "create",
+        referencedSkills: [],
+        sourceIntent: "测试",
+        content: "# 卷纲-第01卷",
+        htmlContent: "<!DOCTYPE html><html></html>",
+      }],
+      createDirectory: async () => {},
+      fileExists: async () => false,
+      writeFile: async (path: string) => { written.push({ path }) },
+    })
+
+    expect(written.map((item) => item.path)).toEqual(["/root/卷纲/卷纲-第01卷.html"])
+  })
+
+  it("attachOutlineHtml 为设定类（组织势力）补 htmlContent", () => {
+    const source = "# 青云门\n## 阵营目标\n- 维护正道秩序\n## 掌握资源\n**掌门**：玉虚真人"
+    const attached = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "organization", content: source },
+      source,
+    )
+    expect(attached.htmlContent).toContain("青云门")
+    expect(attached.htmlContent).toContain("玉虚真人")
+  })
+
+  it("attachOutlineHtml 对 fileType=setting 的力量体系走专属体系卡", () => {
+    const source = "# 力量体系\n## 体系概览\n- 力量本质：灵力\n## 等级阶梯\n| 等级 | 名称 |\n| --- | --- |\n| 一阶 | 引气 |"
+    const attached = attachOutlineHtml<AttachOutlineHtmlInput>({ fileType: "setting", content: source }, source)
+    expect(attached.htmlContent).toContain("力量体系 · 体系卡")
+  })
+
+  it("分类成章纲但正文其实是设定类时，仍借用设定家族补出 HTML（fileType 不变）", () => {
+    const source = "# 力量体系\n## 等级阶梯\n| 等级 | 说明 |\n| --- | --- |\n| 一转 | 引气 |"
+    const attached = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "chapter-outline", content: source, fileName: "力量体系总纲.md" },
+      "",
+    )
+    expect(attached.htmlContent).toContain("力量体系 · 体系卡")
+    expect(attached.fileType).toBe("chapter-outline")
+
+    /*
+     * 真正的章纲在拿不到结构化 JSON 时，必须补一份**章纲自己的**卡片流。
+     *
+     * 这条断言原本是 `toBeUndefined()`（「不应被套上设定卡」）。意图是对的，但旧实现是用
+     * 「干脆不出 HTML」来满足它的 —— 代价就是保存框的「HTML 形式」永久置灰，用户根本无法保存 HTML 版本。
+     * 正确做法是：不出设定卡，但要出章纲卡。所以这里保留原意图（不含「设定 · 卡片流」），
+     * 同时补上真正该有的结果。
+     */
+    const realChapter = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "chapter-outline", content: "# 第001章章纲\n## 核心事件\n- 主角觉醒", fileName: "章纲-第001章.md" },
+      "",
+    )
+    expect(realChapter.htmlContent).toBeTruthy()
+    expect(realChapter.htmlContent).toContain("章纲 · 卡片流")
+    expect(realChapter.htmlContent).not.toContain("设定 · 卡片流")
+    expect(realChapter.fileType).toBe("chapter-outline")
+  })
+
+  it("任何大纲类型在只有 MD、没有任何结构化 JSON 时都能出 HTML（一个不留）", () => {
+    /*
+     * 这是「大纲中生成的内容都必须包含 HTML」的总守卫。
+     * 遍历 ALLOWED_FILE_TYPES 全部成员：新增类型时若忘记补渲染器，这条会红，
+     * 而不是等到用户发现保存框的「HTML 形式」是灰的、且永远无法勾选。
+     */
+    const sources: Record<OutlineSaveRequestFileType, string> = {
+      "chapter-outline": "# 章纲-第001章\n## 本章目标\n- 主角找回记忆\n## 核心事件\n- 拾得残碑",
+      "volume-outline": "# 千碑城卷纲\n## 卷级定位\n- 建立契约关系\n## 故事线\n- 入城",
+      "outline": "# 世界观总纲\n## 时代\n- 灵气复苏后的第三十年\n## 主要冲突\n- 旧秩序与新势力的对立",
+      "setting": "# 力量体系\n## 境界\n- 炼气\n- 筑基",
+      "character": "# 角色-林烬\n## 身份\n- 沉默的剑客\n## 性格\n- 寡言，记性极好",
+      "organization": "# 青云门\n## 阵营目标\n- 维护正道秩序\n## 掌握资源\n- 玉虚真人",
+      "foreshadowing": "# 伏笔计划\n## 埋设\n- 第一卷埋下残碑\n## 回收\n- 第三卷回收",
+      "event-outline": "# 事件细纲-第012章\n## 事件1 院子里的哭声\n- 关键台词：「夜壶里的东西是药。」\n## 事件2 夜壶里的药\n- 神情动作：念念护住屁股蛋",
+      "quality-report": "# 大纲质量检查\n## 结构\n- 分卷节奏偏快\n## 建议\n- 第二卷补一条支线",
+    }
+    /* 这 9 个成员必须与生产的 OutlineSaveRequestFileType 完全一致（写错/漏写会在这里报错） */
+    const fileTypes: OutlineSaveRequestFileType[] = [
+      "outline", "volume-outline", "chapter-outline", "event-outline", "character",
+      "setting", "foreshadowing", "organization", "quality-report",
+    ]
+    for (const fileType of fileTypes) {
+      const content = sources[fileType]
+      const attached = attachOutlineHtml<AttachOutlineHtmlInput>(
+        { fileType, fileName: "X.md", targetFolder: fileType, content },
+        // 关键：sourceText 与结构化 JSON 全部欠奉，只有正文本身
+        content,
+      )
+      expect(attached.htmlContent?.trim(), `${fileType} 应当能补出 HTML`).toBeTruthy()
+      expect(attached.htmlContent, `${fileType} 的兜底 HTML 必须是自包含文档`).toContain("<html")
+      expect(attached.fileType, `${fileType} 的 fileType 不能被兜底改写`).toBe(fileType)
+    }
+  })
+
+  it("卷纲/章纲缺结构化数据时的兜底 HTML 保留自己的标识，不退化成「设定」", () => {
+    const volume = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "volume-outline", fileName: "千碑城卷纲.md", targetFolder: "卷纲", content: "# 千碑城卷纲\n## 卷级定位\n- 建立契约" },
+      "",
+    )
+    expect(volume.htmlContent).toContain("卷纲 · 卡片流")
+    expect(volume.htmlContent).not.toContain("设定 · 卡片流")
+
+    const report = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "quality-report", fileName: "大纲质量检查.md", targetFolder: "质量检查", content: "# 大纲质量检查\n## 结构\n- 节奏偏快" },
+      "",
+    )
+    expect(report.htmlContent).toContain("质量检查 · 卡片流")
+    expect(report.htmlContent).not.toContain("设定 · 卡片流")
+  })
+
+  it("端到端：AI 只给 MD 的章纲/卷纲，解析后依然带 HTML（保存框不会置灰）", () => {
+    const reply = [
+      "```markdown",
+      "# 章纲-第001章",
+      "## 本章目标",
+      "- 主角找回记忆",
+      "## 核心事件",
+      "- 拾得残碑",
+      "```",
+      "",
+      "```json",
+      JSON.stringify({
+        outlineSaveRequest: {
+          targetFolder: "章纲", fileName: "章纲-第001章.md", fileType: "chapter-outline",
+          writeMode: "create", referencedSkills: [], sourceIntent: "生成章纲", content: "",
+        },
+      }),
+      "```",
+    ].join("\n")
+    const parsed = parseOutlineSaveRequests(reply)
+    expect(parsed.errors).toEqual([])
+    expect(parsed.requests).toHaveLength(1)
+    // 保存框的「HTML 形式」是否可勾选，完全取决于这一项是否为空。
+    expect(parsed.requests[0].htmlContent?.trim()).toBeTruthy()
+  })
+
+  it("端到端：勾选 HTML 后，缺结构化数据的章纲确实落盘了伴生 .html", async () => {
+    // 上一条只证明请求里有 HTML；这一条证明它真的写到了盘上（用户能看到的那一步）。
+    const reply = [
+      "```markdown",
+      "# 章纲-第001章",
+      "## 本章目标",
+      "- 主角找回记忆",
+      "## 核心事件",
+      "- 拾得残碑",
+      "```",
+      "",
+      "```json",
+      JSON.stringify({
+        outlineSaveRequest: {
+          targetFolder: "章纲", fileName: "章纲-第001章.md", fileType: "chapter-outline",
+          writeMode: "create", referencedSkills: [], sourceIntent: "生成章纲", content: "",
+        },
+      }),
+      "```",
+    ].join("\n")
+    const written: Array<{ path: string; content: string }> = []
+    const result = await saveOutlineSaveRequests({
+      outlineRoot: "/root/wiki/outlines",
+      confirmed: true,
+      requests: parseOutlineSaveRequests(reply).requests,
+      formats: { md: true, html: true },
+      createDirectory: async () => {},
+      fileExists: async () => false,
+      writeFile: async (path, content) => { written.push({ path, content }) },
+    })
+    expect(result.errors).toEqual([])
+    const htmlFile = written.find((item) => item.path.endsWith(".html"))
+    expect(htmlFile, "必须写出伴生 .html").toBeTruthy()
+    expect(htmlFile!.path).toBe("/root/wiki/outlines/章纲/章纲-第001章.html")
+    expect(htmlFile!.content).toContain("章纲 · 卡片流")
+  })
+
+  it("renderOutlineHtmlForPath 为历史 / 外部写入的大纲 .md 即时渲染 HTML", () => {
+    expect(
+      renderOutlineHtmlForPath("/p/wiki/outlines/组织势力/青云门.md", "# 青云门\n## 阵营目标\n- 维护正道秩序"),
+    ).toContain("组织势力 · 势力卡")
+    expect(
+      renderOutlineHtmlForPath("/p/wiki/outlines/人物小传/角色-林辰.md", "# 林辰\n## 基本信息\n- 身份：外门弟子"),
+    ).toContain("人物小传 · 角色卡")
+    expect(
+      renderOutlineHtmlForPath("/p/wiki/outlines/设定/背景设定.md", "# 背景设定\n## 历史沿革\n| 时期 | 事件 |\n| --- | --- |\n| 开元 | 立国 |"),
+    ).toContain("背景设定 · 背景卡")
+    // 空内容 / 非 .md 不渲染
+    expect(renderOutlineHtmlForPath("/p/wiki/outlines/组织势力/x.md", "")).toBeNull()
+    expect(renderOutlineHtmlForPath("/p/wiki/outlines/组织势力/x.html", "x")).toBeNull()
+  })
+
+  it("attachOutlineHtml 对 fileType=setting 未命中子类型时走通用卡片流", () => {
+    const source = "# 设定\n## 说明\n- 内容"
+    const attached = attachOutlineHtml<AttachOutlineHtmlInput>({ fileType: "setting", content: source }, source)
+    expect(attached.htmlContent).toContain("设定 · 卡片流")
+  })
+
+  it("fileType=setting 但内容/文件夹指组织势力时走专属势力卡（不回退通用卡片流）", () => {
+    const byContent = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "setting", content: "# 组织势力设定\n## 阵营目标\n- 维护正道秩序\n## 掌握资源\n- 灵脉" },
+      "",
+    )
+    expect(byContent.htmlContent).toContain("组织势力 · 势力卡")
+
+    const byFolder = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "setting", content: "# 某势力\n## 阵营目标\n- 扩张", targetFolder: "组织势力" },
+      "",
+    )
+    expect(byFolder.htmlContent).toContain("组织势力 · 势力卡")
+  })
+
+  it("fileType=setting 但内容指人物小传 / 伏笔时也走各自专属卡", () => {
+    const character = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "setting", content: "# 林辰\n## 基本信息\n- 身份：外门弟子", targetFolder: "人物小传" },
+      "",
+    )
+    expect(character.htmlContent).toContain("人物小传 · 角色卡")
+
+    const foreshadowing = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "setting", content: "# 伏笔追踪\n## 伏笔状态表\n| ID | 状态 |\n| --- | --- |\n| F001 | 已埋 |" },
+      "",
+    )
+    expect(foreshadowing.htmlContent).toContain("伏笔计划 · 伏笔台账")
+  })
+
+  it("attachOutlineHtml 对 fileType=foreshadowing 走专属伏笔台账", () => {
+    const source = "# 伏笔追踪\n## 伏笔状态表\n| ID | 状态 |\n| --- | --- |\n| F001 | 已埋 |"
+    const attached = attachOutlineHtml<AttachOutlineHtmlInput>({ fileType: "foreshadowing", content: source }, source)
+    expect(attached.htmlContent).toContain("伏笔计划 · 伏笔台账")
+  })
+
+  it("attachOutlineHtml 对 fileType=setting 的金手指走专属能力卡", () => {
+    const source = "# 金手指设定\n## 机制\n- 绑定方式：濒死激活\n## 已解锁能力\n| 解锁章节 | 能力 |\n| --- | --- |\n| 第1章 | 识海 |"
+    const attached = attachOutlineHtml<AttachOutlineHtmlInput>({ fileType: "setting", content: source }, source)
+    expect(attached.htmlContent).toContain("金手指 · 能力卡")
+  })
+
+  it("attachOutlineHtml 对 fileType=setting 的地理设定走专属地理卡", () => {
+    const source = "# 地理设定\n## 区域划分\n| 区域 | 类型 |\n| --- | --- |\n| 东荒 | 荒原 |"
+    const attached = attachOutlineHtml<AttachOutlineHtmlInput>({ fileType: "setting", content: source }, source)
+    expect(attached.htmlContent).toContain("地理设定 · 地理卡")
+  })
+
+  it("attachOutlineHtml 对 fileType=setting 的地点设定走专属地点卡", () => {
+    const source = "# 地点设定\n## 空间规则\n| 规则 | 说明 |\n| --- | --- |\n| 御剑限高 | 峰顶禁飞 |"
+    const attached = attachOutlineHtml<AttachOutlineHtmlInput>({ fileType: "setting", content: source }, source)
+    expect(attached.htmlContent).toContain("地点设定 · 地点卡")
+  })
+
+  it("attachOutlineHtml 对 fileType=setting 的背景设定走专属背景卡", () => {
+    const source = "# 背景设定\n## 历史沿革\n| 时期 | 关键事件 |\n| --- | --- |\n| 开元 | 立国 |"
+    const attached = attachOutlineHtml<AttachOutlineHtmlInput>({ fileType: "setting", content: source }, source)
+    expect(attached.htmlContent).toContain("背景设定 · 背景卡")
+  })
+
+  it("地点 / 背景按文件名区分（同为 fileType=setting）", () => {
+    const byFolder = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "setting", content: "# 清风镇\n## 地点定位\n- 所处区域：东荒", targetFolder: "地点设定" },
+      "",
+    )
+    expect(byFolder.htmlContent).toContain("地点卡")
+
+    const byIntent = attachOutlineHtml<AttachOutlineHtmlInput>(
+      { fileType: "setting", content: "# 某设定\n## 世界观背景\n- 世界前提：灵气复苏", sourceIntent: "生成背景设定" },
+      "",
+    )
+    expect(byIntent.htmlContent).toContain("背景卡")
+  })
+
+  it("saveOutlineSaveRequests 为设定类落盘伴生 .html", async () => {
+    const written: Array<{ path: string }> = []
+    const result = await saveOutlineSaveRequests({
+      outlineRoot: "/root",
+      confirmed: true,
+      formats: { md: true, html: true },
+      requests: [{
+        targetFolder: "组织",
+        fileName: "青云门.md",
+        fileType: "organization",
+        writeMode: "create",
+        referencedSkills: [],
+        sourceIntent: "测试",
+        content: "# 青云门",
+        htmlContent: "<!DOCTYPE html><html></html>",
+      }],
+      createDirectory: async () => {},
+      fileExists: async () => false,
+      writeFile: async (path: string) => { written.push({ path }) },
+    })
+
+    expect(result.saved.map((item) => item.fileName)).toEqual(["青云门.md", "青云门.html"])
+    expect(written.map((item) => item.path)).toEqual([
+      "/root/组织/青云门.md",
+      "/root/组织/青云门.html",
+    ])
+  })
+})
+
+describe("event-outline 保存类型", () => {
+  const eventOutlineContent = [
+    "# 第12章 · 令牌初现",
+    "",
+    "## 事件1 院子里的哭声",
+    "- 关键台词：「夜壶里的东西是药。」",
+    "- 神情动作：念念两只小手护住屁股蛋。",
+  ].join("\n")
+
+  const request = {
+    targetFolder: "事件细纲",
+    fileName: "事件细纲-第012章.md",
+    fileType: "event-outline",
+    writeMode: "create",
+    referencedSkills: [],
+    sourceIntent: "生成第12章事件细纲",
+    content: eventOutlineContent,
+  }
+
+  const parseOne = (payload: Record<string, unknown>) =>
+    parseOutlineSaveRequests(`\`\`\`json\n${JSON.stringify({ outlineSaveRequest: payload })}\n\`\`\``)
+
+  const parseMany = (payloads: Array<Record<string, unknown>>) =>
+    parseOutlineSaveRequests(`\`\`\`json\n${JSON.stringify({ outlineSaveRequests: payloads })}\n\`\`\``)
+
+  /*
+   * eventOutlineRejectionCount 的**口径**测试。
+   *
+   * 调用方（大纲面板的自动通道闸门）拿它与 errors.length 比较，只有相等才敢说
+   * 「这一批错误全是事件细纲造成的」并改弹 info。所以「哪些错误算事件细纲被拒」
+   * 必须连同归一化阶段的错误一起算 —— 否则一条缺 fileName 的事件细纲请求
+   * 会让用户看到「请让 AI 重新输出 outlineSaveRequest」，而重出一次仍会被丢掉。
+   */
+  it("归一化阶段就被拒的事件细纲请求也计入拒收数（口径 = 错误条数）", () => {
+    // 文件名不是 .md：错误在 normalizeRequest 里就产生了
+    const parsed = parseOne({ ...request, fileName: "事件细纲-第012章.txt" })
+    expect(parsed.requests).toEqual([])
+    expect(parsed.errors).toHaveLength(1)
+    expect(parsed.eventOutlineRejectionCount).toBe(1)
+  })
+
+  /*
+   * E8 的**缺 content** 路径（此前只覆盖了归一化阶段与结构闸门）。
+   *
+   * 输入刻意选成「唯一一条请求是 event-outline + content 为空 + 正文里也提不出内容」：
+   * 归一化会放过它（`content: ""` 不触发那条「仅包含模型思考过程」的报错），
+   * 拒绝发生在其后的 `!request.content.trim()` 分支。若那一支不计数，调用方拿到的是
+   * `errors.length === 1 && eventOutlineRejectionCount === 0` ⇒ 判成「有真正的解析错误」
+   * ⇒ 弹「请让 AI 重新输出 outlineSaveRequest」，而重出一次还是会被丢掉 ——
+   * 正是 E8 要消除的症状。
+   *
+   * `parseOne` 的正文部分只有 json 围栏（extractBodyContent 会把它整块删掉），
+   * 所以 fillContentFromText 确实补不出 content。
+   */
+  it("缺 content 的事件细纲请求也计入拒收数（E8：不在归一化阶段，但同样不许误报）", () => {
+    const parsed = parseOne({ ...request, content: "" })
+    // 三者的关系才是关键：调用方比的是 rejectionCount 与 errors.length
+    expect(parsed.requests).toEqual([])
+    expect(parsed.errors).toHaveLength(1)
+    expect(parsed.eventOutlineRejectionCount).toBe(parsed.errors.length)
+    expect(parsed.errors[0]).toContain("缺少 content")
+  })
+
+  it("缺 content 的**非**事件细纲请求不计入拒收数（否则会把真错误也掩盖掉）", () => {
+    const parsed = parseOne({
+      targetFolder: "章纲",
+      fileName: "章纲-第012章.md",
+      fileType: "chapter-outline",
+      writeMode: "create",
+      referencedSkills: [],
+      sourceIntent: "生成章纲",
+      content: "",
+    })
+    expect(parsed.errors).toHaveLength(1)
+    expect(parsed.eventOutlineRejectionCount).toBe(0)
+  })
+
+  it("混着真正的解析错误时，拒收数小于错误总数（调用方据此仍弹那条重出提示）", () => {
+    const parsed = parseMany([
+      { ...request, fileName: "事件细纲-第012章.txt" },
+      {
+        targetFolder: "章纲",
+        fileName: "章纲-第012章.md",
+        fileType: "chapter-outline",
+        writeMode: "create",
+        referencedSkills: [],
+        sourceIntent: "生成章纲",
+        content: "好的，我已完成本章细纲。",
+      },
+    ])
+    expect(parsed.requests).toEqual([])
+    expect(parsed.eventOutlineRejectionCount).toBe(1)
+    expect(parsed.errors.length).toBeGreaterThan(parsed.eventOutlineRejectionCount)
+  })
+
+  it("中文别名「事件细纲」归一化为 event-outline", () => {
+    const parsed = parseOne({ ...request, fileType: "事件细纲" })
+    expect(parsed.errors).toEqual([])
+    expect(parsed.requests[0]?.fileType).toBe("event-outline")
+  })
+
+  it("中文别名「细纲」不再归一化为 event-outline", () => {
+    // 丙-1 的核心修复点：不给「细纲」这个别名，让它**整条被拒**（而不是被改判成事件细纲）。
+    // 保留别名会让模型写 fileType: "细纲" 时，一份 17 节章纲被归一化成 event-outline，
+    // 而 hasEventOutlineStructure 的闸门挡不住它（章纲的「## 1. 本章定位」本身就是
+    // 编号分节 + 大量列表行），于是章纲会被落进「事件细纲」文件夹。
+    // 注意结果不是「恢复成 17 节章纲」：白名单里没有「细纲」这个值，所以
+    // normalizeRequest 直接报「不支持的大纲文件类型」，requests 里什么都不剩。
+    const parsed = parseOne({ ...request, fileType: "细纲" })
+    expect(parsed.requests.map((item) => item.fileType)).not.toContain("event-outline")
+    expect(parsed.requests).toEqual([])
+    expect(parsed.errors.join("\n")).toContain("细纲")
+  })
+
+  it("事件细纲落进「事件细纲」文件夹", () => {
+    expect(getDefaultFolderForOutlineFileType("event-outline")).toBe("事件细纲")
+  })
+
+  it("内容不像事件细纲时拒绝写入", () => {
+    const parsed = parseOne({ ...request, content: "好的，我已完成本章细纲。" })
+    expect(parsed.requests).toEqual([])
+    expect(parsed.errors.join("\n")).toContain("事件细纲")
+  })
+
+  it("结构完整的事件细纲能通过闸门", () => {
+    const parsed = parseOne(request)
+    expect(parsed.errors).toEqual([])
+    expect(parsed.requests).toHaveLength(1)
+  })
+
+  it("事件细纲也会拿到 HTML 卡片流", () => {
+    const parsed = parseOne(request)
+    expect(parsed.requests[0]?.htmlContent?.trim()).toBeTruthy()
+    expect(parsed.requests[0]?.htmlContent).toContain("<html")
+    // 兜底 HTML 必须用自己的标识，不能退化成「设定」或章纲的样子
+    expect(parsed.requests[0]?.htmlContent).toContain("事件细纲 · 卡片流")
+  })
+
+  it("分节写成编号标题（## 1. …）时同样过闸门", () => {
+    // 提示词现在强制「## 事件N」，但模型仍可能写成编号分节：
+    // 那种细纲在卡片上看着合格，过去会被保存闸门拒掉 —— 没有对话框，只报「保存请求解析失败」。
+    const parsed = parseOne({
+      ...request,
+      content: [
+        "# 事件细纲 · 第12章 令牌初现",
+        "",
+        "## 1. 院子里的哭声",
+        "- 关键台词：「夜壶里的东西是药。」",
+        "- 神情动作：念念两只小手护住屁股蛋。",
+      ].join("\n"),
+    })
+    expect(parsed.errors).toEqual([])
+    expect(parsed.requests).toHaveLength(1)
+  })
+
+  it("分节写成「## 事件1」时过闸门", () => {
+    const parsed = parseOne({
+      ...request,
+      content: [
+        "# 事件细纲 · 第12章 令牌初现",
+        "",
+        "## 事件1 院子里的哭声",
+        "- 关键台词：「夜壶里的东西是药。」",
+        "- 神情动作：念念两只小手护住屁股蛋。",
+      ].join("\n"),
+    })
+    expect(parsed.errors).toEqual([])
+    expect(parsed.requests).toHaveLength(1)
+  })
+
+  it("只有列表行、没有事件分节的完成报告仍被闸门拒绝", () => {
+    // listLines ≥ 2 只说明「像清单」，不能替代事件分节：摘要里也常有项目符号。
+    const parsed = parseOne({
+      ...request,
+      content: "好的，我已完成本章细纲。\n- 已按 4 个事件排好\n- 已补全章尾钩子",
+    })
+    expect(parsed.requests).toEqual([])
+    expect(parsed.errors.join("\n")).toContain("事件细纲")
+  })
+
+  it("17 节章纲的 §N 分节骗不过事件细纲闸门", () => {
+    // 章纲模板用的是「## §5 核心事件链」这种 §N 分节（不是「## 5.」），
+    // 因此 FIX 3 放宽编号分节后，章纲正文仍然过不了事件细纲闸门。
+    const chapterOutlineBody = [
+      "# 章纲-第046章：第一次冷处理",
+      "",
+      "## §1 基础信息",
+      "- 章号：46",
+      "## §5 核心事件链",
+      "- what: 早会被点名",
+      "  cause: 上级要一个交代",
+      "  action: 把他移出核心组",
+      "  result: 第一次被冷处理",
+      "  use: 铺垫离职线",
+      "## §17 写作检查清单",
+      "- 三行内入戏",
+    ].join("\n")
+    const parsed = parseOne({ ...request, content: chapterOutlineBody })
+    expect(parsed.requests).toEqual([])
+    expect(parsed.errors.join("\n")).toContain("事件细纲")
+  })
+})
+
+describe("excludeEventOutlineSaveRequests", () => {
+  const eventOutlineRequest: OutlineSaveRequest = {
+    targetFolder: "事件细纲",
+    fileName: "事件细纲-第012章.md",
+    fileType: "event-outline",
+    writeMode: "create",
+    referencedSkills: [],
+    sourceIntent: "生成第12章事件细纲",
+    content: "# 事件细纲 · 第12章 令牌初现\n\n## 事件1 院子里的哭声\n- 关键台词：「夜壶里的东西是药。」",
+  }
+  /*
+   * 这份 fixture 的 targetFolder **刻意不叫「事件细纲」**：排除条件键的是 fileType，
+   * 而每个事件 fixture 都带 `targetFolder: "事件细纲"` 时，一个改成键 targetFolder
+   * 的变异实现照样能通过 —— 那条用例就钉不住它声称要钉的键。
+   */
+  const eventOutlineRequestOtherFolder: OutlineSaveRequest = {
+    ...eventOutlineRequest,
+    targetFolder: "大纲",
+    fileName: "事件细纲-第013章.md",
+  }
+  const chapterOutlineRequest: OutlineSaveRequest = {
+    ...eventOutlineRequest,
+    targetFolder: "章纲",
+    fileName: "章纲-第012章.md",
+    fileType: "chapter-outline",
+  }
+  const volumeOutlineRequest: OutlineSaveRequest = {
+    ...eventOutlineRequest,
+    targetFolder: "卷纲",
+    fileName: "卷纲-第二卷.md",
+    fileType: "volume-outline",
+  }
+  const characterRequest: OutlineSaveRequest = {
+    ...eventOutlineRequest,
+    targetFolder: "人物小传",
+    fileName: "角色-楚白.md",
+    fileType: "character",
+  }
+
+  /*
+   * 顺序**必须**用「有多个幸存者」的输入来测：只有一存一删时，
+   * 输出永远只有一个元素，任何排序/反转都能通过，这条断言就没有鉴别力。
+   * 这里混入四处事件细纲（其中一处 targetFolder 不是「事件细纲」，用来钉住
+   * 排除键是 fileType 而不是文件夹名）、三个不同位置的幸存者，
+   * 并对**完整序列**做断言。
+   */
+  it("摘掉全部事件细纲、留下的按原顺序（顺序不变）", () => {
+    const result = excludeEventOutlineSaveRequests([
+      chapterOutlineRequest,
+      eventOutlineRequest,
+      volumeOutlineRequest,
+      eventOutlineRequestOtherFolder,
+      characterRequest,
+      eventOutlineRequest,
+    ])
+    // 三个幸存者的相对顺序必须与输入一致：章纲 → 卷纲 → 人物小传
+    expect(result.requests.map((item) => item.fileType)).toEqual([
+      "chapter-outline",
+      "volume-outline",
+      "character",
+    ])
+    expect(result.droppedEventOutlineCount).toBe(3)
+  })
+
+  it("只看 fileType，不靠 targetFolder 判断（改键实现会被这条抓住）", () => {
+    // 键 targetFolder 的变异实现在这里会留下 1 条（因为它是「大纲」），
+    // 而 fileType 仍是 event-outline —— 下面两条断言同时变红。
+    const result = excludeEventOutlineSaveRequests([
+      { ...eventOutlineRequestOtherFolder, targetFolder: "章纲" },
+      { ...eventOutlineRequest, targetFolder: "事件细纲", fileType: "outline" },
+    ])
+    expect(result.requests.map((item) => item.fileType)).toEqual(["outline"])
+    expect(result.droppedEventOutlineCount).toBe(1)
+  })
+
+  it("全是事件细纲时请求清空、且如实报出摘掉的条数", () => {
+    // 调用方靠这个条数区分「压根没有请求」与「请求全是事件细纲」：
+    // 后者必须直接收工，否则会掉进按正文推断的兜底分类，又判出一次事件细纲。
+    const result = excludeEventOutlineSaveRequests([eventOutlineRequest])
+    expect(result.requests).toEqual([])
+    expect(result.droppedEventOutlineCount).toBe(1)
+  })
+
+  it("没有事件细纲时原样返回、条数为 0", () => {
+    const result = excludeEventOutlineSaveRequests([chapterOutlineRequest, characterRequest])
+    expect(result.requests.map((item) => item.fileType)).toEqual(["chapter-outline", "character"])
+    expect(result.droppedEventOutlineCount).toBe(0)
+  })
+
+  it("空数组返回空数组、条数为 0（不能把 0 条算成「摘掉了但是空的」）", () => {
+    expect(excludeEventOutlineSaveRequests([])).toEqual({
+      requests: [],
+      droppedEventOutlineCount: 0,
+    })
+  })
+})
+
+describe("人物小传：正文由结构化数据反推（模型不再写第二遍）", () => {
+  const profile = {
+    characterProfileData: {
+      name: "楚白",
+      tag: "主角",
+      tagline: "一个把债还完就想收手的掮客",
+      sections: [
+        { kind: "kv", heading: "基本信息", items: [{ label: "职业", text: "废品站的掮客" }, { label: "债务", text: "欠老秦三万七" }] },
+        { kind: "kv", heading: "角色定位", items: [{ label: "故事功能", text: "替读者第一次看到城里的规矩" }] },
+        { kind: "kv", heading: "外在表现", items: [{ label: "惯用动作", text: "说话时数指节" }] },
+        { kind: "kv", heading: "内在分析", items: [{ label: "底线", text: "不把女人和孩子牵进交易" }] },
+        {
+          kind: "table",
+          heading: "语言风格",
+          head: ["对象与场景", "措辞与节奏", "潜台词与回避", "示例对白", "变化条件"],
+          rows: [["对老秦", "短句，先答应再讲条件", "绝口不提母亲", "「三万七我认，别催。」", "被催第三次会涨语气"]],
+        },
+        {
+          kind: "table",
+          heading: "关系网络",
+          head: ["对象与共同经历", "公开关系与真实态度", "利益与依赖", "秘密与冲突", "变化触发与代价"],
+          rows: [["老秦", "债主与旧识", "互相捏着把柄", "他知道老秦的货源", "账清则断"]],
+        },
+      ],
+    },
+  }
+  const request = {
+    targetFolder: "人物小传",
+    fileName: "角色-楚白.md",
+    fileType: "character",
+    writeMode: "create",
+    referencedSkills: [],
+    sourceIntent: "人物小传",
+    content: "",
+  }
+  const parse = (text: string) => parseOutlineSaveRequests(text)
+
+  it("只给 JSON + 空 content，也能存出完整正文", () => {
+    const result = parse(`\`\`\`json\n${JSON.stringify(profile)}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({ outlineSaveRequest: request })}\n\`\`\``)
+    expect(result.errors).toEqual([])
+    expect(result.requests).toHaveLength(1)
+    const content = result.requests[0].content
+    expect(content).toContain("# 楚白（主角）")
+    expect(content).toContain("一个把债还完就想收手的掮客")
+    for (const heading of ["基本信息", "角色定位", "外在表现", "内在分析", "语言风格", "关系网络"]) {
+      expect(content).toContain(`## ${heading}`)
+    }
+    // 字段、表格行列一个都不能丢
+    expect(content).toContain("- 债务：欠老秦三万七")
+    expect(content).toContain("| 对象与场景 | 措辞与节奏 | 潜台词与回避 | 示例对白 | 变化条件 |")
+    expect(content).toContain("「三万七我认，别催。」")
+  })
+
+  it("围栏外只剩一句交代语时，也用数据补正文（不能存成一句话）", () => {
+    const result = parse(`已生成楚白的人物小传。\n\n\`\`\`json\n${JSON.stringify(profile)}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({ outlineSaveRequest: request })}\n\`\`\``)
+    expect(result.requests).toHaveLength(1)
+    expect(result.requests[0].content).toContain("## 基本信息")
+    expect(result.requests[0].content.length).toBeGreaterThan(200)
+  })
+
+  it("模型没听指令真写了完整小传时，保留它自己写的正文", () => {
+    /*
+     * 「完整」现在是硬条件：六个分区标题都在、数量不少于数据产出，
+     * 才认为模型这份正文能替代反推。见 `outlineBodyCoversData`。
+     */
+    const own = [
+      "# 楚白（主角）", "",
+      "## 基本信息", "", "- 职业：真正的掮客", "",
+      "## 角色定位", "", "- 故事功能：模型自己写的定位", "",
+      "## 外在表现", "", "- 惯用动作：说话时数指节", "",
+      "## 内在分析", "", "- 底线：不把女人和孩子牵进交易", "",
+      "## 语言风格", "",
+      "| 对象与场景 | 措辞与节奏 | 潜台词与回避 | 示例对白 | 变化条件 |",
+      "| --- | --- | --- | --- | --- |",
+      "| 对老秦 | 短句，先答应再讲条件 | 绝口不提母亲 | 「三万七我认。」 | 被催第三次会涨语气 |", "",
+      "## 关系网络", "",
+      "| 对象与共同经历 | 公开关系与真实态度 | 利益与依赖 | 秘密与冲突 | 变化触发与代价 |",
+      "| --- | --- | --- | --- | --- |",
+      "| 老秦 | 债主与旧识 | 互相捏着把柄 | 他知道老秦的货源 | 账清则断 |", "",
+      "（这是一段模型自己写的、长度超过两百字的正文，用来确认软件不会拿数据把它覆盖掉。它必须原样保留，因为模型写的内容里可能有结构化数据装不下的细节，覆盖就等于静默丢东西。）".repeat(2),
+    ].join("\n")
+    const result = parse(`${own}\n\n\`\`\`json\n${JSON.stringify(profile)}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({ outlineSaveRequest: { ...request, content: "" } })}\n\`\`\``)
+    expect(result.requests).toHaveLength(1)
+    expect(result.requests[0].content).toBe(own.trim())
+  })
+
+  it("只写了两节时用数据补齐，不让 .md 只剩两节", () => {
+    const partial = ["# 楚白（主角）", "", "## 基本信息", "", "- 职业：真正的掮客", "", "## 关系网络", "", "- 老秦：债主"].join("\n")
+    const result = parse(`${partial}\n\n\`\`\`json\n${JSON.stringify(profile)}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({ outlineSaveRequest: { ...request, content: "" } })}\n\`\`\``)
+    expect(result.requests).toHaveLength(1)
+    const content = result.requests[0].content
+    // 数据里的其余四个分区必须回来
+    for (const heading of ["角色定位", "外在表现", "内在分析", "语言风格"]) {
+      expect(content, `缺分区：${heading}`).toContain(`## ${heading}`)
+    }
+    // 数据里的字段也要在，不能只剩模型那两行
+    expect(content).toContain("废品站的掮客")
+  })
+
+  it("多角色数组按文件名挑本份，绝不张冠李戴", () => {
+    const second = {
+      characterProfileData: {
+        name: "老秦",
+        tag: "债主",
+        sections: [{ kind: "kv", heading: "基本信息", items: [{ label: "职业", text: "废品站老板" }] }],
+      },
+    }
+    const text = `\`\`\`json\n${JSON.stringify({ characterProfiles: [profile.characterProfileData, second.characterProfileData] })}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({ outlineSaveRequest: { ...request, fileName: "角色-老秦.md" } })}\n\`\`\``
+    const result = parse(text)
+    expect(result.requests).toHaveLength(1)
+    expect(result.requests[0].content).toContain("# 老秦（债主）")
+    expect(result.requests[0].content).not.toContain("三万七")
+  })
+})
+
+describe("七类设定：正文同样由结构化数据反推（模型不再写第二遍）", () => {
+  const parse = (text: string) => parseOutlineSaveRequests(text)
+  const request = {
+    writeMode: "create",
+    referencedSkills: [],
+    content: "",
+  }
+  const faction = {
+    factionProfileData: {
+      name: "青云商会",
+      tag: "商户",
+      tagline: "北境唯一敢走雪线的补给商",
+      sections: [
+        { kind: "kv", heading: "基本信息", items: [{ label: "据点", text: "霜河渡口" }] },
+        {
+          kind: "table",
+          heading: "组织架构",
+          head: ["层级或部门", "职责与权限", "负责人及制衡", "决策与执行", "继任和问责"],
+          rows: [["外事组", "对接军营采购", "柳三", "掌柜点头才签", "暂无继任者"]],
+        },
+      ],
+    },
+  }
+
+  it("势力档案只给 JSON，也能存出含表格的完整正文", () => {
+    const result = parse(
+      `\`\`\`json\n${JSON.stringify(faction)}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({
+        outlineSaveRequest: {
+          targetFolder: "组织势力设定",
+          fileName: "势力-青云商会.md",
+          fileType: "organization",
+          sourceIntent: "组织势力设定",
+          ...request,
+        },
+      })}\n\`\`\``,
+    )
+    expect(result.errors).toEqual([])
+    expect(result.requests).toHaveLength(1)
+    const content = result.requests[0].content
+    expect(content).toContain("# 青云商会（商户）")
+    expect(content).toContain("北境唯一敢走雪线的补给商")
+    expect(content).toContain("## 基本信息")
+    expect(content).toContain("- 据点：霜河渡口")
+    expect(content).toContain("| 层级或部门 | 职责与权限 | 负责人及制衡 | 决策与执行 | 继任和问责 |")
+    expect(content).toContain("掌柜点头才签")
+  })
+
+  it("fileType=setting 的地理/地点档案靠 JSON 顶层 key 也能反推", () => {
+    const location = {
+      locationProfileData: {
+        name: "霜河渡口",
+        tag: "关卡",
+        sections: [{ kind: "kv", heading: "地点定位", items: [{ label: "位置", text: "霜河北岸，距城三日脚程" }] }],
+      },
+    }
+    // 文件名与目录都不含「地点」二字：只能靠数据本身判断，否则正文会空着、保存失败
+    const result = parse(
+      `\`\`\`json\n${JSON.stringify(location)}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({
+        outlineSaveRequest: {
+          targetFolder: "设定",
+          fileName: "霜河渡口.md",
+          fileType: "setting",
+          sourceIntent: "",
+          ...request,
+        },
+      })}\n\`\`\``,
+    )
+    expect(result.errors).toEqual([])
+    expect(result.requests[0].content).toContain("## 地点定位")
+    expect(result.requests[0].content).toContain("- 位置：霜河北岸，距城三日脚程")
+  })
+
+  it("多份档案按文件名挑本份，绝不张冠李戴", () => {
+    const bandit = {
+      name: "黑水帮",
+      tag: "匪帮",
+      sections: [{ kind: "kv", heading: "基本信息", items: [{ label: "据点", text: "黑水湾" }] }],
+    }
+    const result = parse(
+      `\`\`\`json\n${JSON.stringify({ factionProfiles: [faction.factionProfileData, bandit] })}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({
+        outlineSaveRequest: {
+          targetFolder: "组织势力设定",
+          fileName: "势力-黑水帮.md",
+          fileType: "organization",
+          sourceIntent: "组织势力设定",
+          ...request,
+        },
+      })}\n\`\`\``,
+    )
+    expect(result.requests).toHaveLength(1)
+    expect(result.requests[0].content).toContain("# 黑水帮（匪帮）")
+    expect(result.requests[0].content).not.toContain("霜河渡口")
+  })
+
+  it("围栏外只剩一句交代语时，也用数据补正文", () => {
+    const result = parse(
+      `已生成青云商会的势力档案。\n\n\`\`\`json\n${JSON.stringify(faction)}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({
+        outlineSaveRequest: {
+          targetFolder: "组织势力设定",
+          fileName: "势力-青云商会.md",
+          fileType: "organization",
+          sourceIntent: "组织势力设定",
+          ...request,
+        },
+      })}\n\`\`\``,
+    )
+    expect(result.requests[0].content).toContain("## 组织架构")
+    expect(result.requests[0].content.length).toBeGreaterThan(120)
+  })
+
+  it("模型真写了完整正文时保留它自己写的", () => {
+    const own = [
+      "# 青云商会（商户）",
+      "",
+      "## 基本信息",
+      "",
+      "- 据点：霜河渡口",
+      "- 商队：三支，冬季只走一支",
+      "",
+      "## 组织架构",
+      "",
+      "掌柜之下设外事、账房、走货三组，外事组直接对接军营采购。",
+    ].join("\n")
+    const result = parse(
+      `${own}\n\n\`\`\`json\n${JSON.stringify(faction)}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({
+        outlineSaveRequest: {
+          targetFolder: "组织势力设定",
+          fileName: "势力-青云商会.md",
+          fileType: "organization",
+          sourceIntent: "组织势力设定",
+          ...request,
+        },
+      })}\n\`\`\``,
+    )
+    expect(result.requests[0].content).toBe(own.trim())
+  })
+})
+
+describe("章纲：单条 chapterOutlineData 也能落盘（不再被结构闸门拒收）", () => {
+  const parse = (text: string) => parseOutlineSaveRequests(text)
+  const data = {
+    chapterOutlineData: {
+      title: "故事一 雨夜无我 · 章纲",
+      story: { index: 1, name: "雨夜无我", range: "第 1 章", beats: "平" },
+      chapters: [{
+        n: 1,
+        title: "雨夜里的货箱",
+        stage: "起①",
+        beat: "平",
+        info: { goal: "让他第一次发现货箱不对劲" },
+        events: [{ what: "他翻到箱底的油布", cause: "欠债不得不验货", action: "用指甲挑开缝线", result: "确认不是废铁", use: "推向更大的事" }],
+      }],
+      words: 2500,
+    },
+  }
+  const request = {
+    targetFolder: "大纲",
+    fileName: "章纲-故事一.md",
+    fileType: "chapter-outline",
+    writeMode: "create",
+    referencedSkills: [],
+    sourceIntent: "章纲",
+    content: "",
+  }
+
+  it("只给 JSON + 空 content：正文由数据反推，且能通过「内容像章纲」闸门", () => {
+    /*
+     * 回归点：分批产线（chapterOutlineBatch）在合并时显式调反推，但**单条**
+     * chapterOutlineData 走不到那里。此前它只能靠 fillContentFromText 捞到
+     * 围栏外那句「已生成」，随即被 hasChapterOutlineStructure 判「内容不像章纲」
+     * 整条拒收 —— 用户看到「保存请求解析失败」，而数据其实完好。
+     */
+    const result = parse(`已生成。\n\n\`\`\`json\n${JSON.stringify(data)}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({ outlineSaveRequest: request })}\n\`\`\``)
+    expect(result.errors).toEqual([])
+    expect(result.requests).toHaveLength(1)
+    const content = result.requests[0].content
+    expect(content).toContain("### §5 核心事件链")
+    expect(content).toContain("用指甲挑开缝线")
+    // 反推的正文必须能自证是章纲（闸门认的就是这几个词）
+    expect(/本章目标|核心事件|场景顺序|章尾钩子|章首钩子/.test(content)).toBe(true)
+    // 不许夹带 JSON
+    expect(content).not.toMatch(/[{}]/)
+    expect(content).not.toContain("chapterOutlineData")
+  })
+
+  it("模型真写了完整章纲时不覆盖它写的内容", () => {
+    const own = [
+      "# 故事一 章纲",
+      "",
+      "## 第 1 章 雨夜里的货箱",
+      "",
+      "### §1 基础信息",
+      "",
+      "- **本章目标：** 模型自己写的目标",
+      "",
+      "### §5 核心事件链",
+      "",
+      "| 事件 | 起因 | 行动 | 结果 | 作用 |",
+      "| --- | --- | --- | --- | --- |",
+      "| 模型写的事件 | 起因 | 行动 | 结果 | 作用 |",
+    ].join("\n")
+    const result = parse(`${own}\n\n\`\`\`json\n${JSON.stringify(data)}\n\`\`\`\n\n\`\`\`json\n${JSON.stringify({ outlineSaveRequest: request })}\n\`\`\``)
+    expect(result.errors).toEqual([])
+    expect(result.requests[0].content).toBe(own.trim())
   })
 })

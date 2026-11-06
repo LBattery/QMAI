@@ -20,6 +20,10 @@ import type {
 } from "@/lib/novel/story-simulation/types";
 import type { SerializedSimulationSnapshot } from "@/lib/novel/story-simulation/simulation-serializer";
 import type { SavedInterview } from "@/lib/novel/story-simulation/interview-store";
+import type {
+  ScenarioSession,
+  ScenarioStreamingState,
+} from "@/lib/novel/story-simulation/scenario-types";
 
 export interface SavedSimulationResult {
   id: string;
@@ -36,7 +40,7 @@ export interface SavedSimulationResult {
   createdAt: string;
 }
 
-export type SimulationPhase =
+type SimulationPhase =
   | "idle"
   | "configuring"
   | "extracting"
@@ -46,7 +50,12 @@ export type SimulationPhase =
   | "report-generating"
   | "report-viewing"
   | "draft-generating"
-  | "draft-viewing";
+  | "draft-viewing"
+  | "scenario-setup"
+  | "scenario-running";
+
+/** 舞台情景流式生成中的单条发言状态（用于房间视图实时展示）。 */
+export type { ScenarioStreamingState };
 
 export interface SimulationPreset {
   intent: string;
@@ -54,7 +63,7 @@ export interface SimulationPreset {
   hasFramework: boolean;
 }
 
-export interface StorySimulationState {
+interface StorySimulationState {
   phase: SimulationPhase;
   mode: SimulationMode;
   userIdea: string;
@@ -66,8 +75,6 @@ export interface StorySimulationState {
   currentFramework: StoryFramework | null;
   currentReport: SimulationReport | null;
   currentDraft: StoryDraft | null;
-  frameworks: StoryFramework[];
-  selectedFrameworkId: string | null;
   binding: FrameworkBinding | null;
   error: string | null;
   /** 提示/成功消息 */
@@ -82,8 +89,6 @@ export interface StorySimulationState {
   activeChatAgent: { id: string; name: string } | null;
   /** 采访对话消息 */
   agentChatMessages: AgentChatMessage[];
-  /** 列表刷新计数（用于触发 framework-list 重新加载） */
-  listRefreshKey: number;
   /** 当前框架下已保存的推演结果 */
   savedResults: SavedSimulationResult[];
   /** 当前选中查看的历史结果ID */
@@ -104,6 +109,8 @@ export interface StorySimulationState {
   usedEventIndices: Set<number>;
   /** 是否启用导演 Agent */
   directorEnabled: boolean;
+  /** 本轮推演累积的导演评估（7 维评分），保存分支时写入分支 */
+  directorEvaluations: DirectorEvaluation[];
   /** 当前所有传闻 */
   currentRumors: RumorEvent[];
   /** 当前所有角色快照 */
@@ -137,6 +144,21 @@ export interface StorySimulationState {
   isPlaying: boolean;
   /** 播放速度 */
   playbackSpeed: number;
+  /** 舞台情景：当前会话 */
+  scenarioSession: ScenarioSession | null;
+  /** 舞台情景：正在流式生成的发言 */
+  scenarioStreaming: ScenarioStreamingState | null;
+  /** 舞台情景：进度（已完成 / 预估总数） */
+  scenarioProgress: { done: number; total: number } | null;
+  /** 舞台情景：是否正在提取角色 */
+  scenarioExtracting: boolean;
+
+  setScenarioSession: (session: ScenarioSession | null) => void;
+  setScenarioStreaming: (streaming: ScenarioStreamingState | null) => void;
+  setScenarioProgress: (
+    progress: { done: number; total: number } | null,
+  ) => void;
+  setScenarioExtracting: (extracting: boolean) => void;
 
   setPhase: (phase: SimulationPhase) => void;
   setMode: (mode: SimulationMode) => void;
@@ -148,8 +170,6 @@ export interface StorySimulationState {
   setCurrentFramework: (framework: StoryFramework | null) => void;
   setCurrentReport: (report: SimulationReport | null) => void;
   setCurrentDraft: (draft: StoryDraft | null) => void;
-  setFrameworks: (frameworks: StoryFramework[]) => void;
-  setSelectedFrameworkId: (id: string | null) => void;
   setBinding: (binding: FrameworkBinding | null) => void;
   setError: (error: string | null) => void;
   setInfoMessage: (infoMessage: string | null) => void;
@@ -161,7 +181,6 @@ export interface StorySimulationState {
   setActiveChatAgent: (agent: { id: string; name: string } | null) => void;
   addAgentChatMessage: (message: AgentChatMessage) => void;
   clearAgentChat: () => void;
-  bumpListRefresh: () => void;
   setSavedResults: (results: SavedSimulationResult[]) => void;
   setSelectedResultId: (id: string | null) => void;
   setShowInterviewHistory: (show: boolean) => void;
@@ -175,6 +194,10 @@ export interface StorySimulationState {
   setDynamicEventPool: (pool: string[] | StagedEventPool) => void;
   /** 设置是否启用导演 Agent */
   setDirectorEnabled: (enabled: boolean) => void;
+  /** 覆盖本轮推演的导演评估集合（推演开始前清空） */
+  setDirectorEvaluations: (evaluations: DirectorEvaluation[]) => void;
+  /** 追加一条导演评估 */
+  addDirectorEvaluation: (evaluation: DirectorEvaluation) => void;
   /** 设置当前传闻列表 */
   setCurrentRumors: (rumors: RumorEvent[]) => void;
   /** 设置当前角色快照 */
@@ -229,8 +252,6 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
   currentFramework: null,
   currentReport: null,
   currentDraft: null,
-  frameworks: [],
-  selectedFrameworkId: null,
   binding: null,
   error: null,
   infoMessage: null,
@@ -240,7 +261,6 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
   debugTraces: [],
   activeChatAgent: null,
   agentChatMessages: [],
-  listRefreshKey: 0,
   savedResults: [],
   selectedResultId: null,
   showInterviewHistory: false,
@@ -251,6 +271,7 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
   dynamicEventPool: [],
   usedEventIndices: new Set(),
   directorEnabled: false,
+  directorEvaluations: [],
   currentRumors: [],
   currentAgents: new Map(),
   branches: [],
@@ -262,6 +283,15 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
   historyIndex: -1,
   isPlaying: false,
   playbackSpeed: 1,
+  scenarioSession: null,
+  scenarioStreaming: null,
+  scenarioProgress: null,
+  scenarioExtracting: false,
+
+  setScenarioSession: (scenarioSession) => set({ scenarioSession }),
+  setScenarioStreaming: (scenarioStreaming) => set({ scenarioStreaming }),
+  setScenarioProgress: (scenarioProgress) => set({ scenarioProgress }),
+  setScenarioExtracting: (scenarioExtracting) => set({ scenarioExtracting }),
 
   setPhase: (phase) => set({ phase }),
   setMode: (mode) => set({ mode }),
@@ -273,8 +303,6 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
   setCurrentFramework: (currentFramework) => set({ currentFramework }),
   setCurrentReport: (currentReport) => set({ currentReport }),
   setCurrentDraft: (currentDraft) => set({ currentDraft }),
-  setFrameworks: (frameworks) => set({ frameworks }),
-  setSelectedFrameworkId: (selectedFrameworkId) => set({ selectedFrameworkId }),
   setBinding: (binding) => set({ binding }),
   setError: (error) => set({ error }),
   setInfoMessage: (infoMessage: string | null) => set({ infoMessage }),
@@ -291,8 +319,6 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
       agentChatMessages: [...state.agentChatMessages, message],
     })),
   clearAgentChat: () => set({ agentChatMessages: [], activeChatAgent: null }),
-  bumpListRefresh: () =>
-    set((state) => ({ listRefreshKey: state.listRefreshKey + 1 })),
   setSavedResults: (savedResults) => set({ savedResults }),
   setSelectedResultId: (selectedResultId) => set({ selectedResultId }),
   setShowInterviewHistory: (showInterviewHistory) =>
@@ -305,6 +331,11 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
   setAgentChatMessages: (agentChatMessages) => set({ agentChatMessages }),
   setDynamicEventPool: (dynamicEventPool) => set({ dynamicEventPool }),
   setDirectorEnabled: (directorEnabled) => set({ directorEnabled }),
+  setDirectorEvaluations: (directorEvaluations) => set({ directorEvaluations }),
+  addDirectorEvaluation: (evaluation) =>
+    set((state) => ({
+      directorEvaluations: [...state.directorEvaluations, evaluation],
+    })),
   setCurrentRumors: (currentRumors) => set({ currentRumors }),
   setCurrentAgents: (currentAgents) => set({ currentAgents }),
 
@@ -335,7 +366,7 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
       );
 
       const { overallScore, details } = calculateBranchScore(
-        [],
+        state.directorEvaluations,
         state.timelineEvents.length,
         activeAgentCount,
         totalAgentCount,
@@ -351,7 +382,7 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
         timelineEvents: [...state.timelineEvents],
         rumors: [...state.currentRumors],
         finalAgentSnapshots,
-        directorEvaluations: [],
+        directorEvaluations: [...state.directorEvaluations],
         overallScore,
         scoreDetails: details,
       };
@@ -558,6 +589,7 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
       dynamicEventPool: [],
       usedEventIndices: new Set(),
       directorEnabled: false,
+      directorEvaluations: [],
       currentRumors: [],
       currentAgents: new Map(),
       branches: [],
@@ -568,6 +600,10 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
       historyIndex: -1,
       isPlaying: false,
       playbackSpeed: 1,
+      scenarioSession: null,
+      scenarioStreaming: null,
+      scenarioProgress: null,
+      scenarioExtracting: false,
     }),
   initWithPreset: (preset) =>
     set((state) => {
@@ -582,6 +618,8 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
           preset.hasFramework && state.savedResults.length > 0
             ? "report-viewing"
             : "configuring";
+      } else if (preset.intent === "scenario_simulate") {
+        phase = "scenario-setup";
       }
 
       return {
@@ -591,7 +629,7 @@ export const useStorySimulationStore = create<StorySimulationState>((set) => ({
     }),
 }));
 
-export function calculateBranchScore(
+function calculateBranchScore(
   directorEvaluations: DirectorEvaluation[],
   eventCount: number,
   activeAgentCount: number,

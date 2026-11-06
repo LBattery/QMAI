@@ -1,4 +1,4 @@
-export interface ChangelogEntry {
+interface ChangelogEntry {
   version: string;
   date: string;
   highlights: {
@@ -6,6 +6,688 @@ export interface ChangelogEntry {
     zh: string[];
   };
 }
+
+const FOUR_POINT_THREE_SIX_CHANGELOG: ChangelogEntry = {
+  version: "4.3.6",
+  date: "2026-10-21",
+  highlights: {
+    en: [
+      "New interactive onboarding: a 46-step walkthrough that opens Settings and points at each item where it actually lives. Start it any time from Settings → Writing Settings → Play, skip a step or cancel outright, and it still works before any API key is configured because it uses local sample data.",
+      "Writing Settings is now grouped by purpose (Writing context / Chapter generation / In-app hints / Community summary / Performance and concurrency / Revision feedback), each group collapsible, and the redundant \"Other writing settings\" hint is gone.",
+      "Adding a model provider now lists every provider first and opens the configuration only after you pick one, instead of jumping straight into Claude's form.",
+      "Outline generation (volume / chapter / eight setting types / event outlines) now returns structured data only, with Markdown and HTML rendered from it: fewer tokens, plus fixes for split fields, dropped characters, truncated bodies overwriting existing data, duplicated chapter numbers, and Markdown drifting apart from HTML.",
+      "The Extract memory and View memory icons now sit next to the HTML / MD switch in outline documents, so they are visible in HTML mode too.",
+      "Fixed retrieval and rerank model tests that always failed: a bare base URL is completed to the full endpoint and retried, the server's original error is shown with a suggested next step, and the model picker is highlighted.",
+      "Outline HTML documents are now editable in place: hit Edit next to the HTML / MD switch and headings, body text and table cells become editable, then save writes back to the companion .html file (Markdown and structured data are left untouched).",
+      "The shelf no longer pops a black title tooltip on hover; the whole card lifts and the cover hops once instead (keyboard focus lifts it too, and motion is disabled when reduced motion is requested).",
+      "The LLM, rerank and embedding tabs in Settings now link to a model-setup tutorial that opens the Feishu wiki in your browser.",
+      "Plan mode and intent analysis get the same resilience: a protocol missing steps, files or options is topped up once first; a plan that still falls short is downgraded to clarify questions for you to answer instead of discarding the round, and a broken intent analysis keeps the reply visible instead of blanking the message.",
+      "Co-creation rounds no longer get discarded over one imperfect field: when the protocol fails the completeness check the app retries once to fill in the missing piece (near-empty direction summary, missing option, dangling preference), and if it still falls short it shows the cards with the content it has plus a short note instead of losing the whole discussion. The reply text is always kept, and direction summaries are no longer rejected for being short — only for being essentially empty.",
+      "Removed the \"reuse main model\" option from reranking: reranking with the chat model cost an extra full request on every retrieval while the ordering barely changed. Reranking now needs its own model, the page warns when none is configured, and old configs that relied on the main model are switched back to disabled.",
+    ],
+    zh: [
+      "新增新手引导：46 步分阶段讲解，需要时会自动打开设置页、指着每一项告诉你在哪里怎么设；入口在「设置 → 写作设置 → 播放」，随时可以重看，也能跳过某一步或直接取消。没配 API Key 时用本地示例数据，同样能走完整条流程",
+      "写作设置按功能重新分组（写作上下文 / 章节生成 / 界面提示 / 社区摘要 / 性能与并发 / 修改反馈窗口），每组可折叠；侧栏「写作设置」下多余的「其他写作设置」说明已删除",
+      "模型设置点「添加提供方」时先列出所有可选提供方，选中后才展开对应的配置页，不再直接跳进 Claude 的填写页",
+      "大纲生成（卷纲 / 章纲 / 八类设定 / 事件细纲）改为只输出结构化数据，Markdown 与 HTML 由程序反推渲染：更省 token，并修掉字段被撕裂、丢字符、残缺正文顶掉已有数据、章纲标题重复章号、Markdown 与 HTML 分项分裂等问题",
+      "大纲文档的「提取记忆」「查看记忆」图标移到 HTML / MD 标识旁，HTML 模式下也能直接看到",
+      "修复向量与重排模型测试总是失败的问题：只填基础地址会自动补全为完整接口并重试，失败时给出服务端原始报错和下一步建议，模型下拉框也做了高亮",
+      "大纲的 HTML 文档可以直接改：点 HTML / MD 标识旁的「编辑」，标题、正文和表格单元格都会变成可改状态，保存后写回同名 .html（MD 与结构化数据不动）",
+      "书架不再在悬停时弹黑色书名浮层，改为整张卡片弹起、封面再跳一下；键盘聚焦同样会抬起，系统开启「减少动态效果」时自动取消",
+      "设置里的大语言模型 / 重排模型 / 向量模型三个页签新增「模型设置教程」链接，点击用系统浏览器打开飞书文档",
+      "计划模式与意图分析也接入同样的容错：协议缺步骤/缺文件清单/追问选项不足时先自动补齐一轮，补齐仍不合格的计划会降级成追问交给作者拍板，不再整轮作废；意图分析格式无效时先转写一轮，仍失败也保留回复正文、不再清空气泡",
+      "共创协议不再因为一项不达标整轮作废：方向介绍不再按每项字数硬卡（只拦几乎空着的），校验没过时会先自动补齐一轮（介绍几乎是空的、分歧可选项不足、AI 倾向悬空等）；补齐仍不达标就按现有内容照常出卡片并给一句说明；连协议都拿不到时也保留回复正文，不再把前面几轮问答白白丢掉",
+      "取消重排模型的「复用主模型」：拿聊天主模型做重排，每次检索都多一次完整请求，排序却基本不变；现在重排只走专用重排模型，没填模型时页面会明确提示「重排不会生效」，老配置自动改回未启用",
+    ],
+  },
+};
+
+const FOUR_POINT_THREE_FIVE_CHANGELOG: ChangelogEntry = {
+  version: "4.3.5",
+  date: "2026-10-21",
+  highlights: {
+    en: [
+      "Web search adds an Antigravity CLI source that uses your locally signed-in agy for Google Search; you can fetch and pick its model (default: the cheaper gemini-3.8-flash-low), and the search timeout is raised to 180 seconds.",
+      "Baizhi Cloud search now checks the MCP protocol handshake first, so misconfiguration is reported earlier.",
+      "Fixed outline/detailed-outline content disappearing after paste: it now autosaves after 1 second idle and saves before switching away or extracting memory.",
+      "Searches without links no longer show \"0 sources\" in the writing timeline, and summary-only results are no longer shown as empty.",
+      "Simplified web search descriptions in Settings with better narrow-screen layout.",
+    ],
+    zh: [
+      "网页搜索新增「反重力 CLI」来源：借用本机已登录的 Antigravity（agy）做谷歌搜索；搜索时可拉取模型列表自选模型，默认用更便宜的 gemini-3.8-flash-low，超时放宽到 180 秒，避免搜索被中途打断",
+      "百智云搜索连接前会先检查 MCP 协议是否正常，配置有误时能更早给出提示",
+      "修复大纲/细纲粘贴内容后会自行消失的问题：现在停下 1 秒就自动保存，切走或提取记忆前也会先保存",
+      "写作时间线里没有链接的搜索不再显示「0 条来源」，有摘要的搜索结果也不会再被误显示为空",
+      "设置里的网页搜索说明更精简，窄屏下更好读",
+    ],
+  },
+};
+
+const FOUR_POINT_THREE_FOUR_CHANGELOG: ChangelogEntry = {
+  version: "4.3.4",
+  date: "2026-10-20",
+  highlights: {
+    en: [
+      "Web search adds two optional backends: Gemini (Google Search; writing prioritizes Google's summary, and the timeline shows only queries and the summary) and Baizhi Cloud MCP; existing search providers are unchanged.",
+      "New external Agent (MCP) service: local agents can call QMAI writing over MCP, including bookshelf commands, background writing, live progress, and stop.",
+      "Added Antigravity CLI support.",
+      "Fixed pasted body text landing in the title after creating a new chapter outline.",
+      "Favorited AI skills are pinned to the top of the reference picker, and skills can now be searched by their Chinese names (e.g. 战斗描写).",
+      "Deleting an outline no longer rewrites derived memory, plus a macOS transparent-window fix.",
+    ],
+    zh: [
+      "网页搜索新增两个可选后端：Gemini（谷歌搜索，写作优先用谷歌摘要，时间线只显示搜索词和摘要）和百智云 MCP，原有搜索来源不受影响",
+      "新增外部 Agent（MCP）服务：本机 Agent 可通过 MCP 调用青幕写作，支持书架操作、后台写作、实时进度和停止生成",
+      "接入 Antigravity CLI",
+      "修复新建一章大纲后，粘贴正文会跑到标题栏的问题",
+      "AI 技能库收藏的技能在选择引用时置顶，并可按中文名搜索（如「战斗描写」）",
+      "删除大纲不再重写派生记忆；修复 macOS 透明窗口问题",
+    ],
+  },
+};
+
+const FOUR_POINT_THREE_THREE_CHANGELOG: ChangelogEntry = {
+  version: "4.3.3",
+  date: "2026-10-13",
+  highlights: {
+    en: [
+      "Fixed an issue that prevented the app from launching on some computers.",
+    ],
+    zh: [
+      "修复了部分电脑无法启动的问题",
+    ],
+  },
+};
+
+const FOUR_POINT_THREE_TWO_CHANGELOG: ChangelogEntry = {
+  version: "4.3.2",
+  date: "2026-10-13",
+  highlights: {
+    en: [
+      "Fixed the display error in chapter event-outline generation, and redesigned the story-simulation and stage-scenario features.",
+    ],
+    zh: [
+      "修复了关于章节细纲生成显示错误，以及重新设计剧情推演与舞台情景功能",
+    ],
+  },
+};
+
+const FOUR_POINT_THREE_ONE_CHANGELOG: ChangelogEntry = {
+  version: "4.3.1",
+  date: "2026-10-12",
+  highlights: {
+    en: [
+      "[Write Your Own Style] The Style tab is renamed Style Skill and gains a New Style button. You can now author a style yourself — name, source work and the style body — instead of only importing one from a dissected book. The body is stored alongside the rest of your style data and written to disk, so what you write survives a restart.",
+      "[Style Evolution] A new Style Evolution switch reads chapters you have already written, measures how you actually write, and distills the result into a style skill. Because this costs tokens, the panel says so before you turn it on. The extracted style never replaces the one you are using on its own: it waits until you enable it yourself.",
+      "[Character Skills: You Get Told] Ingesting a chapter could learn new character skills without ever saying so, and the only way to notice was to open the library and count. A global notice now appears when learning finishes, closes itself after five seconds, and offers a shortcut straight to the Character Skills tab if you want to review what was filed.",
+      "[One Less Tab] The Character Soul tab inside the skill library is gone. Souls were already reachable from their own entry in the main sidebar, so the tab was a second door to the same room showing fewer things.",
+      "[Style Menu Trimmed To Two Rows] The style dropdown in the composer had grown to five blocks. It is now two: a read-only line stating the current style, and one action that opens the style library. Picking a style is one job and now has one obvious place. Note the consequence: there is no longer a per-message switch to write just this one piece without a style — enabling and disabling is a per-project setting made in the style library. If you want a different style for a single generation, reference it with @.",
+      "[Style Library Can Reach The Dissection Room] The style library gains a shortcut to the book-dissection library, which is where styles actually come from. A library whose only obvious button was delete tends to stay empty; the empty state now points here too.",
+      "[Book Shelf Cover Sizes] Covers were being sized by a fixed column count that changed at a window breakpoint, so widening the window past that point made every cover smaller — a 1206px window showed 95px covers where 1090px showed 200px. Each size now declares the width it wants and the column count follows from the space available. Cards also line up along their tops rather than drifting down by the height of the longest title. The title under each cover is no longer bold, and long titles wrap onto as many lines as they need instead of being clipped after two.",
+      "[Book Name No Longer Vanishes] The book name in the top bar was hidden outright below 1179px, so it simply disappeared at a perfectly ordinary window width and looked like a bug. It now narrows in stages across four breakpoints and truncates with an ellipsis when it runs out of room — visible at every width, just shorter.",
+    ],
+    zh: [
+      "【文风可以自己写】「文风」改名为「文风 skill」，并新增「+ 新建文风」。你现在可以自己写一条文风 —— 名称、来源作品、文风内容 —— 不必非得先从某本书里拆出来。内容与其余文风数据存在一起并落盘，重启之后还在。",
+      "【文风自进化】新增「文风自进化」开关：它会读取你已经写过的章节，度量你实际的写法，把结果沉淀成一条文风 skill。因为这一步要消耗 token，面板在你打开之前就先把这件事说明白。提取出来的文风不会自动顶替你正在用的那条 —— 它等你手动启用。",
+      "【人物 Skill 学会了会告诉你】此前摄取一章时可能已经学到了新的人物 skill，却什么也不说，想知道只能自己去技能库里数。现在学习结束会弹一条全局提示，5 秒后自动关闭；想看学了什么，点「现在勾选」直接跳到技能库的「人物 Skill」页。",
+      "【技能库少一个 tab】技能库里的「角色灵魂」tab 去掉了。角色灵魂在左侧主导航本来就有自己的入口，这个 tab 是通往同一个房间的第二扇门，而且里面的东西还更少。",
+      "【文风下拉收成两行】输入框里的文风下拉原先堆到 5 块，现在只剩两行：一行只读地说明当前文风，一行是「打开文风库」这个唯一动作。选文风这件事现在只有一个去处。需要知道的一点连带变化：原来「本次生成不用文风」的开关随之取消，启用/停用改为按项目在文风库里设置；想在某一次生成里临时换文风，就在输入框用 @ 引用一条。",
+      "【文风库能走到拆书库了】文风库新增去拆书库的入口 —— 文风本来就是从那里来的。一个只有删除按钮的库通常只会一直空着，所以空状态也把这个入口补上了。",
+      "【书架封面尺寸】封面尺寸原先由固定列数决定，而列数在窗口断点处会跳，于是把窗口拉宽过某个点之后封面反而变小 —— 1206px 窗口下封面只有 95px，而 1090px 下是 200px。现在每个尺寸只声明自己要多宽，列数由可用空间推导。同一行卡片也改成顶部对齐，不再被最长书名压着往下挪（实测错位 22px）。封面下的书名去掉加粗，长标题按需要逐行排完，不再被截成两行。",
+      "【顶栏书名不再消失】顶栏书名在窗口窄于 1179px 时被整段隐藏 —— 一个完全正常的窗口宽度下它就凭空不见了，看着像坏了。现在改成四个断点分档收窄，空间不够时用省略号截断：每个宽度都看得到，只是变短。",
+    ],
+  },
+};
+
+const FOUR_POINT_TWO_ZERO_CHANGELOG: ChangelogEntry = {
+  version: "4.2.0",
+  date: "2026-10-09",
+  highlights: {
+    en: [
+      "[Nine Chinese Writing Fonts Bundled] The font list previously offered only what was already installed on the system, mixed with Western faces such as Arial. Nine commercially verified Chinese writing fonts now ship with the app — Source Han Serif and Source Han Sans (each including Bold), LXGW WenKai, WenJin Mincho, ChillKai, HarmonyOS Sans SC, Smiley Sans, Zhuque Fangsong and Sarasa Gothic SC — and are installed for the current user, so nothing is missing even if the app has never been launched. The interface font list now offers Chinese faces only.",
+      "[Body and Interface Fonts Separated] Changing the body font inside a chapter used to restyle the entire interface. The two are now fully independent: adjusting one never affects the other.",
+      "[Body Size and Typography Adjustable Independently] Body text size moves to absolute pixels, adjustable from 12px to 32px (presets: Small 15 / Default 18 / Large 21 / Extra large 24), and is no longer tied to the interface scale. Four more parameters arrive — line height 1.2–2.6, letter spacing −1 to 6, side margins 0–160 and bottom safe distance 0–240 — so the last line no longer sits against the window edge.",
+      "[Font Settings Popover in the Writing View] Both the chapter and the outline toolbar gain a font-settings popover (Type icon, distinct from the wand used by one-click formatting), and the six typography parameters move here from the settings page. A Default button restores everything at once.",
+      "[Writing Word-Count Status Bar] A permanent status bar counts hand-written and AI-generated text separately, and deleting generated content deducts it, so the number no longer overstates the work.",
+      "[Fan Fiction] A new fan-fiction genre arrives together with a source-canon module: the canon is stored at a fixed path inside the project and injected whole by that path rather than through fuzzy search, so retrieval cannot miss it. Four modes are provided — canon, AU, OOC and CP — plus a free-form one-line description.",
+      "[Memory Snapshots: Four-Way Item Classification] Items are no longer an empty array: each is classified into one of four kinds with a stated rule for what counts as meaningful, and the result is actually fed into the writing prompt.",
+      "[Writing View Details] Autosave now runs every three minutes, overlong session titles are shortened automatically, the outline input area is slimmer, and a bug that made the body text un-scrollable is fixed.",
+      "[Outline and Chapter Fixes] Chapter memory dots now display correctly, a restart-after-stop entry is added, desktop files can be dragged straight into the list to import, imported setting collections no longer lose their body text, and a divider inside body text is no longer mistaken for frontmatter and swallowed together with the whole section.",
+      "[Co-Writing Outline Fixes] Content produced for a volume outline is no longer silently discarded — previously a failed validation made the whole section vanish with no message at all. Problems are now shown beneath the generated result, and the discussion round no longer carries the generation contract.",
+      "[Profile Documents] The section-navigation rail on the left of character, faction, foreshadowing and geography documents has been removed and the layout returns to a single column, giving long text a wider reading area.",
+      "[Install and Uninstall Fixes] Fixed the installer failing to build at all (a wrong function variant in the NSIS uninstall section), uninstall cleanup silently failing under Chinese user names, and bundled fonts not taking effect in two separate paths.",
+      "[Settings No Longer Lost] Fixed changes not being written to disk when the settings or font-settings popover was closed immediately after adjusting.",
+    ],
+    zh: [
+      "【随包中文字体：9 款写作字体装完即有】此前字体列表只能用系统里已装的字体，还混着 Arial 等西文；现在随软件附带 9 款已核实可商用的中文字体（思源宋体、思源黑体，各含 Bold；霞鹜文楷、文津宋体、寒蝉正楷体、鸿蒙黑体、得意黑、朱雀仿宋、更纱黑体），并装到当前用户，装完从未启动过也不会缺字；界面字体选项只在中文范围内列选",
+      "【正文与界面字体分层】此前在章节里改正文字体会把整个界面一起改掉；现在两者完全独立，调正文不影响界面、调界面也不影响正文",
+      "【正文字号与排版独立可调】正文字号改用绝对像素，可调 12–32px（预设：小 15 / 默认 18 / 大 21 / 特大 24），与「界面字号」解除联动；同时新增行距 1.2–2.6、字间距 −1–6、左右边距 0–160、底部安全距离 0–240 四项，最后一行不再贴着窗口底边",
+      "【写作现场的「字体设置」浮层】章节与大纲的工具栏都新增「字体设置」浮层（Type 图标，与一键排版的魔法棒区分），6 项排版参数从设置页移到这里；浮层内含「默认设置」可一键还原",
+      "【底部写作字数状态栏】新增常驻状态栏，「手写」与「AI 生成」分开计数，删除已生成内容会同步扣减，数字不再虚高",
+      "【同人创作】新增「同人衍生」题材与「原作正典」模块：正典存放在项目内固定路径、按该路径整篇注入，不走模糊检索，因此不会被检索漏掉；支持 canon / au / ooc / cp 四种模式，也可用一句话自定义",
+      "【记忆快照：出场物品四分类】物品不再是一行空数组，改为按四类归档并写明「有无意义」的判定口径，且真正接进写作提示词",
+      "【写作现场细节】自动保存改为每 3 分钟一次、过长的会话标题自动截短、大纲输入区精简；修复正文滚不动的问题",
+      "【大纲与章节修复】章节记忆绿点恢复正确显示、补上「停止后重新开始」入口、支持把桌面文件直接拖进列表导入；修复导入的设定集丢失正文、正文里的分隔线被误当 frontmatter 连同整节内容一起吞掉",
+      "【共创大纲修复】卷纲生成的内容不再被静默丢弃——此前校验不通过时整段内容会消失且没有任何提示；问题改为显示在生成结果下方，讨论轮也不再夹带生成契约",
+      "【档案文档】删掉人物小传、势力、伏笔、地理等档案左侧的「分区导航」，版面改回单栏，长文本获得更宽的阅读区",
+      "【安装与卸载修复】修复安装包长期完全打不出来（NSIS 卸载区用错函数变体）、中文用户名下卸载清理静默失效、以及随包字体在两处未生效的问题",
+      "【设置不再丢失】修复「调完设置立刻关窗口」时改动没有落盘的问题",
+    ],
+  },
+};
+
+const FOUR_POINT_THREE_ZERO_CHANGELOG: ChangelogEntry = {
+  version: "4.3.0",
+  date: "2026-10-11",
+  highlights: {
+    en: [
+      "[Chapter Co-Creation] The AI workflow mode adds a fourth option, Co-Creation, next to Fast, Standard and Strict. Before writing anything it offers three or four candidate directions for the chapter together with a discussion summary of at least 180 characters, and it produces no body text until you settle on one — useful when you know roughly what should happen but not how to open it. If the co-creation round cannot run, it falls back to Standard instead of failing.",
+      "[Character Skills] The skill library gains a Character Skills tab that builds itself from the chapters you write: as each chapter is ingested, the characters in it are learned into structured entries. A tier decides how much space a character gets in the writing prompt — leads, antagonists and mentors are filed from their very first appearance, whereas a name with no stated role has to appear three times before it is filed as a supporting character, so characters mentioned once in passing are filtered out. A character absent for ten chapters goes dormant rather than accumulating forever.",
+      "[Event Outline] A new event-outline step turns your story into four to eight concrete events, each carrying two to five points and at least 150 characters of substance, through a guided wizard. The finished outline can be turned straight into chapter body text, so a plan that used to live only in your head becomes something the writing stage can actually use.",
+      "[Stage Scenarios] The story-simulation room gains a character-dialogue aid. You pick three to five characters who already exist in your book, choose whether the moderator is you or one of them, and describe the situation — a reference point such as a specific work is allowed. The moderator opens, the characters then speak in turns and must each respond to the previous speaker, so the exchange has back-and-forth rather than a series of monologues. You can cut in at any time to steer the next round, and the whole thing is governed by a cost guardrail: once the estimated request count passes the threshold, the panel asks you to confirm before it spends anything. The result can be copied in full or inserted into a chapter.",
+      "[Style Library, Applied Per Generation] The skill library gains a Style tab, and referencing a style with @ in the input box is now genuinely wired into that generation's override channel rather than editing a global setting — the sampled style applies to the piece you are about to write and leaves your defaults untouched.",
+      "[Character Soul References] The skill library gains a Character Soul tab, and @ in the input box resolves to a character soul and truly binds it to a character in your novel, so the reference reaches the prompt as a real binding instead of plain text.",
+      "[Body Text Made To Sound Less Machine-Written] Body-text generation prompts now carry hard anti-AI-tone constraints, and the revision stage gets a companion boundary so that fixing tone cannot smuggle in new tells or touch anything outside the reported list. The constraints are verified to be present in the real generation path and in event-outline-to-prose, not merely defined in a module nobody calls.",
+      "[One Entry For The Whole Skill Library] De-AI-tone skills, writing skills, styles, character skills and favourites now live as five tabs behind the single skill-library icon in the sidebar, so the rail no longer grows a separate entry for every kind of skill. Character souls keep the dedicated entry they already had in the rail instead of also appearing as a tab inside the library.",
+      "[Dialog Sizes Fixed] Small dialogs — delete confirmation, rename, knowledge-tree picking and similar — were being stretched to nearly the full window, so a couple of lines of text sat in the middle of a huge empty box. Each dialog now opens at a size that fits its own content and stays centered. The deliberately large ones (batch de-AI review, the text-transform preview, review results) keep their wide layout.",
+      "[Sidebar Bottom] Settings and Appearance move to the bottom of the sidebar, leaving only Switch Novel in the icon rail, and the Appearance menu is no longer clipped by the bottom edge of the window.",
+    ],
+    zh: [
+      "【章节共创】AI 工作流模式在「快速 / 标准 / 严格」之外新增「共创」。它不急着写正文，而是先给出 3 到 4 个章节方向候选和一段不少于 180 字的讨论小结，等你定下一个方向才落笔 —— 适合「知道大概要发生什么，但不知道怎么写」的情况。共创这一轮如果跑不起来，会退回标准模式，而不是直接失败。",
+      "【人物 Skill】技能库新增「人物 Skill」，它会随着你写的章节自己长出来：每摄取一章，就把这一章里的人物学成结构化条目。档位决定这个人物在写作提示词里占多少篇幅 —— 主角、反派、导师这类有明确定位的，首次出场就建档；没有定位的名字要出场满 3 次才按配角建档，所以「一笔带过的路人」会被这个门槛滤掉。连续 10 章没出场的人物转入休眠，不会一直堆积。",
+      "【事件细纲】新增事件细纲环节，通过分步向导把你的故事拆成 4 到 8 个具体事件，每个事件带 2 到 5 个要点、不少于 150 字的实质内容。定稿后的细纲可以直接转成章节正文，原先只停在脑子里的构想因此变成了写作阶段真正能用的东西。",
+      "【舞台情景】剧情推演室里新增人物对话辅助。你从书里已有的角色中挑 3 到 5 名同台，指定主持人是你自己还是其中某个角色，再描述情景 —— 还可以指定参考点（比如某部作品）。主持人开场后，角色逐一轮流发言，且必须回应上一位发言者，所以是有来有回的对白，不是各说各话的独白。你随时可以插话引导下一轮。整套流程带成本护栏：预估请求数超过阈值时，面板会先让你确认再消耗。结果可以复制全部，也可以直接插入到某一章。",
+      "【文风库与「本次生效」】技能库新增「文风」。在输入框用 @ 引用文风，现在会真正接入「本次生成」的覆盖通道，而不是去改一个全局设置 —— 采到的文风只作用于你即将写的这一篇，你自己的默认设置不受影响。",
+      "【角色灵魂 @ 引用】技能库新增「角色灵魂」。在输入框用 @ 引用角色灵魂，会真绑定到小说里的某个人物，引用是以真实绑定的形式进入提示词，而不是当成一段普通文字。",
+      "【正文去 AI 味】正文生成的提示词加入反 AI 腔硬约束，修订阶段再配一条边界，确保「去 AI 味」这件事不会顺手引入新的 AI 腔、也不会去动问题清单之外的内容。这些约束经核实确实出现在真实生成链路里（含事件细纲转正文），不是只定义在某个没人调用的模块里。",
+      "【技能库并入一个入口】去AI味技能、写作 Skill、文风、人物 Skill、收藏，现在是同一个技能库图标下的五个 tab，侧栏不再为每一种技能各长一个入口。角色灵魂不再在技能库里再占一个 tab —— 它在侧栏本来就有自己那一项。",
+      "【弹窗尺寸修正】删除确认、重命名、知识树选择这类小弹窗原先会被拉成几乎整窗宽，两三行字摆在一个巨大的空白框里。现在每个弹窗都按自己的内容量取合适的尺寸并居中显示。少数本就该宽的场景（批量去 AI 味复核、文本转换预览、审稿结果）保持原来的大尺寸。",
+      "【侧栏底栏】「设置」与「外观」移到侧栏底部，图标栏只保留「切换小说」；「外观」菜单也不再被窗口底边裁切。",
+    ],
+  },
+};
+
+const FOUR_POINT_TWO_ONE_CHANGELOG: ChangelogEntry = {
+  version: "4.2.1",
+  date: "2026-10-10",
+  highlights: {
+    en: [
+      "[Chapter Continuation] Select some text in a chapter body and the floating toolbar now leads with Continuation; right-click in the body and the context menu leads with it too. You can leave the box empty to continue straight away, or write one line describing where the story should go. Each continuation runs about 300–400 characters and reads only the current chapter's body rather than the whole book. When it finishes, Insert Into Body appends it at the caret, and the inserted part is counted separately as AI-generated text without touching your hand-written count.",
+      "[Stop Mid-Continuation] You can stop at any time while it is generating, and whatever was already produced stays in the popover and remains insertable. The same holds when the model stops at its output length limit, so previously the generated text could be lost and now it is not.",
+      "[Continuation Cannot Land In The Wrong Chapter] If you switch chapters while generating, or after it finished, the result is never written into another chapter. This holds even when two chapters have byte-identical bodies — for example two consecutive empty chapters in a new book.",
+      "[Font Licenses Completed] The license texts for the fonts distributed with the repository are now included, together with an automated guard so a license file cannot go missing again.",
+    ],
+    zh: [
+      "【章节续写】在章节正文里选中一段文字，浮层工具栏的第一项就是「续写」；在正文里点右键，右键菜单的第一项也是「续写」。输入框可以留空直接续写，也可以先写一句想让故事往哪儿走。每次续写 300–400 字左右，只读取当前章节的正文，不会把整本书一起送进去。生成完点「插入正文」就接在光标处，插入的部分单独计入「AI 生成字数」，不影响「手写」字数。",
+      "【续写可以中途停】生成过程中随时可以「停止」，已经生成的那部分会留在浮层里，仍然可以插入；内容被模型长度上限截断时也不会丢掉已经生成的部分。",
+      "【续写不会写错章节】生成期间或生成之后切换了章节，结果都不会落到别的章节里；即使两章正文完全相同（比如新建书里连着两个空章节）也会被拦住。",
+      "【字体许可补齐】补上随仓库分发字体的许可原文，并加上自动守护，避免以后漏掉许可文件。",
+    ],
+  },
+};
+
+const FOUR_POINT_ONE_TWO_CHANGELOG: ChangelogEntry = {
+  version: "4.1.2",
+  date: "2026-10-07",
+  highlights: {
+    en: [
+      "[Automatic Update Prompt Restored] Opening an older version previously showed no prompt at all even though a newer version was already published, so the only way to find an update was to check manually. The app now checks for updates on launch and asks whether to download and install when one is found. Six releases — v4.0.0 through v4.1.1 — were affected by this bug.",
+      "[Older Affected Versions: Update Once Manually] If you are on v4.0.0 through v4.1.1, automatic update checking is not working, so those versions will never show an update prompt no matter how many new releases come out. Please update once by hand via Settings → Changelog → Check for Updates; automatic updates work again from then on.",
+    ],
+    zh: [
+      "【自动更新提示恢复】修复「新版本已发布，但打开旧版本时没有任何提示」的问题：启动时会自动检查更新，发现新版本即弹窗询问是否下载安装。此前只能手动进设置页检查，无法感知新版本。v4.0.0 至 v4.1.1 共 6 个版本受此问题影响",
+      "【受影响的旧版本请手动更新一次】若你正在使用 v4.0.0 至 v4.1.1，自动检查处于失效状态，这些版本收不到任何更新提示——无论之后发布多少新版本都不会被感知。请在「设置 → 更新日志 → 检查更新」手动更新一次，此后自动更新即恢复正常",
+    ],
+  },
+};
+
+const FOUR_POINT_ONE_ONE_CHANGELOG: ChangelogEntry = {
+  version: "4.1.1",
+  date: "2026-10-07",
+  highlights: {
+    en: [
+      "[Book-Analysis Panel Simplified] Removed six items — version dropdown, search box, pending-only filter, summary status row, whole-version \"Confirm & Add\" and export — plus the \"in library / pending\" badge and the whole-version statistics block, so generated results are shown directly.",
+      "[Automatic Ingestion & Deletion] Opening results automatically publishes versions that are not yet in the library, with no manual per-version confirmation, and every object gains a delete button with confirmation that truly removes the matching soul-library entry and cannot come back on the next ingestion; legacy entries still require manual import so they cannot create duplicate characters.",
+      "[Versions Merged Into One List] Object cards from all versions are merged into one continuous list with the oldest first, the revision and delete buttons sit next to each other, and the evidence index moves into each card listing only the source text that this result itself cites.",
+      "[Character Recognition & Binding] The binding dialog gains a search box, five items per row and ignore/restore, and is widened to 760px so it no longer clips common character names; a failed character recognition no longer locks the \"Start Analysis\" button.",
+      "[Legacy Characters & Deleting Works] Legacy characters migrate into new-style entries and are merged into the matching tab with legacy results always shown (the story tab labels them \"Historical Map\"), and any work plus the current work can now be deleted with confirmation.",
+      "[No More Three-Minute Wait] The soul library's character list is split into an instant local pass plus a background refinement and cached by file fingerprint, so it no longer rescans outlines and waits on model timeouts on every open; non-name entries are filtered out.",
+      "[Three Soul-Library Data Fixes] Refined names on disk are no longer overwritten by cache write-back; a failed LLM refinement is no longer permanently marked as done (which previously hid characters only the model could find, with no error shown); and a failed entity-page read no longer leaves a partial cache that made a character name vanish for good.",
+      "[Memory Center Single-Page Rebuild] The two nested two-column layouts are gone: categories become a top tab strip, content takes the full window width, and snapshot details open in the same page while preserving your scroll position.",
+      "[Outline Snapshots Now Viewable] Outline snapshots were previously only counted and never rendered, so they could not be opened at all; they are now listed and sorted by title, and the count mismatch from truncation is fixed — the interface had shown 9 while there were 10.",
+      "[Chapter Memory Dots] Chapters whose memory has been extracted show a green dot and chapters being extracted show a pulsing gray dot, keyed by path rather than title so duplicate titles cannot light up two rows at once.",
+      "[Fixed Permanently Disabled \"HTML\"] Every outline type now produces HTML; previously the common \"looks like a chapter outline but lacks structured data\" case — for example continuing from an outline — always produced a request with no HTML.",
+      "[Requirement Analysis Overlay] Requirement analysis is now an overlay anchored inside the panel and offers concrete options that are never empty, and it is no longer dismissed by dragging the window.",
+      "[Profile Documents & Styling] All eight profile templates gained color tokens plus rotating section accents, blank-page navigation inside profile documents is fixed, and the very low body-text contrast under the starry-night skin is fixed — all three skins now meet WCAG AA.",
+      "[Interface Details] Reply times add month and day for older records, the generating wait text no longer flickers and stays visible after the body text appears, the draft \"extract memory\" hint is no longer covered by the body text, and custom models use the shared preset selectors for context window and max output.",
+    ],
+    zh: [
+      "【拆书结果面板精简】移除结果版本下拉、搜索框、仅待确认、汇总状态行、整版「确认并加入」、导出结果，以及「已入库/待确认」状态徽标与整版统计，生成结果直接展示",
+      "【结果自动入库与对象删除】打开结果即自动发布尚未入库的新版本，不再逐版手动确认；每个对象新增删除按钮（二次确认），删除会真正移除灵魂库条目且不会「删了又回来」；旧版条目仍走手动导入，避免产生重复角色",
+      "【版本合并为一份列表】各版本对象卡合并为一份连续列表（旧版在前），修订与删除按钮紧挨；证据索引下沉到每张卡片，只列该成果自己引用的原文",
+      "【角色识别与绑定对话框】绑定对话框新增搜索框、改为每行 5 个、支持忽略与恢复，并加宽至 760px 修正纵向裁切，常见角色名不再显示不全；识别失败后「开始分析」不再被锁死",
+      "【旧版角色整合与删除作品】旧版角色迁移为新版条目并入对应页签，旧版结果改为常显（故事页签标注为「历史导图」）；作品下拉每一项与顶部当前作品均可删除，均保留二次确认",
+      "【灵魂库打开不再等 3 分钟】人物名单拆成「本地秒回」+「后台精修」并按文件指纹缓存，不再每次打开都重扫大纲、串行等待模型超时；过滤「编号派通用手段」「冲突点」「当前状态」等非人名条目",
+      "【修复灵魂库三处数据问题】缓存写回不再覆盖已落盘的精修结果；LLM 精修失败不再被永久标记为「已精修」（此前会导致只能由模型发现的人物永不出现，且没有任何报错）；实体页读取失败不再留下残缺缓存使人名永久消失",
+      "【记忆中心单页重构】拆掉嵌套的两层双栏，改为整窗单页：分类变为顶部标签条、内容独占全宽，快照详情在同页内返回并保留滚动位置",
+      "【大纲快照可查看】此前大纲快照只用于计数、从不渲染，实际无法打开；现按标题排序正常展示，并修复截断导致的计数不符（界面显示 9 而实际 10）",
+      "【章节目录记忆绿点】已提取记忆的章节显示绿点、提取中显示灰点脉冲；按路径而非标题判定，「提取中」不会因标题重名同时点亮两行",
+      "【修复「HTML 形式」永久置灰】任何大纲类型都会生成 HTML；此前「像章纲但缺结构化数据」（例如从大纲继续生成章纲）必然产出无 HTML 的请求",
+      "【需求分析浮层】需求分析改为面板内锚定浮层并给出具体选项，选项不再空白，也不再被拖动窗口等操作误关",
+      "【档案文档与配色】八类档案模板补齐配色令牌并加入分区强调色轮转；修复档案文档内分区导航跳空白页、星夜皮肤正文对比度过低的问题，三套皮肤均达 WCAG AA",
+      "【界面细节】AI 回复时间更早的记录补月日与年月日；生成中的等待文案整段显示不再忽隐忽现；草稿「提取记忆」提示不再被正文盖住；自定义模型的上下文窗口与输出上限改用统一预设选择器",
+    ],
+  },
+};
+
+const FOUR_POINT_ONE_ZERO_CHANGELOG: ChangelogEntry = {
+  version: "4.1.0",
+  date: "2026-10-04",
+  highlights: {
+    en: [
+      "[Eight Setting Templates] Character briefs, factions, power system, golden finger, background, geography, foreshadowing plan and location settings each gain a dedicated card template with per-section content specs (fields and writing requirements).",
+      "[Setting Card Stream] A new generic setting-card renderer with fallback: structured AI data is rendered into self-contained HTML cards, and when no structured data is returned the same structure is parsed from the outline text.",
+      "[Profile Document Kernel] A new shared profile-document base for character/faction cards, supporting key-value, list and table sections plus Markdown table recognition.",
+      "[Profile Diagrams] New restricted, data-driven diagrams (nodes, regions, routes, e.g. for geography/location) that never execute model-provided SVG/HTML.",
+      "[Dual-Format Save Preview] Saving an outline now supports HTML / MD dual-format preview with independent editing.",
+      "[Skill Template Upgrade] Character design, faction, foreshadowing, map progression, power system and world rules skill templates are greatly expanded with reference samples and profile-page templates; a new Setting Cards skill template is added.",
+      "[Generalized Dual-Format Viewer] The volume-outline dual viewer becomes a general outline dual viewer whose title follows its folder (e.g. Character Dual Format); HTML mode now also renders chapter-outline and setting-card streams instead of only the volume folding tree.",
+      "[Dark Skin Fix] Fixed profile-card chips and warning colors being wrongly recolored to white/gray on dark skins.",
+      "[Message Time & Copy] User messages now show their real send time (HH:mm) and gain one-click message copy.",
+      "[Scroll to Latest] The chat scroll area gains a Down button: a three-dot animation while generating, and an arrow once finished.",
+      "[Conversation History Dropdown] The AI outline history dropdown now lists all conversations, fixing unreachable non-current ones, and adds one-click cleanup of old conversations while keeping the current and running ones.",
+      "[Input Clipboard Menu] The @ reference input supports right-click copy / cut / paste; it cancels safely if the content changed, and pasting uses native insert to preserve the undo stack.",
+      "[Editor Context Menu] The editor context menu supports scene-limited items and keyboard arrow navigation, and no longer overflows off-screen.",
+      "[Streaming Resilience] On network drop, error or cancellation, already-received text is preserved: no content loss, no false success and no half-executed tool calls; models without tool support fall back automatically.",
+      "[Top Bar Reorganized] The AI Chat entry in the top bar is now a pure custom icon that adapts to every color theme; its size, hover highlight and tooltip are consistent with the other toolbar icons. The directory toggle moved to the top-left brand icon (hover to reveal, click to show/hide), with a one-time bubble guide.",
+      "[Toolbar Icons Only] Editor actions (De-AI, extract memory, view memory, one-click formatting) are now icon-only with hover text; view-memory uses a distinct book icon so it can't be confused with extract-memory.",
+      "[Chapter List Word Count] Each chapter row now shows its full word count (e.g. 12345字) without the leading document icon; the total word count of all chapters is shown after the New/Import buttons in the chapter list header.",
+      "[Search Moved to Context Menu] The header search box was removed; Find-Chapter / Find-Outline now lives in the right-click menu and opens a small dialog to filter the list.",
+      "[Fixed Close Flow] Quitting now asks only once (no double dialog) and closing the window always works after confirming: removed the duplicated Rust-side close interception and granted the required destroy / confirm permissions.",
+      "[Settings] The custom model mark becomes a borderless ochre-gold 「自」 icon.",
+      "[UI Details] Corrected several page titles and spacing, fixed component drag regions, and improved the portable build script.",
+    ],
+    zh: [
+      "【八类设定专属模板】人物小传、组织势力、力量体系、金手指、背景设定、地理设定、伏笔计划、地点设定，各自新增专属卡片模板与分项内容规范（每个分区都给出字段与写作要求）",
+      "【设定卡片流】新增通用「设定卡片流」渲染与兜底：AI 返回结构化数据时套模板生成自包含 HTML 卡片；未返回时从大纲正文自动解析出同款结构",
+      "【档案文档内核】新增人物卡/势力卡等共用的「档案文档」底座，支持键值、列表、表格三种分区，并能识别 Markdown 表格",
+      "【设定档案示意图】新增受限数据驱动的示意图（节点、区域、路线，如地理/地点设定），不执行模型提供的 SVG/HTML",
+      "【双格式保存预览】大纲保存支持 HTML / MD 双格式预览与独立编辑",
+      "【技能模板升级】角色设计、势力、伏笔悬念、地图推进、力量体系、世界规则等技能模板大幅完善，新增参考样例与档案页模板；新增「设定卡片」技能模板",
+      "【双格式查看器通用化】「卷纲双格式」升级为通用「大纲双格式」，标题随所属文件夹命名（如「人物小传双格式」），HTML 模式现支持章纲卡片流、设定卡片流，不再只限卷纲折叠树",
+      "【深色皮肤修复】修复深色皮肤下档案卡片的芯片与警示色被错误染成白底/灰色的问题",
+      "【消息时间与复制】用户消息显示真实发送时间（HH:mm），并新增一键复制消息",
+      "【回到底部按钮】对话滚动区新增「下滑」按钮：生成中显示三点动画，完成后显示箭头",
+      "【会话历史下拉】AI 大纲历史下拉列出全部会话，修复非当前会话不可达；新增「一键清理旧会话」（保留当前与运行中的会话）",
+      "【输入框剪贴板菜单】@ 引用输入框支持右键「复制 / 剪切 / 粘贴」；内容变化时自动取消并提示，粘贴走原生插入保留撤销栈",
+      "【编辑器右键菜单】编辑器右键菜单支持按场景限定项、键盘上下键导航，并修正菜单贴边溢出屏幕的问题",
+      "【流式生成容错】网络断流、报错或取消时保留已收到的正文，不再丢内容、不误报成功、不执行半截工具调用；模型不支持工具调用时自动降级重试",
+      "【顶栏图标重构】右上角「AI 对话」改为自定义图标并随主题配色；目录开关移到左上角品牌图标（含一次性引导气泡）",
+      "【编辑器工具栏纯图标】去AI味 / 提取记忆 / 查看记忆 / 一键排版改为纯图标 + 悬停说明，「查看记忆」改用书本图标区分",
+      "【章节列表字数】每章显示完整字数、去掉行首文档图标；「新建/导入」右侧新增全书章节总字数",
+      "【查找移入右键菜单】移除头部搜索框，改为右键菜单「查找章节/查找大纲」+ 弹窗过滤",
+      "【修复关闭流程】退出只弹一次确认框，确认后必定退出（移除重复关闭拦截 + 补齐权限）",
+      "【设置界面】自定义模型标记改为无边框赭金「自」图标",
+      "【界面细节】校正若干页面标题与留白、修正 UI 组件拖拽区域；打包脚本改进",
+    ],
+  },
+};
+
+const FOUR_POINT_ZERO_FOUR_CHANGELOG: ChangelogEntry = {
+  version: "4.0.4",
+  date: "2026-09-29",
+  highlights: {
+    en: [
+      "[Waiting Tips While Generating] While an outline or chapter is being generated, playful lines now rotate through the waiting state, including 199 novel-writing tips (character, plot, dialogue, foreshadowing, pacing and more) so every wait is also a refresher for writing.",
+      "[Waiting Text on the Cursor Line] The waiting tip is shown right after the streaming cursor on the same line instead of taking up a separate row.",
+      "[Hints Read at Their Own Pace] Each waiting line stays long enough to read; longer lines stay longer, based on the character count.",
+    ],
+    zh: [
+      "【生成等待期新增写小说心得】生成大纲或章节时的等待状态会轮播俏皮文案，其中加入 199 条写小说心得（人物、情节、对话、伏笔、节奏等主题），每次等待都能顺便补一条写作知识",
+      "【等待文案并到光标行】等待文案显示在流式光标后面同一行，不再单独占用一行",
+      "【文案按字数停留】每句等待文案都会留够阅读时间，长句停留更久，看完一句才切下一句",
+    ],
+  },
+};
+
+const FOUR_POINT_ZERO_THREE_CHANGELOG: ChangelogEntry = {
+  version: "4.0.3",
+  date: "2026-09-28",
+  highlights: {
+    en: [
+      "[Soul Entry in Creation Tools] The Creation Tools menu now lists Soul between Novel Graph and Skill Library. After replacing the Soul tab with another module, the Soul view can still be reopened from Creation Tools.",
+      "[Contact & Support Entry] A new Contact & Support icon sits to the right of Background Activity. The dialog shows one Contact & Support title with the WeChat contact and both tipping QR codes on one screen, no scrolling needed.",
+      "[Outline Menu Fix] The outline generation menu now renders through a portal on top of the input box, so it is no longer obscured while typing.",
+      "[Draft Memory Hint] The draft extraction hint is shown once per novel folder; after that it appears again only when opening a draft chapter that already has a later chapter.",
+    ],
+    zh: [
+      "【创作工具新增灵魂入口】「创作工具」菜单在「小说图谱」与「技能库」之间新增「灵魂」；顶部标签栏把「灵魂」替换成其它模块后，仍可从「创作工具」重新打开灵魂页面",
+      "【顶部新增联系与支持入口】「后台活动」右侧新增「联系与支持」图标；弹窗只显示「联系与支持」一个标题，添加微信与两个打赏二维码同屏展示，无需滚动",
+      "【大纲生成菜单修复】「生成大纲模块」菜单改为传送门渲染到输入框前面，输入时不再被输入框遮挡",
+      "【草稿提取记忆提示】草稿提取提示按小说文件夹记一次；之后只有点开仍是草稿、且后面已经有章节时才再提示",
+    ],
+  },
+};
+
+const FOUR_POINT_ZERO_TWO_CHANGELOG: ChangelogEntry = {
+  version: "4.0.2",
+  date: "2026-09-27",
+  highlights: {
+    en: [
+      "[Draft Memory Hint] Draft chapters now explain that Extract Memory saves the draft as a formal chapter first. The hint can be dismissed with Don't Remind Again and turned back on in Writing settings. Each novel folder shows it once; after that it appears again only when opening a draft chapter that already has a later chapter.",
+      "[Model Settings] Model list rows put the name next to saved and enabled status, providers show brand icons, and inputs on model cards get visible borders. Custom model tests only cover selected models, and removing one failed model keeps the other failures marked red.",
+      "[Install After Leaving Changelog] A downloaded update can still be installed after leaving the changelog page. After download you get Install and Re-download, and a failed install can be retried.",
+      "[Shelf Delete] Novels whose folder is gone can still be removed from the shelf. On Windows, moving to the recycle bin no longer flashes a console window.",
+      "[HTML Preview Follows Skin] Volume outline, chapter outline and story map previews follow the current appearance skin; source and saved files stay unchanged.",
+      "[Chapter Title Save] Saving a chapter title on blur restores the chapter-number hyphen, file rename and body formatting.",
+      "[UI Details] Send and stop icons in the writing chat are centered, macOS window buttons use one consistent line width, the AI chat panel has a 400px minimum and default width, model hover shows only the model name, and usage is labeled tokens.",
+    ],
+    zh: [
+      "【草稿提取记忆提示】草稿章节下会说明：点「提取记忆」会先保存为正式章节再提取；可点「不再提醒」，写作设置里能重新打开；每本小说只提示一次，之后只有点开仍是草稿、且后面已经有章节时才再提示",
+      "【模型配置界面】模型列表的名称与保存、启用状态放在同一行，提供方显示图标，模型配置卡片的输入框补上边框；自定义模型测试只测已选模型，移除一个失败模型时其余失败项保持标红",
+      "【离开页面也能安装更新】离开更新日志页面后，已下载的新版本仍可安装；下载完成后提供「安装」和「重新下载」，安装失败可以重试",
+      "【书架删除】小说目录已不存在时也能从书架删除；Windows 上移入回收站不再弹出控制台窗口",
+      "【HTML 预览跟随皮肤】卷纲、章纲和故事导图的预览跟随当前外观皮肤，源码和已保存文件保持原样",
+      "【章节标题保存】章节标题失焦保存时，恢复章节序号连字符、文件重命名和正文排版",
+      "【界面细节】写作对话框的发送和停止图标居中；macOS 窗口按钮线宽统一；AI 对话栏最小和默认宽度调到 400，模型悬停只显示模型名；用量单位统一为 tokens",
+    ],
+  },
+};
+
+const FOUR_POINT_ZERO_ONE_CHANGELOG: ChangelogEntry = {
+  version: "4.0.1",
+  date: "2026-09-27",
+  highlights: {
+    en: [
+      "[Shelf Restores Your Novels] The new interface reads the registered library again (recent projects, last project and project registry), so existing novels no longer disappear from the shelf after upgrading. A missing default folder no longer hides registered novels.",
+      "[Reasoning Depth Entry] Models whose provider cannot adjust reasoning keep the reasoning depth entry hidden.",
+      "[macOS Window] macOS gets self-drawn traffic-light buttons and fixed window corners, so square edges no longer show outside the rounded corners and system corners come back after focus or resize. When the writing bottom bar runs out of room, the reasoning control and model picker wrap together, and action buttons no longer look selected by default.",
+    ],
+    zh: [
+      "【书架找回历史小说】新版界面书架恢复读取已登记的正式书库（最近项目、上次项目、项目登记表），升级后历史小说不再从书架消失；默认目录缺失也不再挡住已登记的小说",
+      "【思考深度入口】不支持调节思考深度的模型，继续隐藏思考深度入口",
+      "【macOS 窗口】macOS 改为自绘红黄绿窗口按钮，并修正窗口圆角外露直角底的问题，聚焦和缩放后恢复系统圆角；写作底栏放不下时，思考控件与模型选择整组换行，操作按钮不再默认呈选中态",
+    ],
+  },
+};
+
+const FOUR_POINT_ZERO_ZERO_CHANGELOG: ChangelogEntry = {
+  version: "4.0.0",
+  date: "2026-09-27",
+  highlights: {
+    en: [
+      "[All-New Interface] The whole app interface is rebuilt: window, sidebar, toolbars and content area now share one new look and layout, and the legacy interface is removed so only the new one remains. The top function bar is customizable, and the window becomes a frameless custom shell with a minimum size.",
+      "[Volume Outline Tree] Outline adds a Volume Outline built as 1 volume = 10 stories = 1 major climax, with 10 fixed stages per story. It produces both an MD text version and a collapsible HTML tree with beat checkup, foreshadow tracking, cast appearances, rival moves, suspense debts, growth and resources, and a place/organization index. On save, MD and HTML can be picked separately.",
+      "[Chapter Outline] Outline adds a Chapter Outline generated story by story in batches. Every chapter writes all 17 sections (basic info, carry-over, positioning, condensed plot, core event chain, required conditions, four-beat structure, mood curve, payoff, expansion, visual detail, foreshadow and hook, cast state changes, setting updates, writing constraints, next-chapter handover, writing checklist) and renders as a chapter card-flow HTML.",
+      "[Chapter Outline Reaches Writing] Fixed the case where a written chapter outline was not read while drafting. One outline file covering many chapters is now sliced per chapter for the writing pipeline, so drafting uses that chapter's 17 sections instead of falling back to the volume outline.",
+      "[Validation and Alignment] Saving now runs an automatic checkup: chapter range, beat-by-beat consistency, non-reverting timeline, cast appearances, rival moves, foreshadow seeding and payoff, and the 10 fixed checklist items. Incomplete content triggers one automatic repair and never blocks saving.",
+      "[Outline Co-creation Mode] Discussion turns must output a decision-point card; picking one continues the discussion, and full text is generated only after the outline is finalized. When the model suggests splitting into two chapters, chapter 2 is written automatically.",
+      "[Batch Resume] If batched chapter-outline generation is interrupted (app closed or conversation switched), triggering it again reads the draft and continues from the next batch instead of starting over.",
+      "[Context and Library Cache] Context-hub hit stats now show after AI analysis completes, with corrected hit-rate and saved-token math. Book analysis gains tiered caches and cache routing for cross-chapter reuse and precise invalidation on dependency changes, and the character extraction, plot and style pipelines are improved.",
+      "[Performance and Interaction Fixes] Embedding index rebuild now batches requests and skips unchanged pages by content hash, swapping through a temp table when many pages are dirty, which speeds up rebuilds and caps memory. Fixed a chunking infinite loop caused by a lone '|' line, and page names may contain Chinese punctuation. Formal chapter status uses green text, slash commands drop the overlay to avoid cursor misplacement and duplicate copy, the reference dialog has a fixed height, and app icons are updated.",
+    ],
+    zh: [
+      "【全新界面】整个软件界面重做：窗口、侧栏、工具栏与内容区统一为全新视觉与布局；旧版界面已移除，只保留新版。顶部功能栏支持自定义，窗口改为自绘无外框并设定最小尺寸",
+      "【卷纲折叠树】大纲新增「卷纲」：按「1 卷 = 10 故事 = 1 大高潮」生成，每个故事固定 10 环节；同时产出 MD 文本版与可折叠 HTML 树，附节拍体检、伏笔追踪、人物出场、对手推进、悬念债务、成长资源、地点组织索引等台账；保存时 MD / HTML 可分别勾选落盘",
+      "【章纲（细纲）结构化】大纲新增「章纲（细纲）」：按故事分批生成，每章写满 17 节（基础信息 / 上章承接 / 本章定位 / 浓缩剧情 / 核心事件链 / 必要条件 / 四段式 / 情绪曲线 / 爽点 / 扩写方式 / 画面细节 / 伏笔钩子 / 角色状态变化 / 设定更新 / 写作约束 / 下一章交接 / 写作检查清单），以章节卡片流 HTML 呈现",
+      "【章纲真正被写作读取】修复「写了章纲，写正文却读不到」：一份覆盖多章的章纲文件现在能被正文生成按章裁切读取，写作时直接使用该章的 17 节细则，不再退回卷纲兜底",
+      "【巡检与对齐校验】保存前自动体检：章号区间、节拍逐位一致、时间线不倒退、人物出场、对手出手、伏笔埋收、检查清单十条固定项等；内容不完整会自动补全一次，仍不通过才放行，保存流程不被阻断",
+      "【大纲共创模式】讨论轮强制输出决策点卡，点选后继续讨论，确认定稿才进入正文生成；模型建议拆成两章时自动补写第 2 章",
+      "【分批续跑】章纲分批生成到一半中断（关软件 / 换对话）后，再次触发会读取草稿、直接接着生成下一批，不必从头重写",
+      "【上下文与拆书库缓存】上下文枢纽的命中统计改为 AI 分析完成后展示，命中率与节省量算法修正；拆书库分析新增分级缓存与缓存路由，支持跨章节复用、依赖变更精准失效；角色抽取 / 剧情 / 文风链路完善",
+      "【性能与交互修复】嵌入索引全量重建改为批量请求并按内容哈希跳过未改动页，脏页多时用临时表一次换表，明显加快重建并压住内存；修复单独一行「|」导致的切块死循环，页名允许中文标点；正式章节状态改为绿色文字，斜杠命令去掉覆盖层避免光标错位与复制重复，引用弹窗固定高度；应用图标更新",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_NINETEEN_CHANGELOG: ChangelogEntry = {
+  version: "3.2.19",
+  date: "2026-09-20",
+  highlights: {
+    en: [
+      "[Outline Co-creation Mode] Outline chat adds a discuss mode: the model acts as an editor, raises 1-3 decision points with its own preference, and only writes a full outline after you confirm. Standard and plan modes can now discuss instead of being forced to output body text only.",
+      "[Settings Feedback Form] Settings now use Sentry official Feedback instead of the homemade form and Cloudflare submit path. The widget follows the app theme and does not capture screenshots.",
+      "[Corpus De-AI Prefix] Corpus-stats de-AI results no longer keep the model's leftover process sentence such as 'first check the style document'.",
+      "[Short Failure Keeps Original] When a task brief, draft, or expansion falls below the completion line, the model's original text is written into the chat log so you can tell a refusal from empty output.",
+    ],
+    zh: [
+      "【大纲共创模式】大纲对话新增「共创」档：AI 当责编抛出 1-3 个决策点和自己的倾向，你确认定稿后才出正文；标准/计划档的讨论轮也不再被「只输出正文」压住",
+      "【设置页反馈表单】设置页改用 Sentry 官方 Feedback，替换自写表单和 Cloudflare 提交链路；跟随应用主题，不截图",
+      "【语料去AI味前缀】语料统计去AI味结果不再带上模型残留的「先核对风格文档」过程句",
+      "【过短失败保留原文】任务书/初稿/扩写低于完成线时，把模型原文写入聊天记录，避免只看到「约 N 字」无法判断是拒写还是空输出",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_EIGHTEEN_CHANGELOG: ChangelogEntry = {
+  version: "3.2.18",
+  date: "2026-09-16",
+  highlights: {
+    en: [
+      "[Writing DNA Style] Book-analysis style extraction is now layered DNA distillation (L1-L6). Writing injects the integrated DNA; old profiles migrate in place.",
+      "[Style Depth and Model] The analysis dialog can pick full or fast depth and a per-task model. Pause/resume and parallel tasks keep the model they started with.",
+      "[Chunk Budget Matches Sends] Oversized chapters count as 12,000 characters when planning chunks. The dialog shows the real chunk count and warns which chapters will be truncated.",
+    ],
+    zh: [
+      "【Writing DNA 文风】拆书文风改为分层蒸馏（L1-L6），写作时注入 integrated DNA；旧 profile 原地迁移",
+      "【文风深度与模型】分析弹窗可选完整/快速深度，并按任务选择分析模型；暂停继续和并行任务沿用当初选的模型",
+      "【分片按实际发送量】超长章按每章 12,000 字计入预算，弹窗显示真实片数并提示哪些章会被截断",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_SEVENTEEN_CHANGELOG: ChangelogEntry = {
+  version: "3.2.17",
+  date: "2026-09-16",
+  highlights: {
+    en: [
+      "[Outline Plan Mode] Outline chat adds a plan mode: when required elements are missing, it asks first, then shows a plan for confirmation before generating.",
+      "[Reasoning Depth Slider] Writing and outline chats get a reasoning-depth slider (default / off / low / medium / high / max). It only applies to the actual draft-generation call and stays hidden when the model has no reasoning control or writing is in quick mode.",
+      "[Writing Search Trigger Fix] Chapter web search no longer skips real names just because the model claimed enough knowledge; skip reasons are shown as notes.",
+      "[Corpus De-AI Option] A built-in corpus-stats de-AI style is available (moxt.ai lieflat-less-ai-tone whitelist rules). The default skill is unchanged.",
+    ],
+    zh: [
+      "【大纲计划模式】大纲对话新增「计划」模式：要素不齐时先问答再出计划，确认后才生成，避免信息不足就直接写大纲",
+      "【思考深度滑块】写作和大纲聊天可调思考深度（默认/关闭/低/中/高/最大），只作用于真正出稿的那次调用；模型不支持或写作快速模式不显示",
+      "【正文补搜能触发了】补搜按名称性质判定，不再因模型自评「知识够」而漏搜；跳过时会写入可见说明",
+      "【语料统计去AI味】新增语料统计去AI味内置选项（moxt.ai 白名单改写规则），默认技能不变",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_SIXTEEN_CHANGELOG: ChangelogEntry = {
+  version: "3.2.16",
+  date: "2026-09-08",
+  highlights: {
+    en: [
+      "[Strict Mode Local Edits] Strict mode stage 6 no longer de-AIs the whole draft when review is clean; it only patches remaining problem spots from the checklist.",
+      "[Short Task Brief Regenerates] A task brief under 100 characters is treated as a failed generation and rebuilt from scratch, including the no-draft recovery path.",
+      "[Sidebar Extract Display] De-AI runs count as in-progress and rise to the top of the list; finished extracts keep only the latest three. The unused Activity panel is gone.",
+      "[Cache Hit Rate Cap] Cacheable hit rate no longer counts task-scoped hits, so retries cannot push the rate above 100%.",
+    ],
+    zh: [
+      "【严格模式按需局部改】审稿干净时不再全文去AI味；只在有剩余问题时按清单改问题部分",
+      "【短任务书整份重生成】任务书不足 100 字视为失败并整份重跑，避免用残片写初稿和扩写；无初稿恢复路径同样处理",
+      "【侧栏提取显示修复】去AI味计入运行中并排到顶部，已结束提取只保留最近 3 条；去掉无入口的活动栏",
+      "【命中率不再虚高】可缓存命中率扣除任务级命中，同任务重试后不会超过 100%",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_FIFTEEN_CHANGELOG: ChangelogEntry = {
+  version: "3.2.15",
+  date: "2026-09-04",
+  highlights: {
+    en: [
+      "[Context Hub Stats Made Honest] Context hub stats now show only after the final answer is generated; wording corrected to a truthful scale - 'Context approx X tokens' (actually injected) plus 'approx Y tokens saved vs full volume' (only when truncation really occurs). Hit rate counts only cacheable sources.",
+      "[Deeper Cache Hit Optimization] Project-level sources are statically scoped with constant keys for cross-chapter/message reuse; dependency stamps are refined per path prefix so unrelated file changes no longer invalidate whole categories; retrieval caches raw project-level entries and filters by chapter at context build time.",
+      "[Slimmer Generation Process Display] In AI conversation, the routine 'Task Understanding' stage is no longer shown, and 'Capability Selection' only appears when skills are actually enabled; real workflow stages (read context, draft generation, de-AI polish) remain visible.",
+      "[Quick-Mode Chat Saves Tokens] In quick mode, ordinary chats unrelated to the novel (e.g. a simple greeting) no longer preload novel context or expose novel-data reading tools, avoiding wasteful token consumption; novel-related questions still read as before.",
+    ],
+    zh: [
+      "【AI 对话上下中控信息更真实】中控统计在回答生成完成后再显示，数字口径修正为真实尺度：「上下文约 X Token」（实际注入量）+「相比全量节省约 Y Token」（仅当确实截断时显示），命中率按可缓存源口径统计",
+      "【上下文命中率深度优化，更省更快】项目级资料（近期摘要、角色状态、伏笔状态、时间线等）改为跨章节、跨消息稳定复用；依赖检查按路径前缀精细统计，修改某处资料不再导致整类资料失效重读；AI 大纲「重新生成/后续生成」不再强制清空缓存",
+      "【AI 对话生成过程面板更精简】「任务理解」阶段不再在界面显示；「能力选择」仅在标准/严格模式实际启用技能时显示；读取上下文、生成章节草稿、去AI味等真实工作流阶段照常保留",
+      "【快速模式闲聊更省 token】快速模式下的普通对话（如「你好」等与小说无关的问候）不再预载小说上下文，也不再给模型暴露小说资料读取类工具，避免无谓读取记忆/资料浪费 token；小说相关问题仍按原逻辑正常读取",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_FOURTEEN_CHANGELOG: ChangelogEntry = {
+  version: "3.2.14",
+  date: "2026-09-04",
+  highlights: {
+    en: [
+      "[Writing Search Only When Needed] Entity web search now runs only for real names that lack enough knowledge, avoiding junk results from invented or uncertain names. When English helps, the same entity is searched in both Chinese and English with URL dedupe.",
+      "[Jump to Default Model] Clicking an extract-model error toast or result tip opens Settings on the default model page.",
+      "[Auto Pick Chat Model] If no chat model is selected after model setup, the first available model is chosen and remembered.",
+    ],
+    zh: [
+      "【写作补搜更克制】只有真实且知识不够的名字才会联网，不确定或自造名称不再默认搜；需要英文时同一实体中英双搜并按 URL 去重",
+      "【提取模型错误可跳转】点击提取模型错误 toast 或结果提示，直接进入设置的默认模型页",
+      "【聊天自动选模型】模型设好后若聊天还没选模型，会自动选中并记住第一个可用模型",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_THIRTEEN_CHANGELOG: ChangelogEntry = {
+  version: "3.2.13",
+  date: "2026-09-03",
+  highlights: {
+    en: [
+      "[Platform Baseline] Drops Intel Mac builds. macOS is Apple Silicon only, 13.0+. Windows is x64 with AVX2 from 10 2004; Linux is x86_64 with AVX2. Release binaries use -O3 and thin LTO.",
+      "[Writing Web Search Switch] Standard and strict writing modes both follow the writing-settings web-search toggle instead of locking search to strict mode. Entity extraction and query caps are raised, and search defaults to on when eligible.",
+      "[Cursor CLI reasoning_effort] ACP catalog filtering now reads reasoning_effort instead of effort, so models such as gemini-3.8-flash are no longer dropped.",
+    ],
+    zh: [
+      "【平台基线】停打 Intel Mac，macOS 仅 Apple Silicon 且最低 13.0；Windows 为 2004+ x64 且需 AVX2，Linux 仅 x86_64 且需 AVX2。正式包改为 -O3 与 thin LTO。",
+      "【写作联网搜索独立开关】标准和严格模式都按写作设置开关补搜，不再绑死严格模式；实体抽取与查询上限提高，符合条件时默认要搜。",
+      "【Cursor CLI 识别 reasoning_effort】ACP catalog 按 reasoning_effort 过滤，不再误丢 gemini-3.8-flash。",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_TWELVE_CHANGELOG: ChangelogEntry = {
+  version: "3.2.12",
+  date: "2026-09-02",
+  highlights: {
+    en: [
+      "[Chapter Workflow Budget Bleed] Output budgets now follow each stage's actual model window, so a small-window helper model no longer crushes the task brief.",
+      "[Writing Done System Banner] Chapter writing success or failure sends a system notification with sound on Windows/macOS. Planning and user-stop do not notify.",
+      "[48K Output Preset] Settings now include a 48K output token option.",
+      "[Cursor CLI Tool Calls] Cursor CLI is reworked for native function calling instead of scraping tool_calls from text.",
+      "[Community Summary Rebuild] Community summaries are keyed by member fingerprint, so Louvain re-numbering no longer treats the same people as a new community and re-runs.",
+    ],
+    zh: [
+      "【章节工作流预算串扰】按各阶段实际模型窗口算输出预算，避免小窗口辅助模型把任务书压太短",
+      "【写作完成系统通知】章节写作完成或失败会发系统横幅，Windows/macOS 带提示音；计划阶段和用户停止不打扰",
+      "【输出上限加 48K】设置里输出 token 可选 48K",
+      "【Cursor CLI 支持工具调用】重构 Cursor CLI 对接，走原生 function calling，不再从文本里解析 tool_calls",
+      "【社区摘要误刷】社区摘要按成员指纹增量重建，Louvain 重编号后不再把同一批人当成新社区重跑",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_ELEVEN_CHANGELOG: ChangelogEntry = {
+  version: "3.2.11",
+  date: "2026-08-28",
+  highlights: {
+    en: [
+      "[Filter Thinking Output] Outline generation and de-AI now strip model thinking segments, including unlabeled Gemini thought dumps. A thinking-only response retries once with reasoning off, so English analysis no longer leaks into the outline or chapter text.",
+      "[Short Story Import Without Chapters] When a file has no chapter markers, a non-empty full text is saved as a single chapter instead of failing import. Empty files are still rejected.",
+    ],
+    zh: [
+      "【过滤思考输出】大纲和去AI味会滤掉模型思考段（含 Gemini 无标签思考），纯思考响应会关 reasoning 再试一次，避免英文分析进正文或大纲",
+      "【无章节短篇导入】没有章节标记的短篇，会把非空全文当作一章导入，不再失败；空文件仍会拦截",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_TEN_CHANGELOG: ChangelogEntry = {
+  version: "3.2.10",
+  date: "2026-08-28",
+  highlights: {
+    en: [
+      "[Book Library Import Fix] Fixed imported novels not showing in the library: chapter detection now allows leading whitespace (half/full-width spaces, tabs) before chapter headings, so such TXT files no longer fail with 'no chapter markers found' and silently drop out of the library; line-start anchoring and ghost-chapter prevention are preserved.",
+    ],
+    zh: [
+      "【拆书库：导入修复】修复「导入小说」后作品不显示：章节识别允许章节标题前带缩进（半角/全角空格、制表符），此前这类 TXT 会被判定为「未能识别到章节标记」而导入静默失败；保留行首锚定与防幻影章节能力",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_NINE_CHANGELOG: ChangelogEntry = {
+  version: "3.2.9",
+  date: "2026-08-26",
+  highlights: {
+    en: [
+      "[Chapter Extraction Fix] Chapter detection now only treats standalone 'Chapter N' headings as chapters; in-text cross-chapter references no longer create ghost chapters, and 'Volume N name + Chapter N title' same-line titles are supported without mixing the volume name into titles or body text.",
+      "[Story Map Completeness] Story map extraction now verifies it covers every selected chapter; if the AI output is truncated and drops the last chapter, it clearly asks you to retry instead of silently saving an incomplete map.",
+      "[Deletable & Recoverable Skills] Style / Character / Story skills can be deleted individually; deleted items go to the in-app recycle bin (kept 30 days) and can be restored, no longer permanently deleted.",
+      "[De-AI Review Flow] Confirming the current chapter's de-AI result automatically advances to the next pending review chapter, then closes when all are confirmed.",
+      "[Entity Web Search] Writing entity web search now picks query keywords from the chapter outline, volume outline, this chapter's goal, then the full outline, avoiding repeated identical queries.",
+      "[Formatting] Chapter formatting no longer breaks hyphens in Chinese model names or original separators, avoiding wrong spaces.",
+      "[Model Settings] Custom model names can now be fully cleared.",
+      "[Codex Speed Mode] Model settings now support switching between Standard and Fast speed modes, applied to normal generation and the main Agent chain.",
+    ],
+    zh: [
+      "【拆书库：修复提取章节遗漏最后一章】章节识别只认独立成行的「第X章」标题，正文里提到的「第X章」不再被误拆成多余章节；兼容「第X卷卷名+第X章标题」同行的排版，卷名不混入章节标题与正文",
+      "【拆书库：故事导图更完整】导图提取后自动核对是否覆盖所选全部章节；AI 输出被截断漏掉最后一章时会明确提示重试，不再静默保存只覆盖部分章节的残缺导图",
+      "【拆书库：生成内容可删除可恢复】文风 Skill、角色 Skill、故事导图都能单独删除；删除后进入应用内回收站（保留 30 天）可恢复，不再直接永久删除",
+      "【写作：去AI味审核更顺手】确认当前章节的去AI味结果后自动跳到下一篇待审核章节，全部确认后自动收尾",
+      "【写作：实体补搜更精准】写作时的实体补充搜索按章纲、卷纲本章内容、本章目标、完整大纲依次选取关键词，避免开头反复触发相同查询",
+      "【写作：排版更稳妥】章节排版不再破坏「中文型号」里的连字符和原始间隔号，避免生成多余空格",
+      "【模型设置：自定义模型名称可清空】修复名称删除后立刻被默认名回填的问题，现在可彻底清空",
+      "【模型设置：Codex 速度档位】可切换「标准 / 快速」速度模式，普通生成和主 Agent 调用都生效",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_EIGHT_CHANGELOG: ChangelogEntry = {
+  version: "3.2.8",
+  date: "2026-08-25",
+  highlights: {
+    en: [
+      "[Parallel Book Analysis] Character / Story / Style analyses now truly run in parallel (concurrency 2→4); starting Story extraction no longer cancels an in-progress Character extraction. Each task's progress is shown inside its own Skill tab instead of pinned on top.",
+      "[Story Skill Cleanup] Removed the opening-hook / setup / payoff / ending-hook framework text; the story map is now displayed directly under the Story Skill tab (with a hint when not extracted yet).",
+      "[Story Map History Preserved] Every generated story map is saved as history (story-maps/story-map-<timestamp>), listed newest-first with expand/collapse, and no longer overwritten; legacy single-file maps still work.",
+      "[Triple Quality Verification] Character / Style / Story extractions now run background audits: cross-domain evidence, predictive power, and uniqueness checks plus stress tests (alternate scenarios, boundary counterexamples, confusion trade-offs); reports are saved to verification/<skill>-verification.json/.md.",
+      "[Character Skill Dialog] 'Pick a Character → Generate Skill' now always lists all recognized/saved characters (sorted by importance); clicking Generate closes the dialog immediately, runs in the background, and shows a toast when done.",
+      "[Character Persistence & Fixes] Recognized characters are persisted as character profiles automatically. Fixed the disabled 'Add to Custom Soul' button via deterministic Skill↔character matching (exact filename → safe name → aliases → frontmatter name). Task-completion Toast 'View' now routes to the matching Skill dialog / tab.",
+      "[Model Settings Merge] LLM, Default Model, Vector, and Rerank model configs are merged into one 'Model Settings' entry with horizontal tabs (LLM shown by default); duplicate model settings were removed from Writing Settings; fixed the missing 'Default Model (General)'.",
+      "[UI Cleanup] Removed the whole Batch Import Task panel from the book library (importing itself still works); removed the Skill Library / Story Framework / Edit Chapter buttons from the AI Chat toolbar.",
+      "[HTML View / Edit] .html files opened inside the app now support Preview / Source switching, which also works with story maps.",
+    ],
+    zh: [
+      "【拆书并行分析】角色 / 故事 / 文风分析真正并行（并发上限 2→4），点「故事 Skill」不再取消正在进行的「角色 Skill」；各任务进度显示在各自 Skill 页签内，不再置顶",
+      "【故事 Skill 精简】删除「开局钩子 / 铺垫 / 爽点 / 结尾钩子」框架文案；故事导图直接显示在故事 Skill 下方，未提取时给出提示",
+      "【故事导图历史全保留】每次生成的导图独立存档（story-maps/story-map-时间戳）并按时间新在前全部列出，支持展开/收起，不再互相覆盖；兼容旧单文件数据",
+      "【三重质量验证】角色 / 文风 / 故事提取后台自动审计：跨域佐证、预测力、独特性三重验证 + 换场景、边界反例、混淆取舍压力测试；报告落盘 verification/<技能>-verification.json/.md",
+      "【角色 Skill 弹窗】「选择角色生成 Skill」始终展示全部已识别并保存的角色（按重要度排序）；点击生成立即关闭弹窗，后台自动完成并 toast 提示",
+      "【角色保存与修复】识别角色自动持久化为角色档案，无需重新提取；修复自定义灵魂库按钮置灰（Skill↔角色改为确定性匹配：文件名精确名→安全名→别名→frontmatter name）；任务完成 Toast「查看」正确路由到对应 Skill 弹窗/页签",
+      "【模型设置融合】大语言模型 / 默认模型 / 向量模型 / 重排模型合并为一个「模型设置」一级入口，内部横向 Tab，默认显示大语言模型；写作设置不再重复模型配置；修复「默认模型（通用）」找不到",
+      "【界面精简】删除作品库「批量导入任务」整个面板（导入功能保留）；删除 AI 会话工具栏「技能库 / 故事框架 / 编辑章节」入口",
+      "【HTML 查看与编辑】软件内打开的 .html 支持「预览 / 源码」切换，可配合故事导图使用",
+    ],
+  },
+};
+
+const THREE_POINT_TWO_SEVEN_CHANGELOG: ChangelogEntry = {
+  version: "3.2.7",
+  date: "2026-08-23",
+  highlights: {
+    en: [
+      "[Chapter Workflow No Longer Skips Required Steps] If the model misses the mandatory chapter workflow, QMAI now runs a deterministic fallback; failures can be force-retried and include diagnostics.",
+      "[More Reliable Streaming Tool Calls] Multiple tool calls or text arriving in the same streamed response are no longer dropped.",
+      "[De-AI Thought Summary Stripped] Gemini thought summaries are filtered from de-AI results before the rewritten draft is shown.",
+    ],
+    zh: [
+      "【章节工作流不再跳过必选步骤】模型漏调章节必选工作流时自动走确定性兜底；失败后可强制重试，并保留诊断信息",
+      "【流式工具调用更可靠】同一段流式响应里同时出现多个工具调用或正文时不再遗漏",
+      "【去 AI 味不再混入思考摘要】Gemini 的思考摘要会在展示改写稿前过滤掉",
+    ],
+  },
+};
 
 const THREE_POINT_TWO_SIX_CHANGELOG: ChangelogEntry = {
   version: "3.2.6",
@@ -1302,7 +1984,8 @@ function isMergedOnePointRelease(version: string): boolean {
   return patch >= 8 && patch <= 32;
 }
 
-export const CHANGELOG: ChangelogEntry[] = [
+const CHANGELOG: ChangelogEntry[] = [
+  THREE_POINT_TWO_SEVEN_CHANGELOG,
   THREE_POINT_TWO_SIX_CHANGELOG,
   THREE_POINT_TWO_FIVE_CHANGELOG,
   THREE_POINT_TWO_FOUR_CHANGELOG,
@@ -1377,6 +2060,66 @@ export const CHANGELOG: ChangelogEntry[] = [
 ];
 
 export function currentVersionChangelog(version: string): ChangelogEntry[] {
+  if (version === FOUR_POINT_THREE_SIX_CHANGELOG.version)
+    return [FOUR_POINT_THREE_SIX_CHANGELOG];
+  if (version === FOUR_POINT_THREE_FIVE_CHANGELOG.version)
+    return [FOUR_POINT_THREE_FIVE_CHANGELOG];
+  if (version === FOUR_POINT_THREE_FOUR_CHANGELOG.version)
+    return [FOUR_POINT_THREE_FOUR_CHANGELOG];
+  if (version === FOUR_POINT_THREE_THREE_CHANGELOG.version)
+    return [FOUR_POINT_THREE_THREE_CHANGELOG];
+  if (version === FOUR_POINT_THREE_TWO_CHANGELOG.version)
+    return [FOUR_POINT_THREE_TWO_CHANGELOG];
+  if (version === FOUR_POINT_THREE_ONE_CHANGELOG.version)
+    return [FOUR_POINT_THREE_ONE_CHANGELOG];
+  if (version === FOUR_POINT_THREE_ZERO_CHANGELOG.version)
+    return [FOUR_POINT_THREE_ZERO_CHANGELOG];
+  if (version === FOUR_POINT_TWO_ONE_CHANGELOG.version)
+    return [FOUR_POINT_TWO_ONE_CHANGELOG];
+  if (version === FOUR_POINT_TWO_ZERO_CHANGELOG.version)
+    return [FOUR_POINT_TWO_ZERO_CHANGELOG];
+  if (version === FOUR_POINT_ONE_TWO_CHANGELOG.version)
+    return [FOUR_POINT_ONE_TWO_CHANGELOG];
+  if (version === FOUR_POINT_ONE_ONE_CHANGELOG.version)
+    return [FOUR_POINT_ONE_ONE_CHANGELOG];
+  if (version === FOUR_POINT_ONE_ZERO_CHANGELOG.version)
+    return [FOUR_POINT_ONE_ZERO_CHANGELOG];
+  if (version === FOUR_POINT_ZERO_FOUR_CHANGELOG.version)
+    return [FOUR_POINT_ZERO_FOUR_CHANGELOG];
+  if (version === FOUR_POINT_ZERO_THREE_CHANGELOG.version)
+    return [FOUR_POINT_ZERO_THREE_CHANGELOG];
+  if (version === FOUR_POINT_ZERO_TWO_CHANGELOG.version)
+    return [FOUR_POINT_ZERO_TWO_CHANGELOG];
+  if (version === FOUR_POINT_ZERO_ONE_CHANGELOG.version)
+    return [FOUR_POINT_ZERO_ONE_CHANGELOG];
+  if (version === FOUR_POINT_ZERO_ZERO_CHANGELOG.version)
+    return [FOUR_POINT_ZERO_ZERO_CHANGELOG];
+  if (version === THREE_POINT_TWO_NINETEEN_CHANGELOG.version)
+    return [THREE_POINT_TWO_NINETEEN_CHANGELOG];
+  if (version === THREE_POINT_TWO_EIGHTEEN_CHANGELOG.version)
+    return [THREE_POINT_TWO_EIGHTEEN_CHANGELOG];
+  if (version === THREE_POINT_TWO_SEVENTEEN_CHANGELOG.version)
+    return [THREE_POINT_TWO_SEVENTEEN_CHANGELOG];
+  if (version === THREE_POINT_TWO_SIXTEEN_CHANGELOG.version)
+    return [THREE_POINT_TWO_SIXTEEN_CHANGELOG];
+  if (version === THREE_POINT_TWO_FIFTEEN_CHANGELOG.version)
+    return [THREE_POINT_TWO_FIFTEEN_CHANGELOG];
+  if (version === THREE_POINT_TWO_FOURTEEN_CHANGELOG.version)
+    return [THREE_POINT_TWO_FOURTEEN_CHANGELOG];
+  if (version === THREE_POINT_TWO_THIRTEEN_CHANGELOG.version)
+    return [THREE_POINT_TWO_THIRTEEN_CHANGELOG];
+  if (version === THREE_POINT_TWO_TWELVE_CHANGELOG.version)
+    return [THREE_POINT_TWO_TWELVE_CHANGELOG];
+  if (version === THREE_POINT_TWO_ELEVEN_CHANGELOG.version)
+    return [THREE_POINT_TWO_ELEVEN_CHANGELOG];
+  if (version === THREE_POINT_TWO_TEN_CHANGELOG.version)
+    return [THREE_POINT_TWO_TEN_CHANGELOG];
+  if (version === THREE_POINT_TWO_NINE_CHANGELOG.version)
+    return [THREE_POINT_TWO_NINE_CHANGELOG];
+  if (version === THREE_POINT_TWO_EIGHT_CHANGELOG.version)
+    return [THREE_POINT_TWO_EIGHT_CHANGELOG];
+  if (version === THREE_POINT_TWO_SEVEN_CHANGELOG.version)
+    return [THREE_POINT_TWO_SEVEN_CHANGELOG];
   if (version === THREE_POINT_TWO_SIX_CHANGELOG.version)
     return [THREE_POINT_TWO_SIX_CHANGELOG];
   if (version === THREE_POINT_TWO_FIVE_CHANGELOG.version)
@@ -1498,6 +2241,36 @@ export function currentVersionChangelog(version: string): ChangelogEntry[] {
 
 export function allChangelog(): ChangelogEntry[] {
   return [
+    FOUR_POINT_THREE_SIX_CHANGELOG,
+    FOUR_POINT_THREE_FIVE_CHANGELOG,
+    FOUR_POINT_THREE_FOUR_CHANGELOG,
+    FOUR_POINT_THREE_THREE_CHANGELOG,
+    FOUR_POINT_THREE_TWO_CHANGELOG,
+    FOUR_POINT_THREE_ONE_CHANGELOG,
+    FOUR_POINT_THREE_ZERO_CHANGELOG,
+    FOUR_POINT_TWO_ONE_CHANGELOG,
+    FOUR_POINT_TWO_ZERO_CHANGELOG,
+    FOUR_POINT_ONE_TWO_CHANGELOG,
+    FOUR_POINT_ONE_ONE_CHANGELOG,
+    FOUR_POINT_ONE_ZERO_CHANGELOG,
+    FOUR_POINT_ZERO_FOUR_CHANGELOG,
+    FOUR_POINT_ZERO_THREE_CHANGELOG,
+    FOUR_POINT_ZERO_TWO_CHANGELOG,
+    FOUR_POINT_ZERO_ONE_CHANGELOG,
+    FOUR_POINT_ZERO_ZERO_CHANGELOG,
+    THREE_POINT_TWO_NINETEEN_CHANGELOG,
+    THREE_POINT_TWO_EIGHTEEN_CHANGELOG,
+    THREE_POINT_TWO_SEVENTEEN_CHANGELOG,
+    THREE_POINT_TWO_SIXTEEN_CHANGELOG,
+    THREE_POINT_TWO_FIFTEEN_CHANGELOG,
+    THREE_POINT_TWO_FOURTEEN_CHANGELOG,
+    THREE_POINT_TWO_THIRTEEN_CHANGELOG,
+    THREE_POINT_TWO_TWELVE_CHANGELOG,
+    THREE_POINT_TWO_ELEVEN_CHANGELOG,
+    THREE_POINT_TWO_TEN_CHANGELOG,
+    THREE_POINT_TWO_NINE_CHANGELOG,
+    THREE_POINT_TWO_EIGHT_CHANGELOG,
+    THREE_POINT_TWO_SEVEN_CHANGELOG,
     THREE_POINT_TWO_SIX_CHANGELOG,
     THREE_POINT_TWO_FIVE_CHANGELOG,
     THREE_POINT_TWO_FOUR_CHANGELOG,
@@ -1557,6 +2330,9 @@ export function allChangelog(): ChangelogEntry[] {
     TWO_POINT_ZERO_CHANGELOG,
     ...CHANGELOG.filter(
       (entry) =>
+        entry !== THREE_POINT_TWO_NINE_CHANGELOG &&
+        entry !== THREE_POINT_TWO_EIGHT_CHANGELOG &&
+        entry !== THREE_POINT_TWO_SEVEN_CHANGELOG &&
         entry !== THREE_POINT_TWO_SIX_CHANGELOG &&
         entry !== THREE_POINT_TWO_FIVE_CHANGELOG &&
         entry !== THREE_POINT_TWO_FOUR_CHANGELOG &&

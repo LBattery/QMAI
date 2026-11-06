@@ -16,7 +16,7 @@ export type RunDeepChapterGeneration = (
   signal?: AbortSignal,
 ) => Promise<DeepChapterGenerationResult>
 
-export interface RunChapterWorkflowToolOptions {
+interface RunChapterWorkflowToolOptions {
   projectPath: string
   llmConfig: LlmConfig
   aiWorkflowMode: AiWorkflowMode
@@ -32,6 +32,15 @@ export interface RunChapterWorkflowToolOptions {
    * 本轮已选定的写作 Skill 提示。不作为工具参数，避免模型漏传。
    */
   getSelectedSkillsPrompt?: () => string | undefined
+  /**
+   * 本轮「文风写作」选择器选定的文风预设 id（丁-2）。同样不作为工具参数。
+   *
+   * ⚠️ **必须原样透传三态**：`undefined` = 没有覆盖（用项目启用项）、
+   * `null` = 本次显式不用文风。这里**不能**写 `?? undefined` / `|| undefined`
+   * —— 那会把 `null` 抹成 `undefined`，用户点了「本次不用文风」反而会用上
+   * 项目启用的那条（方向正好相反）。
+   */
+  getWritingStyleIdOverride?: () => string | null | undefined
 }
 
 interface RunChapterWorkflowParams {
@@ -85,7 +94,7 @@ export function createRunChapterWorkflowTool(options: RunChapterWorkflowToolOpti
     name: "run_chapter_workflow",
     description: [
       "运行小说章节写作工作流。用于生成、续写、改写或润色章节。",
-      "调用后会读取项目上下文、生成写作任务书、生成正文，并按当前模式执行审稿、返修和去AI味。",
+      "调用后会读取项目上下文、生成写作任务书、生成正文，并按当前模式执行审稿、返修；严格模式若有剩余问题再做局部修改。",
       "正文由本工具直接交付给用户，调用成功后本轮任务即结束：不要复述、改写或补充正文。",
       "一次调用只处理一章；保存到项目文件仍需要写入工具和用户确认。",
     ].join("\n"),
@@ -93,6 +102,9 @@ export function createRunChapterWorkflowTool(options: RunChapterWorkflowToolOpti
     permission: "auto",
     executeTimeoutMs: 0,
     finalizesRun: true,
+    buildRequiredToolFallbackParams: ({ taskGoal }) => ({
+      userRequest: taskGoal,
+    }),
     parameters: {
       intent: {
         type: "string",
@@ -133,6 +145,10 @@ export function createRunChapterWorkflowTool(options: RunChapterWorkflowToolOpti
       // 保证用户确认的计划一定进入章节生成链路，不依赖模型是否遵守自然语言提示。
       const planBlueprint = params.planBlueprint?.trim() || options.getPlanBlueprint?.()?.trim() || undefined
       const skillsPrompt = options.getSelectedSkillsPrompt?.()?.trim() || undefined
+      // 三态原样透传：这里刻意不用 `?.() ?? undefined`，见 getWritingStyleIdOverride 的注释。
+      const writingStyleIdOverride = options.getWritingStyleIdOverride
+        ? options.getWritingStyleIdOverride()
+        : undefined
       const result = await options.runDeepChapterGeneration(
         {
           projectPath: options.projectPath,
@@ -142,6 +158,7 @@ export function createRunChapterWorkflowTool(options: RunChapterWorkflowToolOpti
           aiWorkflowMode: params.workflowMode ?? options.aiWorkflowMode,
           planBlueprint,
           skillsPrompt,
+          writingStyleIdOverride,
         },
         {
           onWorkflowEvent: (event) => {

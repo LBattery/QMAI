@@ -13,16 +13,17 @@ import { loadCognitionState, cognitionToContextText } from "./character-cognitio
 import { readSoulDoc } from "./soul-doc"
 import { buildWritingStyleContext } from "./writing-style-store"
 import { buildSectionBriefing } from "./section-briefing"
+import { loadFanficCanonBody } from "./fanfic-canon"
 import type { DataSource, ContextLoadContext } from "./context-data-source"
 import { loadFrameworks } from "./story-simulation/framework-store"
 import { loadBinding, buildBindingContext } from "./story-simulation/framework-binding"
-import { RetrievalStore } from "./retrieval"
+import { RetrievalStore, type RetrievalEntry } from "./retrieval"
 import { writeFileAtomic, fileExists, listDirectory, createDirectory } from "@/commands/fs"
 import type { DataSourceCategory } from "./classification"
 
 // 导入现有的辅助函数
 import {
-  readOutlineContent,
+  readOutlineContextLayers,
   readChapterOutlineContent,
   readVolumeContextContent,
   searchRelevantContentUnified,
@@ -50,6 +51,7 @@ const DATA_SOURCE_CATEGORY_MAP: Record<string, DataSourceCategory[]> = {
   fallbackTimeline: ["timeline"],
   relatedSettings: ["settings"],
   canonRules: ["settings"],
+  sourceCanon: ["settings"],
   writingStyle: ["settings"],
   bookAnalysisReferences: ["memory", "plot_tools", "settings", "character_states"],
   searchResults: ["memory", "plot_tools"],
@@ -85,18 +87,18 @@ function excerptChapterContent(body: string): string {
 /**
  * 大纲数据源
  */
-export const outlineDataSource: DataSource<string> = {
+const outlineDataSource: DataSource<Awaited<ReturnType<typeof readOutlineContextLayers>>> = {
   name: "outline",
   priority: 1,
-  async load(context: ContextLoadContext): Promise<string> {
-    return await readOutlineContent(context.projectPath, context.chapterNumber)
+  async load(context: ContextLoadContext) {
+    return await readOutlineContextLayers(context.projectPath, context.chapterNumber)
   },
 }
 
 /**
  * 章节大纲数据源
  */
-export const chapterOutlineDataSource: DataSource<string> = {
+const chapterOutlineDataSource: DataSource<string> = {
   name: "chapterOutline",
   priority: 2,
   async load(context: ContextLoadContext): Promise<string> {
@@ -108,7 +110,7 @@ export const chapterOutlineDataSource: DataSource<string> = {
 /**
  * 卷信息数据源
  */
-export const volumeContextDataSource: DataSource<string> = {
+const volumeContextDataSource: DataSource<string> = {
   name: "volumeContext",
   priority: 3,
   async load(context: ContextLoadContext): Promise<string> {
@@ -119,7 +121,7 @@ export const volumeContextDataSource: DataSource<string> = {
 /**
  * 快照上下文数据源
  */
-export const snapshotDataSource: DataSource<{
+const snapshotDataSource: DataSource<{
   recentSummaries: string[]
   previousChapterEnding: string
   characterStates: string
@@ -193,7 +195,7 @@ export const snapshotDataSource: DataSource<{
 /**
  * 降级：近期章节摘要数据源
  */
-export const recentChapterContentsDataSource: DataSource<string[]> = {
+const recentChapterContentsDataSource: DataSource<string[]> = {
   name: "recentChapterContents",
   priority: 5,
   async load(context: ContextLoadContext): Promise<string[]> {
@@ -218,7 +220,7 @@ export const recentChapterContentsDataSource: DataSource<string[]> = {
   },
 }
 
-export const fallbackRecentSummariesDataSource: DataSource<string[]> = {
+const fallbackRecentSummariesDataSource: DataSource<string[]> = {
   name: "fallbackRecentSummaries",
   priority: 5,
   async load(context: ContextLoadContext): Promise<string[]> {
@@ -246,7 +248,7 @@ export const fallbackRecentSummariesDataSource: DataSource<string[]> = {
 /**
  * 降级：前一章结尾数据源
  */
-export const fallbackPreviousEndingDataSource: DataSource<string> = {
+const fallbackPreviousEndingDataSource: DataSource<string> = {
   name: "fallbackPreviousEnding",
   priority: 6,
   async load(context: ContextLoadContext): Promise<string> {
@@ -268,7 +270,7 @@ export const fallbackPreviousEndingDataSource: DataSource<string> = {
 /**
  * 降级：角色状态数据源
  */
-export const fallbackCharacterStatesDataSource: DataSource<string> = {
+const fallbackCharacterStatesDataSource: DataSource<string> = {
   name: "fallbackCharacterStates",
   priority: 7,
   async load(context: ContextLoadContext): Promise<string> {
@@ -286,7 +288,7 @@ export const fallbackCharacterStatesDataSource: DataSource<string> = {
 /**
  * 降级：伏笔状态数据源
  */
-export const fallbackForeshadowingStatesDataSource: DataSource<string> = {
+const fallbackForeshadowingStatesDataSource: DataSource<string> = {
   name: "fallbackForeshadowingStates",
   priority: 8,
   async load(context: ContextLoadContext): Promise<string> {
@@ -304,7 +306,7 @@ export const fallbackForeshadowingStatesDataSource: DataSource<string> = {
 /**
  * 降级：时间线数据源
  */
-export const fallbackTimelineDataSource: DataSource<string> = {
+const fallbackTimelineDataSource: DataSource<string> = {
   name: "fallbackTimeline",
   priority: 9,
   async load(context: ContextLoadContext): Promise<string> {
@@ -322,7 +324,7 @@ export const fallbackTimelineDataSource: DataSource<string> = {
 /**
  * 相关设定数据源
  */
-export const relatedSettingsDataSource: DataSource<string> = {
+const relatedSettingsDataSource: DataSource<string> = {
   name: "relatedSettings",
   priority: 10,
   async load(context: ContextLoadContext): Promise<string> {
@@ -340,7 +342,7 @@ export const relatedSettingsDataSource: DataSource<string> = {
 /**
  * 正史规则数据源
  */
-export const canonRulesDataSource: DataSource<string> = {
+const canonRulesDataSource: DataSource<string> = {
   name: "canonRules",
   priority: 11,
   async load(context: ContextLoadContext): Promise<string> {
@@ -356,15 +358,36 @@ export const canonRulesDataSource: DataSource<string> = {
 }
 
 /**
+ * 同人原作正典数据源
+ *
+ * 与 `canonRulesDataSource` 的本质区别：**按固定路径读取** `.novel/fanfic-canon.md`，
+ * 不做模糊检索。同人正典一旦被检索漏掉，模型就会凭空编造原作事实——
+ * 这正是「同人写得像原创」的直接原因。
+ *
+ * 原创项目没有这个文件，返回空串，不占预算、不影响既有行为。
+ */
+const sourceCanonDataSource: DataSource<string> = {
+  name: "sourceCanon",
+  priority: 2,
+  async load(context: ContextLoadContext): Promise<string> {
+    try {
+      return await loadFanficCanonBody(context.projectPath)
+    } catch {
+      return ""
+    }
+  },
+}
+
+/**
  * 写作风格数据源
  */
-export const writingStyleDataSource: DataSource<string> = {
+const writingStyleDataSource: DataSource<string> = {
   name: "writingStyle",
   priority: 12,
   async load(context: ContextLoadContext): Promise<string> {
-    // 优先级1: 已启用的拆书作品文风预设
+    // 优先级1: 已启用的拆书作品文风预设（传 task 以按题材检索最接近的原文片段）
     try {
-      const enabledStyle = await buildWritingStyleContext(context.projectPath)
+      const enabledStyle = await buildWritingStyleContext(context.projectPath, { task: context.task })
       if (enabledStyle.trim()) return enabledStyle
     } catch {}
 
@@ -390,7 +413,7 @@ export const writingStyleDataSource: DataSource<string> = {
   },
 }
 
-export const bookAnalysisReferencesDataSource: DataSource<string> = {
+const bookAnalysisReferencesDataSource: DataSource<string> = {
   name: "bookAnalysisReferences",
   priority: 19,
   async load(context: ContextLoadContext): Promise<string> {
@@ -402,7 +425,7 @@ export const bookAnalysisReferencesDataSource: DataSource<string> = {
 /**
  * 搜索结果数据源
  */
-export const searchResultsDataSource: DataSource<string> = {
+const searchResultsDataSource: DataSource<string> = {
   name: "searchResults",
   priority: 13,
   async load(context: ContextLoadContext): Promise<string> {
@@ -418,7 +441,7 @@ export const searchResultsDataSource: DataSource<string> = {
 /**
  * 图谱搜索结果数据源
  */
-export const graphSearchResultsDataSource: DataSource<string> = {
+const graphSearchResultsDataSource: DataSource<string> = {
   name: "graphSearchResults",
   priority: 14,
   async load(context: ContextLoadContext): Promise<string> {
@@ -434,7 +457,7 @@ export const graphSearchResultsDataSource: DataSource<string> = {
 /**
  * 修订反馈数据源
  */
-export const revisionFeedbackDataSource: DataSource<any> = {
+const revisionFeedbackDataSource: DataSource<any> = {
   name: "revisionFeedback",
   priority: 15,
   async load(context: ContextLoadContext): Promise<any> {
@@ -450,7 +473,7 @@ export const revisionFeedbackDataSource: DataSource<any> = {
 /**
  * 认知状态数据源
  */
-export const cognitionTextDataSource: DataSource<string> = {
+const cognitionTextDataSource: DataSource<string> = {
   name: "cognitionText",
   priority: 16,
   async load(context: ContextLoadContext): Promise<string> {
@@ -466,7 +489,7 @@ export const cognitionTextDataSource: DataSource<string> = {
 /**
  * 灵魂文档数据源
  */
-export const soulDocDataSource: DataSource<string> = {
+const soulDocDataSource: DataSource<string> = {
   name: "soulDoc",
   priority: 17,
   async load(context: ContextLoadContext): Promise<string> {
@@ -478,7 +501,7 @@ export const soulDocDataSource: DataSource<string> = {
  * 本节速记数据源
  * 根据细纲筛选角色状态、伏笔和世界观约束，priority=0（最优先）
  */
-export const sectionBriefingDataSource: DataSource<string> = {
+const sectionBriefingDataSource: DataSource<string> = {
   name: "sectionBriefing",
   priority: 0,
   async load(context: ContextLoadContext): Promise<string> {
@@ -498,7 +521,7 @@ export const sectionBriefingDataSource: DataSource<string> = {
  * 加载当前激活的框架绑定，构建注入 AI 会话的上下文文本。
  * 无绑定 / 框架缺失 → 空字符串（由缓存层记 empty）；真实 I/O 异常上抛。
  */
-export const storyFrameworkBindingDataSource: DataSource<string> = {
+const storyFrameworkBindingDataSource: DataSource<string> = {
   name: "storyFrameworkBinding",
   priority: 19,
   async load(context: ContextLoadContext): Promise<string> {
@@ -513,92 +536,27 @@ export const storyFrameworkBindingDataSource: DataSource<string> = {
 
 /**
  * Retrieval 索引数据源
- * 从 retrieval.md 主索引读取最近章节摘要
+ * 返回项目级原始条目（不做章节过滤），缓存以项目级 key 复用；
+ * 按章节过滤逻辑移到 context-engine 的 buildContextPackFromRawData。
  */
-export const retrievalDataSource: DataSource<{
-  recentSummaries: string[]
-  characterStates: string
-  characterAppearance: string
-  foreshadowingSignals: string[]
-  timeline: string
-}> = {
+const retrievalDataSource: DataSource<{ entries: RetrievalEntry[] }> = {
   name: "retrieval",
   priority: 3,
   async load(context: ContextLoadContext) {
-    const { projectPath, chapterNumber, config } = context
-    const store = createRetrievalStoreForDataSource(projectPath)
+    const store = createRetrievalStoreForDataSource(context.projectPath)
     const hasIndex = await store.hasIndex()
-    
+
     if (!hasIndex) {
-      return {
-        recentSummaries: [],
-        characterStates: "",
-        characterAppearance: "",
-        foreshadowingSignals: [],
-        timeline: "",
-      }
+      return { entries: [] }
     }
 
     try {
       const allEntries = await store.getAllEntries()
       const sortedEntries = [...allEntries].sort((a, b) => a.chapterNumber - b.chapterNumber)
-      
-      const summaryCount = config.recentSummaryWindow
-      const lookbackCount = config.snapshotLookback
-      
-      const summaryEntries = chapterNumber
-        ? sortedEntries.filter((e) => e.chapterNumber < chapterNumber).slice(-summaryCount)
-        : sortedEntries.slice(-summaryCount)
-      
-      const lookbackEntries = chapterNumber
-        ? sortedEntries.filter((e) => e.chapterNumber < chapterNumber).slice(-lookbackCount)
-        : sortedEntries.slice(-lookbackCount)
-
-      const recentSummaries = summaryEntries.map(
-        (entry) => `第${entry.chapterNumber}章 ${entry.chapterTitle}：${entry.summary}`
-      )
-      
-      const characterStates = joinNonEmpty(
-        lookbackEntries
-          .filter((e) => e.characterStates)
-          .map((e) => `第${e.chapterNumber}章：${e.characterStates}`),
-        "\n",
-      )
-
-      const characterAppearance = joinNonEmpty(
-        lookbackEntries
-          .filter((entry) => entry.characterAppearance)
-          .map((entry) => `第${entry.chapterNumber}章：${entry.characterAppearance}`),
-        "\n",
-      )
-      
-      const foreshadowingSignals = lookbackEntries
-        .filter((e) => e.foreshadowingChanges)
-        .flatMap((e) => e.foreshadowingChanges.split("\n").filter(Boolean))
-      
-      const timeline = joinNonEmpty(
-        lookbackEntries
-          .filter((e) => e.timelineEvents)
-          .map((e) => `第${e.chapterNumber}章：${e.timelineEvents}`),
-        "\n",
-      )
-
-      return {
-        recentSummaries,
-        characterStates,
-        characterAppearance,
-        foreshadowingSignals,
-        timeline,
-      }
+      return { entries: sortedEntries }
     } catch (err) {
       console.warn("[DataSource] retrieval load failed:", err)
-      return {
-        recentSummaries: [],
-        characterStates: "",
-        characterAppearance: "",
-        foreshadowingSignals: [],
-        timeline: "",
-      }
+      return { entries: [] }
     }
   },
 }
@@ -637,6 +595,7 @@ export function getAllDataSources(): DataSource<any>[] {
     fallbackTimelineDataSource,
     relatedSettingsDataSource,
     canonRulesDataSource,
+    sourceCanonDataSource,
     writingStyleDataSource,
     bookAnalysisReferencesDataSource,
     searchResultsDataSource,

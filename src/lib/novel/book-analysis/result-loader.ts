@@ -6,6 +6,8 @@
  */
 import { readFile, listDirectory } from "@/commands/fs"
 import { joinPath } from "@/lib/path-utils"
+import { findCharacterForSkillFile } from "./skill-character-match"
+import { migrateStyleProfile } from "./style-profile-schema"
 import type {
   BookAnalysisResult,
   BookAnalysisMetadata,
@@ -15,10 +17,10 @@ import type {
 } from "./types"
 
 /** 读取已提取的作品文风画像（feature/book-style-extraction），不存在时返回 null。 */
-export async function loadStyleProfile(bookPath: string): Promise<BookStyleProfile | null> {
+async function loadStyleProfile(bookPath: string): Promise<BookStyleProfile | null> {
   try {
     const raw = await readFile(joinPath(bookPath, "style-profile.json"))
-    return JSON.parse(raw) as BookStyleProfile
+    return migrateStyleProfile(JSON.parse(raw) as BookStyleProfile)
   } catch {
     return null
   }
@@ -60,9 +62,8 @@ export async function loadBookAnalysisResult(
       if (!f.is_dir && f.name.endsWith(".md")) {
         const content = await readFile(f.path)
         const baseName = f.name.replace(/-skill\.md$/i, "").replace(/\.md$/i, "")
-        const character = characters.find(
-          (c) => c.name === baseName || f.name.includes(c.name),
-        )
+        // fix/skill-match：与 library-state 同一确定性匹配，避免子串误配
+        const character = findCharacterForSkillFile(f.name, content, characters)
         skills.push({
           id: character ? `skill-${character.id}` : `skill-${baseName}`,
           characterId: character?.id ?? baseName,

@@ -1,275 +1,239 @@
-﻿import { useTranslation } from "react-i18next"
-import { Label } from "@/components/ui/label"
+import { useEffect, useId, useMemo, useState } from "react"
+import { Check } from "lucide-react"
+import { UI_TEST_SKINS, readUiTestSkin, writeUiTestSkin, type UiTestSkin } from "@/lib/ui-test"
 import type { SettingsDraft, DraftSetter } from "../settings-types"
+import { useSystemFonts } from "./body-typography-fields"
 import {
-  normalizeSidebarNavConfig,
-  type SidebarNavItemId,
-} from "@/lib/sidebar-nav-preferences"
-import { UI_FONT_OPTIONS } from "@/lib/font-settings"
+  UI_FONT_OPTIONS,
+  UI_FONT_SIZE_MAX,
+  UI_FONT_SIZE_MIN,
+  UI_FONT_SIZE_PRESETS,
+} from "@/lib/font-settings"
+import {
+  newSystemFontsOnly,
+  systemFontValue,
+} from "@/lib/system-fonts"
+import {
+  BUNDLED_FONT_LICENSES,
+  BUNDLED_FONT_LICENSES_DIR,
+  PROMINENT_FONT_NOTICE,
+} from "@/lib/bundled-font-licenses"
 
 interface Props {
   draft: SettingsDraft
   setDraft: DraftSetter
 }
 
-const UI_LANGUAGES = [
-  { value: "en", label: "English" },
-  { value: "zh", label: "中文" },
-]
+/**
+ * 本机字体（阶段 3）。
+ *
+ * 枚举、去重与失败态的实现已搬到共享组件 `./body-typography-fields`
+ * （设置页与写作现场浮层共用那一份），此处只从那里取 hook 与组件。
+ */
+function UiTestInterfaceSection({ draft, setDraft }: Props) {
+  const id = useId()
+  const [skin, setSkin] = useState<UiTestSkin>(readUiTestSkin)
+  const [skinError, setSkinError] = useState("")
+  const { fonts: rawSystemFonts, error: systemFontError } = useSystemFonts()
 
-const FONT_SIZE_PRESETS = [
-  { label: "小", value: 0.9 },
-  { label: "默认", value: 1 },
-  { label: "大", value: 1.15 },
-  { label: "特大", value: 1.3 },
-]
+  /*
+   * 界面字体按**界面**内置表去重（用 useMemo 而不是每次渲染重算：
+   * 枚举结果是模块级缓存的对象，本机列表可达数百项，每渲染一次重算一遍没必要）。
+   * 正文字体的去重（按正文内置表）随正文字体控件一起住在共享组件里。
+   */
+  const uiSystemFonts = useMemo(
+    () => newSystemFontsOnly(rawSystemFonts, UI_FONT_OPTIONS.map((o) => o.cssFamily)),
+    [rawSystemFonts],
+  )
+  const scalePercent = Math.round(draft.uiFontSizeScale * 100)
+  const sizePreset = UI_FONT_SIZE_PRESETS.find((preset) => Math.abs(draft.uiFontSizeScale - preset.value) < 0.001)
 
-const VISUAL_STYLE_OPTIONS = [
-  {
-    value: "classic",
-    label: "经典原版",
-    description: "保留当前浅色、深色配色。",
-    colors: ["#FFFFFF", "#10251D", "#9AD7B7"],
-  },
-  {
-    value: "fangzheng",
-    label: "直角工具型",
-    description: "冷灰背景、清晰按钮与选中态、无圆角、紧凑设置密度。",
-    colors: ["#F0F4F7", "#007A68", "#C8EFE6"],
-  },
-  {
-    value: "tianqing",
-    label: "天青釉色",
-    description: "天青主题色、冰裂浅底、鎏金点缀。",
-    colors: ["#3D8B9E", "#E3F3F8", "#C4A265"],
-  },
-  {
-    value: "qingci",
-    label: "青瓷墨韵",
-    description: "青瓷主色、宣纸暖底、檀木点缀。",
-    colors: ["#3E6360", "#EDE6D8", "#B8956A"],
-  },
-  {
-    value: "yunshan",
-    label: "云山黛色",
-    description: "黛蓝主题色、晨雾浅底、石绿辅助。",
-    colors: ["#35647A", "#DAEEF5", "#3A7A5C"],
-  },
-  {
-    value: "cangzhu",
-    label: "苍苍竹色",
-    description: "竹青主题色、竹编暖纸背景、金竹辅助色。",
-    colors: ["#3E6B58", "#EDE8D8", "#C8A96E"],
-  },
-  {
-    value: "yuebai",
-    label: "月白黛蓝",
-    description: "黛蓝主题色、霜月浅底、琥珀点缀。",
-    colors: ["#F4F7FC", "#304A8A", "#D6A35C"],
-  },
-  {
-    value: "gumo",
-    label: "古墨流金",
-    description: "古金主题色、象牙浅底、玄墨层次。",
-    colors: ["#C49A3C", "#F5F0E8", "#D4AD5A"],
-  },
-] as const
+  useEffect(() => {
+    const root = document.documentElement
+    const observer = new MutationObserver(() => {
+      const current = root.dataset.uiTestSkin
+      if (current === "jing" || current === "zhi" || current === "xing") setSkin(current)
+    })
+    observer.observe(root, { attributes: true, attributeFilter: ["data-ui-test-skin"] })
+    return () => observer.disconnect()
+  }, [])
 
-const SIDEBAR_NAV_LABEL_KEYS: Record<SidebarNavItemId, string> = {
-  wiki: "novel.nav.wiki",
-  sources: "novel.nav.sources",
-  graph: "novel.nav.graph",
-  lint: "novel.nav.lint",
-  soul: "novel.nav.soul",
-  skillLibrary: "novel.nav.skillLibrary",
-  bookAnalysis: "novel.nav.dismantling",
-  reviewCenter: "novel.nav.reviewCenter",
-  storySimulation: "novel.nav.storySimulation",
-  directorRoom: "novel.nav.directorRoom",
-  search: "novel.nav.search",
-  trash: "nav.trash",
+  function chooseSkin(next: UiTestSkin) {
+    try {
+      writeUiTestSkin(next)
+      setSkin(next)
+      setSkinError("")
+      window.dispatchEvent(new CustomEvent("qmai-ui-test-skin-change", { detail: next }))
+    } catch {
+      setSkinError("无法保存测试版外观，请重试。当前皮肤保持不变。")
+    }
+  }
+
+  /*
+   * ⚠ 正文字体与 5 个排版参数（字号 / 行间距 / 字间距 / 左右边距 / 底部安全距离）
+   * **已经从这个页面移走**，见下方 <div data-ui="interface-fields"> 里的注释。
+   *
+   * 这里原先有一个 6 分支的穷尽 switch（`setBodyTypography`），把共享控件的键
+   * 映射到设置草稿字段，并用 `const _never: never = key` 兜住"新增第 7 个参数时
+   * 静默丢写"。那套守卫随控件一起搬去了写作现场浮层 —— 现在映射在
+   * preview-panel.tsx 的 `applyBodyTypographyChange` 里，**同样**带 never 收尾
+   * （不要以为这里的守卫被削弱了：换了个位置，规则没变）。
+   * 本页面不再持有这 6 个字段，所以此处也不该再有到它们的写入路径。
+   */
+
+  return (
+    <div data-ui="interface-settings">
+      <h1 className="ui-test-page-title">外观与界面</h1>
+      <section aria-label="推荐外观">
+        <p className="ui-test-interface-label">推荐外观</p>
+        <div data-ui="interface-skins" role="group" aria-label="测试版皮肤">
+          {UI_TEST_SKINS.map((option) => (
+            <button key={option.id} type="button" data-ui-skin-choice={option.id} aria-label={`${option.name}皮肤`} aria-pressed={skin === option.id} onClick={() => chooseSkin(option.id)}>
+              <span aria-hidden="true" className={`ui-test-interface-swatch ui-test-skin-dot-${option.id}`} />
+              <span className="ui-test-interface-skin-label"><span>{option.name}</span>{skin === option.id && <span className="ui-test-interface-selected"><Check aria-hidden="true" />已选择</span>}</span>
+            </button>
+          ))}
+        </div>
+        <p className="ui-test-interface-description">三款皮肤立即应用，仅保存到独立测试版外观偏好，不改变书稿或模型配置。</p>
+        {skinError && <p role="alert" className="text-sm text-destructive">{skinError}</p>}
+      </section>
+      <div data-ui="interface-fields">
+        <div className="ui-test-interface-row">
+          <div><label htmlFor={`${id}-font`}>界面字体</label><p>沿用本机已安装字体与系统回退；保存后生效。</p></div>
+          <select id={`${id}-font`} aria-label="界面字体" value={draft.uiFontFamily} onChange={(event) => setDraft("uiFontFamily", event.target.value as SettingsDraft["uiFontFamily"])}>
+            <optgroup label="推荐">
+              {UI_FONT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </optgroup>
+            {/*
+              本机字体分组（阶段 3）。
+              没有枚举结果时**不显示空分组** —— 一个空的 <optgroup> 会让用户以为
+              自己机器上没装中文字体，而更常见的原因只是这里还没加载完。
+            */}
+            {uiSystemFonts.length > 0 && (
+              <optgroup label="本机中文字体">
+                {uiSystemFonts.map((font) => {
+                  const value = systemFontValue(font.family)
+                  // sanitize 不通过的族名不进列表（systemFontValue 返回 null）
+                  return value ? <option key={value} value={value}>{font.display}</option> : null
+                })}
+              </optgroup>
+            )}
+          </select>
+        </div>
+        {systemFontError && (
+          <p role="status" className="ui-test-interface-description">
+            未能读取本机字体（{systemFontError}），界面字体下拉只显示推荐的随包字体。
+          </p>
+        )}
+        {/*
+          ── 正文字体与 5 个排版参数**不在这里**（用户明确要求）──
+
+          用户原话：「设置当中显示的『正文字体、正文字号、行间距、字间距、
+          左右边距、底部安全距离』这些内容，完全不需要放在这里。这些是在
+          章节当中显示的，不应该放在设置当中。」
+
+          这不是单纯的"挪个位置"：这 6 项是**章节正文的排版**，作用域是当前
+          文档的正文观感，用户调它的时机是"正在写这一章的时候"。
+          放进全局设置页有两个实际害处：
+            · 心智模型错位 —— 在"外观与界面"里改，会以为改的是整个软件的外观，
+              而它只影响正文；
+            · 改了不生效的错觉 —— 设置页要先点「保存」才写盘，
+              而写作现场是边拖边看、立即生效，同一个参数在两处行为不同。
+
+          它们现在只由章节工具栏的「字体设置」浮层提供
+          （preview-panel.tsx 里渲染那个共享控件）。
+          本页面因此**不得**再渲染那个共享控件 ——
+          这条由 interface-sidebar-nav.spec.ts 的正向+反向断言钉住。
+          该页面保留的只有界面自己的字体与字号。
+        */}
+        <div className="ui-test-interface-row">
+          <div><label htmlFor={`${id}-size`}>界面字号</label><p>当前 {scalePercent}%；保留字号预设和细调，保存后生效。</p></div>
+          <div className="ui-test-interface-size">
+            <select id={`${id}-size`} aria-label="字号预设" value={sizePreset?.value ?? "custom"} onChange={(event) => setDraft("uiFontSizeScale", Number(event.target.value))}>
+              {!sizePreset && <option value="custom" disabled>自定义 · {scalePercent}%</option>}
+              {UI_FONT_SIZE_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label} · {Math.round(preset.value * 100)}%</option>)}
+            </select>
+            <input type="range" min={Math.round(UI_FONT_SIZE_MIN * 100)} max={Math.round(UI_FONT_SIZE_MAX * 100)} step={5} value={scalePercent} aria-label="界面字号" onChange={(event) => setDraft("uiFontSizeScale", Number(event.target.value) / 100)} />
+          </div>
+        </div>
+      </div>
+      <BundledFontLicenses />
+    </div>
+  )
+}
+
+/**
+ * 随包字体的第三方许可告知。
+ *
+ * ── 这里有两件事，义务不同，别把它们混在一起 ──
+ *   · **版权清单**（折叠区里那一串）：OFL-1.1 要求保留版权声明与许可全文 ——
+ *     随包的 `fonts/licenses/` 满足"保留"，界面上给一个可展开的入口满足"能看到"。
+ *   · **显著声明**（`data-ui="prominent-font-notice"`）：只有当随包字体里
+ *     **存在非 OFL 字体**时才需要，因为那种许可通常带一句
+ *     `YOU shall make a prominent notice in the software to state that
+ *      <字体名> are used.`。关键词是 **in the software** ——
+ *     仅把许可证文本随安装包放到磁盘上**不满足**这一条，
+ *     那句话必须出现在用户能看到的界面上。
+ *
+ * ── 为什么显著声明的机制保留，但当前不渲染 ──
+ * 随包字体当前**全部为 OFL-1.1**（8 款族 / 10 个字重文件），没有任何一款
+ * 需要显著声明，所以 `prominentNotice` 是空字符串，这里**不渲染**那句话 ——
+ * 否则界面上会出现一句与事实不符的告知（说用了某字体，其实没随包）。
+ * 机制本身必须留着：日后一旦引入非 OFL 字体，只需在
+ * `src/lib/bundled-font-licenses.json` 里填上 `prominentNotice` 并点名该字体，
+ * 这里就自动出现，无需改代码。
+ *
+ * ⚠ 它一旦非空，**必须保持默认可见**，不许折进下面的 <details>：
+ * 折进默认收起的折叠区就等于"用户看不到"，那条许可义务不再满足 ——
+ * 这不是审美取舍，是许可合规问题。
+ *
+ * ── 数据不写在这里 ──
+ * 全部来自 `src/lib/bundled-font-licenses.json`，并由
+ * `scripts/check-bundled-font-licenses.mjs` 对照随包清单与许可原文核对。
+ * 该脚本与 `src/lib/bundled-font-licenses.spec.ts` 用的是同一条**通用规则**：
+ * 「非 OFL 集合非空 ⟺ prominentNotice 非空且逐个点名」，不硬编码任何字体名。
+ * 清单增删字体而这里没跟上，就变成"告知不完整"或"告知与事实不符" ——
+ * 两者都不会有任何测试失败来提醒，所以必须靠校验脚本。
+ */
+function BundledFontLicenses() {
+  return (
+    <section aria-label="第三方字体许可" data-ui="bundled-font-licenses">
+      {/*
+        ⚠ 仅当 `PROMINENT_FONT_NOTICE` 非空时才渲染。
+
+        渲染一个空的 <p> 会在界面上留下一句空话，而"随包字体里没有它是事实"
+        时渲染一句"本软件使用了 X 字体"更是**告知与事实不符**（对用户误导）。
+        所以这条渲染位由数据决定出不出现。
+      */}
+      {PROMINENT_FONT_NOTICE.trim() !== "" && (
+        <p className="ui-test-interface-description" data-ui="prominent-font-notice">
+          {PROMINENT_FONT_NOTICE}
+        </p>
+      )}
+      {/*
+        版权清单默认收起。它仍需**在界面里可达**：各款 OFL 字体要求保留版权声明，
+        而随包的 fonts/licenses/ 满足的是"保留"，界面上给一个可展开的入口
+        满足的是"用户能看到"。
+      */}
+      <details data-ui="bundled-font-license-details">
+        <summary className="ui-test-interface-label">第三方字体许可</summary>
+        <ul className="ui-test-interface-description" data-ui="bundled-font-license-list">
+          {BUNDLED_FONT_LICENSES.map((font) => (
+            <li key={font.family}>
+              <span>{font.display}</span>
+              <span> · {font.license}</span>
+              <span> · {font.copyright}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="ui-test-interface-description">
+          以上字体的完整许可证原文随安装包提供，位于安装目录的 {BUNDLED_FONT_LICENSES_DIR} 文件夹下。
+        </p>
+      </details>
+    </section>
+  )
 }
 
 export function InterfaceSection({ draft, setDraft }: Props) {
-  const { t } = useTranslation()
-  const scalePercent = Math.round(draft.uiFontSizeScale * 100)
-  const sidebarNavConfig = normalizeSidebarNavConfig(draft.sidebarNavConfig)
-  const hiddenSidebarNavIds = new Set(sidebarNavConfig.hidden)
-
-  const handleToggleSidebarNavItem = (id: SidebarNavItemId, visible: boolean) => {
-    const hidden = visible
-      ? sidebarNavConfig.hidden.filter((itemId) => itemId !== id)
-      : [...sidebarNavConfig.hidden, id]
-    setDraft("sidebarNavConfig", normalizeSidebarNavConfig({
-      ...sidebarNavConfig,
-      hidden,
-    }))
-  }
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold">{t("settings.sections.interface.title")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("settings.sections.interface.description")}
-        </p>
-      </div>
-
-      <div className="space-y-3 rounded-lg border p-4">
-        <div>
-          <Label>视觉风格</Label>
-          <p className="mt-1 text-xs text-muted-foreground">
-            选择软件界面的整体视觉方案；直角工具型会同时调整浅色、深色、按钮和选中状态。
-          </p>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {VISUAL_STYLE_OPTIONS.map((option) => {
-            const active = draft.visualStyle === option.value
-            return (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => setDraft("visualStyle", option.value)}
-                className={`rounded-lg border p-3 text-left transition-all ${
-                  active
-                    ? "border-primary bg-primary/10 shadow-sm ring-1 ring-primary/45"
-                    : "border-border hover:border-primary/70 hover:bg-accent/70 hover:shadow-sm hover:ring-1 hover:ring-primary/25"
-                }`}
-              >
-                <div className="mb-3 flex gap-1.5">
-                  {option.colors.map((color) => (
-                    <span
-                      key={color}
-                      className="h-7 flex-1 rounded-md border"
-                      style={{ backgroundColor: color }}
-                    />
-                  ))}
-                </div>
-                <div className="text-sm font-medium">{option.label}</div>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">{option.description}</p>
-              </button>
-            )
-          })}
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <Label>{t("settings.sections.interface.uiLanguage")}</Label>
-        <div className="flex flex-wrap gap-2">
-          {UI_LANGUAGES.map((l) => {
-            const active = draft.uiLanguage === l.value
-            return (
-              <button
-                key={l.value}
-                type="button"
-                onClick={() => setDraft("uiLanguage", l.value)}
-                className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                  active
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border hover:bg-accent"
-                }`}
-              >
-                {l.label}
-              </button>
-            )
-          })}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.sections.interface.uiLanguageHint")}
-        </p>
-      </div>
-
-      <div className="space-y-3 rounded-lg border p-4">
-        <div>
-          <Label>{t("settings.sections.interface.sidebarNavTitle")}</Label>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("settings.sections.interface.sidebarNavDescription")}
-          </p>
-        </div>
-        <div className="grid gap-2">
-          {sidebarNavConfig.order.map((id) => {
-            const visible = !hiddenSidebarNavIds.has(id)
-            return (
-              <label
-                key={id}
-                className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm transition-colors hover:bg-accent/40"
-              >
-                <span className="truncate">{t(SIDEBAR_NAV_LABEL_KEYS[id])}</span>
-                <input
-                  type="checkbox"
-                  checked={visible}
-                  onChange={(e) => handleToggleSidebarNavItem(id, e.target.checked)}
-                  className="h-4 w-4 accent-primary"
-                  aria-label={t(SIDEBAR_NAV_LABEL_KEYS[id])}
-                />
-              </label>
-            )
-          })}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.sections.interface.sidebarNavOrderHint")}
-        </p>
-      </div>
-
-      <div className="space-y-3 rounded-lg border p-4">
-        <div>
-          <Label>界面字体</Label>
-          <p className="mt-1 text-xs text-muted-foreground">
-            默认使用本机系统字体，也可以切换为本机已安装的常见字体。
-          </p>
-        </div>
-        <select
-          value={draft.uiFontFamily}
-          onChange={(e) => setDraft("uiFontFamily", e.target.value as SettingsDraft["uiFontFamily"])}
-          className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-ring/30"
-          aria-label="界面字体"
-        >
-          {UI_FONT_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="space-y-3 rounded-lg border p-4">
-        <div className="flex items-center justify-between">
-          <Label>界面字号</Label>
-          <span className="text-xs text-muted-foreground">{scalePercent}%</span>
-        </div>
-        <input
-          type="range"
-          min={85}
-          max={130}
-          step={5}
-          value={scalePercent}
-          onChange={(e) => setDraft("uiFontSizeScale", Number(e.target.value) / 100)}
-          className="w-full accent-primary"
-          aria-label="界面字号"
-        />
-        <div className="flex flex-wrap gap-2">
-          {FONT_SIZE_PRESETS.map((preset) => {
-            const active = Math.abs(draft.uiFontSizeScale - preset.value) < 0.001
-            return (
-              <button
-                key={preset.value}
-                type="button"
-                onClick={() => setDraft("uiFontSizeScale", preset.value)}
-                className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                  active
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border hover:bg-accent"
-                }`}
-              >
-                {preset.label}
-              </button>
-            )
-          })}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          调整整个应用的字号，保存后立即生效。
-        </p>
-      </div>
-    </div>
-  )
+  return <UiTestInterfaceSection draft={draft} setDraft={setDraft} />
 }

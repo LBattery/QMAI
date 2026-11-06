@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { computeNovelContextTokenBudget } from "@/lib/context-budget"
-import type { ContextPack } from "@/lib/novel/context-engine"
+import { SourceCanonOverflowError, type ContextPack } from "@/lib/novel/context-engine"
 import { composeContext } from "./composer"
 import { estimateContextTokens } from "./token-estimator"
 
@@ -54,6 +54,72 @@ describe("composeContext", () => {
     })
     expect(result.stableCore).toContain("故事框架绑定")
     expect(result.stableCore).toContain("测试框架")
+  })
+
+  it("injects fanfic source canon into the stable core ahead of self-owned settings", () => {
+    const result = composeContext({
+      contextPack: pack({
+        sourceCanon: "原作正典：斗气分九段；萧炎曾跌为废物。",
+        relatedSettings: "本作新增：主角来自地球。",
+      }),
+      dependencyStamp,
+    })
+
+    expect(result.stableCore).toContain("原作正典")
+    expect(result.stableCore).toContain("斗气分九段")
+    // 原作既成事实排在「核心设定」之前，本作新设定不得压过它
+    expect(result.stableCore.indexOf("原作正典")).toBeLessThan(
+      result.stableCore.indexOf("核心设定"),
+    )
+  })
+
+  it("keeps original projects free of an empty canon section", () => {
+    const result = composeContext({ contextPack: pack(), dependencyStamp })
+    expect(result.stableCore).not.toContain("原作正典")
+  })
+
+  it("正典被预算压缩或丢弃时抛错，而不是按比例静默截断", () => {
+    const canon = "# 同人正典\n" + "原作既成事实：斗气分九段；萧炎曾跌为废物。".repeat(300)
+
+    // 预算充足：保留
+    const roomy = composeContext({
+      contextPack: pack({ sourceCanon: canon }),
+      dependencyStamp,
+      maxContextSize: 32000,
+    })
+    expect(roomy.stableCore).toContain(canon)
+
+    // 预算不足：此前是 disposition=truncated 静默压到 ~5%，现在是硬失败
+    for (const maxContextSize of [2000, 4000, 8000]) {
+      expect(
+        () => composeContext({ contextPack: pack({ sourceCanon: canon }), dependencyStamp, maxContextSize }),
+        `maxContextSize=${maxContextSize} 应抛错而不是截断`,
+      ).toThrow(SourceCanonOverflowError)
+    }
+  })
+
+  it("正典被更高优先字段挤占时同样抛错，不会整体丢弃", () => {
+    const canon = "# 同人正典\n" + "原作既成事实：斗气分九段。".repeat(300)
+    expect(() =>
+      composeContext({
+        contextPack: pack({
+          sourceCanon: canon,
+          soulDoc: "灵魂文档".repeat(1500),
+          storyFrameworkBinding: "框架绑定".repeat(1500),
+          outline: "大纲骨架".repeat(1500),
+          canonRules: "硬规则".repeat(1500),
+          relatedSettings: "核心设定".repeat(1500),
+        }),
+        dependencyStamp,
+        maxContextSize: 8000,
+      }),
+    ).toThrow(SourceCanonOverflowError)
+  })
+
+  it("没有正典时不触发守卫，原创项目行为不变", () => {
+    expect(() =>
+      composeContext({ contextPack: pack(), dependencyStamp, maxContextSize: 2000 }),
+    ).not.toThrow()
   })
 
   it("keeps candidate, injected and saved tokens conserved under one fragment pipeline", () => {
@@ -190,7 +256,70 @@ describe("composeContext", () => {
 
     expect(large.stats.budgetTokens).toBe(computeNovelContextTokenBudget(204_800, 0))
     expect(small.stats.budgetTokens).toBe(computeNovelContextTokenBudget(32_000, 0))
+    if (typeof large.stats.budgetTokens !== "number" || typeof small.stats.budgetTokens !== "number") {
+      throw new Error("composeContext 必须在 stats 中返回数值型 budgetTokens，否则上面的等值断言无法成立")
+    }
     expect(large.stats.budgetTokens).toBeGreaterThan(small.stats.budgetTokens)
     expect(large.stats.budgetTokens).not.toBe(16_000)
+  })
+})
+
+
+describe("项目与章节缓存层隔离", () => {
+  it("切换章节不改写项目稳定核心，章纲仍在当前动态资料内", () => {
+    const make = (chapter: number) => composeContext({
+      contextPack: pack({
+        outline: `全书固定主线\n第${chapter}卷\n第${chapter}章执行要求`,
+        projectOutline: "全书固定主线",
+        chapterOutlineContext: `第${chapter}卷\n第${chapter}章执行要求`,
+        task: `续写第${chapter}章`,
+      }),
+      dependencyStamp,
+      tokenBudget: 5000,
+    })
+    const first = make(1)
+    const second = make(2)
+    expect(first.stableCore).toBe(second.stableCore)
+    expect(first.stableCore).toContain("全书固定主线")
+    expect(first.stableCore).not.toContain("执行要求")
+    expect(first.dynamicContext).toContain("第1章执行要求")
+    expect(second.dynamicContext).toContain("第2章执行要求")
+    expect(second.dynamicContext).not.toContain("第1章执行要求")
+    expect(second.dynamicContext).not.toContain("全书固定主线")
+  })
+
+  it("本章相关材料只进入动态层，并排在当前章纲之后", () => {
+    const result = composeContext({
+      contextPack: pack({
+        projectOutline: "全书骨架",
+        chapterOutlineContext: "第167章纲",
+        relevantMaterials: "第167章机场名单",
+      }),
+      dependencyStamp,
+    })
+    expect(result.stableCore).toContain("全书骨架")
+    expect(result.stableCore).not.toContain("机场名单")
+    expect(result.dynamicContext).toContain("本章相关材料")
+    expect(result.dynamicContext).toContain("第167章机场名单")
+    expect(result.dynamicContext.indexOf("分卷与当前章纲")).toBeLessThan(
+      result.dynamicContext.indexOf("本章相关材料"),
+    )
+  })
+
+  it("明确没有全书骨架时，不把可变章纲回填到稳定层", () => {
+    const result = composeContext({
+      contextPack: pack({ outline: "只有当前章纲", projectOutline: "", chapterOutlineContext: "只有当前章纲" }),
+      dependencyStamp,
+    })
+    expect(result.stableCore).not.toContain("只有当前章纲")
+    expect(result.dynamicContext).toContain("只有当前章纲")
+  })
+
+  it("全书主线实际变更必须立即改变稳定前缀", () => {
+    const make = (projectOutline: string) => composeContext({
+      contextPack: pack({ projectOutline, chapterOutlineContext: "本章不变" }),
+      dependencyStamp,
+    })
+    expect(make("主角不能复活").stableCore).not.toBe(make("主角可以复活").stableCore)
   })
 })

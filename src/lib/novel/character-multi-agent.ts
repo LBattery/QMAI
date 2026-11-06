@@ -1,8 +1,17 @@
 import { buildCharacterFileName } from "./character-save-extractor"
 
-export const VALID_ROLE_TYPES = new Set([
+/**
+ * 角色定位枚举。
+ *
+ * 导出是为了让**物品分类**能复用同一份词汇表：判断「这件道具是主角/配角/反派在用」
+ * 必须先知道谁是主角。此前这份枚举在本文件与 `character-save-extractor.ts`
+ * 里各有一份字面量，再加第三份就是「只改了一处」的经典来源。
+ */
+export const CHARACTER_ROLE_TYPES = [
   "男主", "女主", "男配", "女配", "反派", "导师", "盟友", "配角", "主角",
-])
+] as const
+
+const VALID_ROLE_TYPES = new Set<string>(CHARACTER_ROLE_TYPES)
 
 export interface CharacterAgentPlan {
   id: string
@@ -18,7 +27,7 @@ export interface CharacterAgentResult {
   fileName: string
 }
 
-export interface CharacterMultiAgentRunInput {
+interface CharacterMultiAgentRunInput {
   plans: CharacterAgentPlan[]
   maxConcurrency?: number
   runCharacterAgent: (plan: CharacterAgentPlan) => Promise<string>
@@ -27,13 +36,13 @@ export interface CharacterMultiAgentRunInput {
   onCharacterError?: (plan: CharacterAgentPlan, error: Error) => void
 }
 
-export interface CharacterMultiAgentRunResult {
+interface CharacterMultiAgentRunResult {
   characters: CharacterAgentResult[]
   failedCharacters: Array<{ plan: CharacterAgentPlan; error: string }>
   combinedMarkdown: string
 }
 
-export interface CharacterPlannerResult {
+interface CharacterPlannerResult {
   characters: Array<{ name: string; roleType: string }>
 }
 
@@ -137,8 +146,9 @@ export function buildCharacterAgentSystemPrompt(plan: CharacterAgentPlan): strin
     "",
     "## 输出规则",
     `- 必须以「## ${plan.characterName}（${plan.roleType}）」作为开头标题`,
-    "- 输出标准 Markdown 格式",
-    "- 内容包含：基本信息、性格特征、背景故事、人物动机、人物弧线、关键关系、标志性特征、经典语录（如适用）等",
+    "- 输出标准 Markdown 格式，并按「人物角色信息标准」分段（用三级标题）：基本信息、角色定位、外在表现、内在分析、语言风格、关系网络",
+    "- 「基本信息」「角色定位」「外在表现」「内在分析」用「- 字段：内容」列表；「语言风格」「关系网络」必须用带表头的 Markdown 表格",
+    "- 必须写清「故事功能」与「情绪功能」，禁止只堆年龄 / 外貌 / 家世；信息缺失写「原文未明确」",
     "- 根据角色重要性调整内容详略，主角/反派内容更丰富，配角可以相对简洁",
     "- 不要输出其他角色的内容",
     "- 不要输出 JSON 保存请求块（保存由系统自动处理）",
@@ -152,7 +162,7 @@ export function buildCharacterAgentSystemPrompt(plan: CharacterAgentPlan): strin
   ].join("\n")
 }
 
-export function buildCharacterAgentUserPrompt(input: {
+function buildCharacterAgentUserPrompt(input: {
   userPrompt: string
   projectContext: string
   plan: CharacterAgentPlan

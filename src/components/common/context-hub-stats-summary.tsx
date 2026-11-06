@@ -1,222 +1,97 @@
-import type {
-  ContextHubStats,
-  StablePrefixStatus,
-} from "@/lib/context-hub/types"
-import type { LlmRequestCacheTrace } from "@/lib/llm-request-trace"
+import { useState } from "react"
+import { Clock3, Database } from "lucide-react"
+import type { ContextHubStats } from "@/lib/context-hub/types"
+import { cn } from "@/lib/utils"
 
-const STABLE_PREFIX_LABELS: Record<StablePrefixStatus, string> = {
-  unchanged: "未变化",
-  updated: "已更新",
-  persist_failed: "持久化失败",
-}
-
-export interface ContextHubStatsSummaryProps {
+interface ContextHubStatsSummaryProps {
   stats: ContextHubStats
-  warnings?: string[]
-  /** Show composed/budget row (default true). */
-  showComposed?: boolean
-  /** Show memory row when present (default true). */
-  showMemory?: boolean
   className?: string
+  timing?: { startedAt: number; finishedAt?: number }
 }
 
-function formatTokens(tokens: number): string {
-  return `${tokens.toLocaleString()} Token`
+function compactTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 100_000) / 10}M tokens`
+  if (tokens >= 1_000) return `${Math.round(tokens / 100) / 10}K tokens`
+  return `${Math.round(tokens)} tokens`
 }
 
-function formatDuration(milliseconds: number | undefined): string {
-  if (milliseconds === undefined) return "—"
-  if (milliseconds < 1_000) return `${Math.round(milliseconds)} ms`
-  return `${(milliseconds / 1_000).toFixed(milliseconds < 10_000 ? 2 : 1)} s`
+/**
+ * 命中数大于总数说明计数损坏，此时宁可显示「未提供」，
+ * 也不用错误分母算出超过 100% 的比例（见 20260907-011559 更新日志）。
+ */
+function cacheHitRate(hits: number | undefined, total: number | undefined): number | undefined {
+  if (
+    typeof hits !== "number" || !Number.isSafeInteger(hits) || hits < 0
+    || typeof total !== "number" || !Number.isSafeInteger(total) || total <= 0
+    || hits > total
+  ) return undefined
+  return Math.round((hits / total) * 1000) / 10
 }
 
-function getProviderPrefixStatus(requests: LlmRequestCacheTrace[]): "未变化" | "已变化" | "不可判断" {
-  const fingerprints = requests
-    .map((request) => request.prefixFingerprint)
-    .filter((value): value is string => Boolean(value))
-  if (fingerprints.length < 2) return "不可判断"
-  return new Set(fingerprints).size === 1 ? "未变化" : "已变化"
+function formatDuration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.round(milliseconds / 1000))
+  return `${Math.floor(seconds / 60)}分${seconds % 60}秒`
 }
 
-function requestPrefixStatus(
-  request: LlmRequestCacheTrace,
-  previous: LlmRequestCacheTrace | undefined,
-): "未变化" | "已变化" | "不可判断" {
-  if (!request.prefixFingerprint || !previous?.prefixFingerprint) return "不可判断"
-  return request.prefixFingerprint === previous.prefixFingerprint ? "未变化" : "已变化"
+/**
+ * 结束时刻：当天只给时刻，更早的记录补上日期。
+ *
+ * 只显示「14:32」时，一段跨天的对话里分不清回复是哪天产生的；
+ * 但当天回复再加日期只是噪音，所以当天保持纯时刻。
+ * 跨年时补到完整年月日，避免去年的「09-28」被误读成今年。
+ *
+ * @param now 参照时刻，仅测试注入；默认取当前时间。
+ */
+export function formatFinishTime(time: number, now: number = Date.now()): string {
+  const date = new Date(time)
+  const clock = date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })
+  const reference = new Date(now)
+  if (date.toDateString() === reference.toDateString()) return clock
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  const stamp =
+    date.getFullYear() === reference.getFullYear()
+      ? `${month}-${day}`
+      : `${date.getFullYear()}-${month}-${day}`
+  return `${stamp} ${clock}`
 }
 
-const REQUEST_STATUS_LABELS: Record<LlmRequestCacheTrace["status"], string> = {
-  success: "成功",
-  error: "供应商错误",
-  cancelled: "已取消",
-  network_error: "网络错误",
-}
-
-export function ProviderCacheUsage({ stats }: { stats: ContextHubStats }) {
-  const cachedTokens = stats.providerCachedTokens
-  const inputTokens = stats.providerInputTokens
-  const hitPercent = cachedTokens !== undefined && inputTokens !== undefined && inputTokens > 0
-    ? Math.min(100, Math.round((cachedTokens / inputTokens) * 100))
-    : null
-
+/** 本地资料复用与供应商输入缓存分开呈现，缺失统计不视为零。 */
+export function UiTestGenerationStats({ stats, timing, className }: { stats?: ContextHubStats | null; timing?: { startedAt: number; finishedAt?: number }; className?: string }) {
+  const [usageOpen, setUsageOpen] = useState(false)
+  const diagnostics = stats?.requestDiagnostics
+  const totals = diagnostics?.usageTotals
+  const input = diagnostics?.inputTokens ?? totals?.inputTokens
+  const cached = diagnostics?.cacheReadTokens ?? totals?.cachedInputTokens
+  const output = diagnostics?.outputTokens ?? totals?.outputTokens
+  const uncached = input !== undefined && cached !== undefined ? Math.max(0, input - cached) : undefined
+  const total = [input, output].every((value) => value !== undefined) ? input! + (cached ?? 0) + output! : undefined
+  const localCacheRate = cacheHitRate(stats?.cacheableHits, stats?.cacheableLoaded)
+  const cacheRate = cacheHitRate(cached, input) ?? localCacheRate
+  const duration = timing?.finishedAt ? formatDuration(timing.finishedAt - timing.startedAt) : "—"
+  const finished = timing?.finishedAt ? formatFinishTime(timing.finishedAt) : "—"
+  const value = (tokens: number | undefined) => tokens === undefined ? "未提供" : `${tokens.toLocaleString()} tokens`
   return (
-    <>
-      {cachedTokens !== undefined ? (
-        cachedTokens > 0 ? (
-          <div className="font-medium text-green-600 dark:text-green-400">
-            供应商已确认命中 {cachedTokens.toLocaleString()} Token
-            {hitPercent !== null ? `（输入占比 ${hitPercent}%）` : ""}
+    <div className={cn("ui-test-context-stats", className)}>
+      <div className="relative">
+        <button type="button" aria-expanded={usageOpen} aria-label="查看本轮用量" onClick={() => setUsageOpen((open) => !open)}>
+          <Database aria-hidden="true" />{total === undefined ? "未提供" : compactTokens(total)}
+        </button>
+        {usageOpen ? (
+          <div role="dialog" aria-label="本轮用量" className="ui-test-usage-popover">
+            <div><span>缓存命中</span><strong>{cacheRate === undefined ? "未提供" : `${cacheRate}%`}</strong></div>
+            <div><span>未缓存输入</span><strong>{value(uncached)}</strong></div>
+            <div><span>缓存读取</span><strong>{value(cached)}</strong></div>
+            <div><span>输出</span><strong>{value(output)}</strong></div>
           </div>
-        ) : (
-          <div>供应商已确认本次未命中缓存（0 Token）</div>
-        )
-      ) : stats.providerUsageReported ? (
-        <div>供应商已返回 Token 用量，但未提供缓存命中明细</div>
-      ) : stats.providerCacheEnabled ? (
-        <div>已发送本地稳定核心，是否命中以供应商返回为准</div>
-      ) : null}
-      {(stats.providerCacheWriteTokens ?? 0) > 0 && (
-        <div>供应商新写入缓存 {stats.providerCacheWriteTokens?.toLocaleString()} Token</div>
-      )}
-    </>
-  )
-}
-
-export function ContextHubStatsSummary({
-  stats,
-  warnings = [],
-  showComposed = true,
-  showMemory = true,
-  className,
-}: ContextHubStatsSummaryProps) {
-  const failures = stats.readFailed + stats.writeFailed
-  const diagnostics = stats.requestDiagnostics
-  const usageScopeLabel = diagnostics?.usageScope === "provider_thread"
-    ? "Codex 线程累计实际用量"
-    : "工作流累计实际用量"
-
-  return (
-    <div className={className}>
-      <div className="mt-0.5 text-[11px] text-muted-foreground">
-        {`本轮数据源：命中 ${stats.cacheHits.toLocaleString()}，重载 ${stats.reloaded.toLocaleString()}，无数据 ${stats.empty.toLocaleString()}，fallback ${stats.fallbackUsed.toLocaleString()}，失败 ${failures.toLocaleString()}`}
-      </div>
-      {stats.stablePrefixStatus ? (
-        <div className="mt-0.5 text-[11px] text-muted-foreground">
-          本地稳定核心：{STABLE_PREFIX_LABELS[stats.stablePrefixStatus]}
-        </div>
-      ) : null}
-      <div className="mt-0.5 text-[11px] text-muted-foreground">
-        {`稳定核心 ${formatTokens(stats.stableTokens)}　会话摘要 ${formatTokens(stats.summaryTokens)}　动态片段 ${formatTokens(stats.dynamicTokens)}`}
-      </div>
-      {showComposed && stats.composedTokens !== undefined && stats.budgetTokens !== undefined ? (
-        <div className="mt-0.5 text-[11px] text-muted-foreground">
-          中控注入 {stats.composedTokens.toLocaleString()} / 中控预算 {stats.budgetTokens.toLocaleString()}
-          （{stats.utilizationPercent ?? 0}%）
-        </div>
-      ) : null}
-      {showMemory && stats.memoryCandidateCount !== undefined ? (
-        <div className="mt-0.5 text-[11px] text-muted-foreground">
-          用户记忆：候选 {stats.memoryCandidateCount}，命中 {stats.memorySelectedCount ?? 0}，
-          过滤 {stats.memoryFilteredCount ?? 0}，注入约 {stats.memoryEstimatedTokens ?? 0} Token
-        </div>
-      ) : null}
-      <div className="mt-1 space-y-0.5 text-[11px] text-muted-foreground">
-        <div>
-          上下文压缩预计减少 {formatTokens(stats.estimatedSavedTokens)}（{stats.estimatedSavedPercent}%）
-        </div>
-        <div>低置信度扩展：{stats.expanded ? "已启用" : "未启用"}</div>
-        <ProviderCacheUsage stats={stats} />
-        {diagnostics ? (
-          diagnostics.providerUsageAvailable ? (
-            <div>
-              {usageScopeLabel}：{diagnostics.requestCountAvailable === false
-                ? "内部请求数不可判断"
-                : `请求 ${diagnostics.requestCount}`}，
-              输入 {(diagnostics.inputTokens ?? 0).toLocaleString()}，
-              输出 {(diagnostics.outputTokens ?? 0).toLocaleString()}，
-              缓存读 {(diagnostics.cacheReadTokens ?? 0).toLocaleString()}，
-              缓存写 {(diagnostics.cacheWriteTokens ?? 0).toLocaleString()}
-            </div>
-          ) : (
-            <div>实际用量不可用</div>
-          )
-        ) : stats.providerUsageReported ? (
-          <div>
-            工作流累计实际用量：输入 {(stats.providerInputTokens ?? 0).toLocaleString()}
-            {stats.providerCachedTokens !== undefined
-              ? `，缓存读 ${stats.providerCachedTokens.toLocaleString()}`
-              : ""}
-          </div>
-        ) : (
-          <div>实际用量不可用</div>
-        )}
-        <div>
-          供应商前缀：{getProviderPrefixStatus(diagnostics?.requests ?? [])}
-        </div>
-        {(diagnostics?.requests?.length ?? 0) > 0 ? (
-          <details className="mt-1">
-            <summary className="cursor-pointer select-none font-medium">
-              请求缓存与间隔（{diagnostics?.requests?.length ?? 0}
-              {(diagnostics?.omittedRequestCount ?? 0) > 0
-                ? `，另省略 ${diagnostics?.omittedRequestCount}`
-                : ""}）
-            </summary>
-            <div className="mt-1 overflow-x-auto">
-              <table className="w-full min-w-[720px] border-collapse text-left text-[10px]">
-                <thead>
-                  <tr className="border-b border-border/60">
-                    <th className="py-1 pr-2 font-medium">请求</th>
-                    <th className="py-1 pr-2 font-medium">供应商前缀</th>
-                    <th className="py-1 pr-2 font-medium">开始间隔</th>
-                    <th className="py-1 pr-2 font-medium">空闲间隔</th>
-                    <th className="py-1 pr-2 font-medium">耗时</th>
-                    <th className="py-1 pr-2 font-medium">TTFT</th>
-                    <th className="py-1 pr-2 font-medium">输入/输出</th>
-                    <th className="py-1 pr-2 font-medium">缓存读/写</th>
-                    <th className="py-1 font-medium">状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {diagnostics?.requests?.map((request, index, requests) => (
-                    <tr
-                      key={`${request.startedAt}:${index}`}
-                      className="border-b border-border/30 last:border-b-0"
-                    >
-                      <td className="whitespace-nowrap py-1 pr-2">
-                        #{index + 1} {request.provider}/{request.model}
-                      </td>
-                      <td className="whitespace-nowrap py-1 pr-2">
-                        {requestPrefixStatus(request, requests[index - 1])}
-                        {request.prefixFingerprint ? ` · ${request.prefixFingerprint.slice(0, 10)}` : ""}
-                      </td>
-                      <td className="whitespace-nowrap py-1 pr-2">{formatDuration(request.startGapMs)}</td>
-                      <td className="whitespace-nowrap py-1 pr-2">{formatDuration(request.idleGapMs)}</td>
-                      <td className="whitespace-nowrap py-1 pr-2">{formatDuration(request.durationMs)}</td>
-                      <td className="whitespace-nowrap py-1 pr-2">{formatDuration(request.firstResponseMs)}</td>
-                      <td className="whitespace-nowrap py-1 pr-2">
-                        {request.inputTokens?.toLocaleString() ?? "—"}/{request.outputTokens?.toLocaleString() ?? "—"}
-                      </td>
-                      <td className="whitespace-nowrap py-1 pr-2">
-                        {request.cacheReadTokens?.toLocaleString() ?? "—"}/{request.cacheWriteTokens?.toLocaleString() ?? "—"}
-                      </td>
-                      <td className="whitespace-nowrap py-1">{REQUEST_STATUS_LABELS[request.status]}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </details>
         ) : null}
       </div>
-      {warnings.length > 0 ? (
-        <div className="mt-1 space-y-0.5 text-[11px] text-amber-700 dark:text-amber-300">
-          <div className="font-medium">警告（{warnings.length}）</div>
-          {warnings.map((warning) => (
-            <div key={warning}>{warning}</div>
-          ))}
-        </div>
-      ) : null}
+      <span title={`用时 ${duration}`} aria-label={`用时 ${duration}`}><Clock3 aria-hidden="true" />{duration}</span>
+      <time>{finished}</time>
     </div>
   )
+}
+
+export function ContextHubStatsSummary({ stats, className, timing }: ContextHubStatsSummaryProps) {
+  return <UiTestGenerationStats stats={stats} timing={timing} className={className} />
 }

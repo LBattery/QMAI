@@ -6,6 +6,7 @@ import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { readFile } from "@/commands/fs"
 import { joinPath } from "@/lib/path-utils"
 import { toast } from "@/lib/toast"
+import { buildSimpleExtractionMessages } from "@/lib/novel/book-analysis/simple-extraction-messages"
 import type {
   AnalysisDepth,
   ExtractedCharacter,
@@ -30,12 +31,34 @@ export interface ChapterSelectionData {
   extractionPhase?: "deep" | "simple" | null
 }
 
-export interface UseCharacterExtractionParams {
+interface UseCharacterExtractionParams {
   chapterSelectionData: ChapterSelectionData | null
   setChapterSelectionData: React.Dispatch<React.SetStateAction<ChapterSelectionData | null>>
   recognizedCharacters: RecognizedCharacter[]
   selectedCharacterIds: string[]
   reloadLibraryState: () => Promise<void>
+}
+
+async function readSimpleExtractionSamples(bookPath: string, chapterIds: string[], signal: AbortSignal): Promise<string> {
+  const samples: string[] = []
+  for (const [index, chapterId] of chapterIds.entries()) {
+    if (signal.aborted) throw new Error("用户取消")
+    const raw = await readFile(joinPath(bookPath, "chapters", `${chapterId}.md`))
+    const body = raw.replace(/^---[\s\S]*?---\n/, "")
+    samples.push(`【第 ${index + 1} 章】\n${body.slice(0, 1500)}`)
+    if (signal.aborted) throw new Error("用户取消")
+  }
+  return samples.join("\n\n")
+}
+
+/**
+ * importanceScore 是 0–100 的 LLM 评分，importance 字段只装 1–10。
+ * 换算与 character-candidate-selection.ts:60 / character-extraction-engine.ts:395 保持一致，
+ * 否则界面会显示「重要度 100/10」。
+ */
+export function importanceFromScore(score: number): number {
+  if (!Number.isFinite(score)) return 1
+  return Math.max(1, Math.min(10, Math.ceil(score / 10)))
 }
 
 /**
@@ -195,16 +218,13 @@ export function useCharacterExtraction({
         .filter((c) => selectedChapterIds.includes(c.id))
         .sort((a, b) => a.order - b.order)
 
-      const samples: string[] = []
-      for (let i = 0; i < selectedChapters.length; i++) {
-        const ch = selectedChapters[i]
-        const chapterPath = joinPath(bookPath, "chapters", `${ch.id}.md`)
-        const raw = await readFile(chapterPath)
-        const body = raw.replace(/^---[\s\S]*?---\n/, "")
-        samples.push(`【第 ${i + 1} 章】\n${body.slice(0, 1500)}`)
-        if (abortController.signal.aborted) throw new Error("用户取消")
-      }
-      const chapterSamples = samples.join("\n\n")
+      const sampleChapterIds = selectedChapters.map((chapter) => chapter.id)
+      useBookAnalysisStore.setState((state) => ({
+        tasks: state.tasks.map((task) => task.id === taskId
+          ? { ...task, bookPath, config: { ...task.config, selectedChapters: sampleChapterIds } }
+          : task),
+      }))
+      const chapterSamples = await readSimpleExtractionSamples(bookPath, sampleChapterIds, abortController.signal)
 
       updateTaskProgress(taskId, {
         stage: "extracting_characters",
@@ -217,20 +237,21 @@ export function useCharacterExtraction({
       if (!hasUsableLlm(llmConfig, useWikiStore.getState().providerConfigs)) {
         throw new Error("未配置 LLM，请先在设置中配置 LLM 后再提取")
       }
-      const { streamChat } = await import("@/lib/llm-client")
-      const realLlmCall = async (prompt: string): Promise<string> => {
-        let response = ""
-        await streamChat(
+      const { callAnalysisModelText } = await import(
+        "@/lib/novel/book-analysis/analysis-model-call"
+      )
+      // onError 只打日志会把「模型只输出思考、没输出正文」变成空串，
+      // 上层据此生成 personality 为空的画像并落盘 —— 静默写坏数据。
+      // 改为交给共享实现：思考-only 时关掉思考重试一次，仍失败则抛，让上层记成失败。
+      const realLlmCall = async (prompt: string, cachePrefix?: string): Promise<string> => {
+        return callAnalysisModelText(
           llmConfig,
-          [{ role: "user", content: prompt }],
+          buildSimpleExtractionMessages(prompt, cachePrefix),
           {
-            onToken: (text) => { response += text },
-            onDone: () => {},
-            onError: (err) => { console.error("[simple-extract] LLM error:", err) },
+            signal: abortController.signal,
+            cancelMessage: "用户取消分析",
           },
-          abortController.signal,
         )
-        return response.trim()
       }
 
       const { extractSingleProfile } = await import(
@@ -325,7 +346,7 @@ export function useCharacterExtraction({
           id: picked.id,
           name: picked.name,
           aliases: picked.aliases,
-          importance: picked.importanceScore,
+          importance: importanceFromScore(picked.importanceScore),
           category:
             picked.category === "主角"
               ? "protagonist"
@@ -421,36 +442,39 @@ export function useCharacterExtraction({
       alert("未配置 LLM，请先在设置中配置")
       return
     }
-    const { streamChat } = await import("@/lib/llm-client")
-    const realLlmCall = async (prompt: string): Promise<string> => {
-      let response = ""
-      await streamChat(
+    const { callAnalysisModelText } = await import(
+      "@/lib/novel/book-analysis/analysis-model-call"
+    )
+    // 与简单提取主路径同一个坑：onError 只打日志 -> 思考-only 时返回空串，
+    // 上层据此把「继续生成成功」写进画像。交给共享实现重试一次再抛。
+    const realLlmCall = async (prompt: string, cachePrefix?: string): Promise<string> => {
+      return callAnalysisModelText(
         llmConfig,
-        [{ role: "user", content: prompt }],
+        buildSimpleExtractionMessages(prompt, cachePrefix),
         {
-          onToken: (text) => { response += text },
-          onDone: () => {},
-          onError: (err) => { console.error("[resume] LLM error:", err) },
+          signal: abortController.signal,
+          cancelMessage: "用户取消分析",
         },
-        abortController.signal,
       )
-      return response.trim()
     }
 
-    const sourceBook = (task.metadata as any)?.sourceBook
+    const sourceBook = task.bookPath || (task.metadata as any)?.sourceBook
     if (!sourceBook) {
       alert("找不到原始作品路径，无法继续生成")
       return
     }
-    const samples: string[] = []
+    const sampleChapterIds = task.config.selectedChapters
+    if (sampleChapterIds.length === 0) {
+      alert("未保存上次提取的章节范围，请重新选择章节后提取")
+      return
+    }
+    let chapterSamples: string
     try {
-      const raw = await readFile(joinPath(sourceBook, "chapters", "1.md"))
-      samples.push(`【第 1 章】\n${raw.replace(/^---[\s\S]*?---\n/, "").slice(0, 1500)}`)
+      chapterSamples = await readSimpleExtractionSamples(sourceBook, sampleChapterIds, abortController.signal)
     } catch {
       alert("无法读取原始章节内容，请重新发起提取")
       return
     }
-    const chapterSamples = samples.join("\n\n")
 
     const { extractSingleProfile } = await import(
       "@/lib/novel/book-analysis/simple-extraction-engine"

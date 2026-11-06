@@ -19,10 +19,10 @@ export function buildInitialContextTraceInfo(
     loadedSources: [],
     blockedSources: (prePluginResult?.blockedSources as DataSourceCategory[] | undefined) ?? [],
     webSearches: [],
-    mcpCalls: [],
     selectedSkills: prePluginResult?.selectedSkills?.map((skill) => ({
       id: skill.id,
       name: skill.name,
+      displayName: skill.displayName,
       description: skill.description,
       kind: skill.kind,
       stages: skill.stages,

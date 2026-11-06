@@ -63,7 +63,7 @@ function DiscussionSidebarPanel() {
                     onClick={() => projectPath && void selectSession(projectPath, session.id)}
                   >
                     <div className="truncate text-sm text-foreground">{session.title}</div>
-                    <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                    <div className="mt-1 flex items-center gap-2 text-[0.6875rem] text-muted-foreground">
                       <span>{session.messageCount} 条发言</span>
                       <span>{session.directionCount} 个方向</span>
                     </div>
@@ -182,7 +182,7 @@ function SimulationSidebarPanel() {
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading && <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />读取框架</div>}
+        {loading && <div className="flex items-center justify-center gap-2 py-3 text-[0.6875rem] text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />读取框架</div>}
         <FrameworkList onSelectFramework={handleSelectFramework} onNewFramework={handleNewFramework} />
       </div>
       {currentFramework && savedResults.length > 0 && (
@@ -195,7 +195,7 @@ function SimulationSidebarPanel() {
               <div key={result.id} className={`group flex items-center gap-1 rounded-md ${selectedResultId === result.id ? "bg-accent" : "hover:bg-accent/60"}`}>
                 <button type="button" onClick={() => handleSelectResult(result.id)} className="min-w-0 flex-1 px-2 py-1.5 text-left text-xs">
                   <div className="truncate text-foreground">{new Date(result.createdAt).toLocaleString()}</div>
-                  <div className="mt-0.5 text-[11px] text-muted-foreground">{result.report.recommendation.slice(0, 56)}</div>
+                  <div className="mt-0.5 text-[0.6875rem] text-muted-foreground">{result.report.recommendation.slice(0, 56)}</div>
                 </button>
                 <button type="button" className="mr-1 flex h-6 w-6 items-center justify-center rounded text-muted-foreground opacity-0 hover:bg-background hover:text-destructive group-hover:opacity-100" title="删除结果" onClick={() => {
                   if (!projectPath || !window.confirm("删除这条推演结果？")) return

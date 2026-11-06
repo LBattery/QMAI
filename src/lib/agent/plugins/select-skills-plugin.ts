@@ -1,7 +1,7 @@
 import type { PrePlugin, PrePluginInput, PrePluginOutput } from "../pipeline"
 import { resolveAiWorkflowMode, type AiWorkflowMode } from "../workflow-mode"
 import type { NovelTaskIntent } from "@/lib/novel/task-router"
-import type { SkillKind, SkillStage, UserSkill } from "@/lib/novel/skill-library"
+import { skillDisplayName, type SkillKind, type SkillStage, type UserSkill } from "@/lib/novel/skill-library"
 import { filterSkillsForSkillRoute, filterSkillsForSkillRoutes, inferSkillRoute, type SkillRoute } from "@/lib/novel/skill-route"
 import {
   collectExplicitSkills,
@@ -97,6 +97,8 @@ export function selectSkillsForRoute(
   requestText = "",
 ): UserSkill[] {
   if (mode === "fast") return []
+  // 共创（discuss）讨论轮只做方向推演，不自动套用写作技能。
+  if (mode === "discuss") return []
 
   const modeSkills = skills.filter((skill) => skill.modes.includes(mode))
   if (modeSkills.length === 0) return []
@@ -243,7 +245,7 @@ export function buildSelectedSkillsPrompt(skills: UserSkill[] | undefined): stri
   if (!skills || skills.length === 0) return ""
 
   const blocks = skills.map((skill, index) => [
-    `### ${index + 1}. ${skill.name}`,
+    `### ${index + 1}. ${skillDisplayName(skill)}`,
     `类型：${skill.kind.join(", ")}`,
     `阶段：${skill.stages.join(", ")}`,
     skill.description ? `说明：${skill.description}` : "",

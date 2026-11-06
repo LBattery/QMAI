@@ -13,9 +13,11 @@ import type {
 } from "./analysis-pipeline-types"
 import type { AnalysisSkillAdapter } from "./analysis-skill-adapter"
 import type { ExtractedCharacter } from "./types"
+import { scheduleVerification } from "./verification-engine"
 
-export interface CharacterAnalysisChunkResult {
+interface CharacterAnalysisChunkResult {
   characters: ExtractedCharacter[]
+  cacheable?: boolean
 }
 
 interface CharacterAnalysisAdapterDependencies {
@@ -205,14 +207,14 @@ export function createCharacterAnalysisAdapter(
   const dependencies = { ...defaultDependencies, ...overrides }
   return {
     skill: "characters",
-    async runChunk({ task, bookPath, llmConfig, chunk, signal, onProgress }) {
+    async runChunk({ task, bookPath, llmConfig, chunk, signal, onProgress, onRequestTrace }) {
       const extracted = await dependencies.extractCharacters({
         bookPath,
         selectedChapterIds: chunk.chapterIds,
         llmConfig,
         depth: "fast",
         persistResults: false,
-        signal,
+        signal, onRequestTrace,
         ...(task.targetCharacters && task.targetCharacters.length > 0
           ? { targetCharacters: task.targetCharacters }
           : {}),
@@ -227,7 +229,7 @@ export function createCharacterAnalysisAdapter(
       if (!extracted.success) throw new Error("角色区块分析失败")
       onProgress?.({ stageLabel: "角色区块分析完成", percentage: 100 })
       return {
-        result: { characters: extracted.characters },
+        result: { characters: extracted.characters, ...(extracted.warnings?.length ? { cacheable: false } : {}) },
         evidence: characterEvidence(
           task.id,
           task.bookId,
@@ -249,7 +251,7 @@ export function createCharacterAnalysisAdapter(
       onProgress?.({ stageLabel: `已选出 ${candidates.length} 个候选角色`, percentage: 95 })
       return candidates
     },
-    async publish({ task, bookPath, projectPath, result, evidence, onProgress }) {
+    async publish({ task, bookPath, projectPath, llmConfig, result, evidence, signal, onProgress, onRequestTrace }) {
       onProgress?.({ stageLabel: "正在保存角色结果…", percentage: 97 })
       const metadata = await dependencies.loadMetadata(bookPath)
       if (!metadata) throw new Error("未找到作品元数据，无法发布角色分析")
@@ -278,6 +280,13 @@ export function createCharacterAnalysisAdapter(
       await dependencies.saveManifest(bookPath, manifest)
       await dependencies.rebuildContextIndex(projectPath)
       onProgress?.({ stageLabel: "角色结果已发布", percentage: 100 })
+
+      // 后台审计：三重验证 + 压力测试（best-effort，失败不影响任务）
+      void scheduleVerification(bookPath, "characters", llmConfig, {
+        forceRefresh: task.forceRefresh, signal,
+        onRequestTrace: (trace) => onRequestTrace?.({ ...trace, stage: "verification" }),
+      })
+        .catch((error) => console.warn("[characters-verify] 校验失败：", error))
       return resultPath
     },
   }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import {
+  buildIntentAnalysisPrompt,
   buildIntentPhaseSystemRules,
   classifyDirectOutlineGenerationRequest,
   parseIntentClarity,
@@ -7,6 +8,57 @@ import {
   shouldAutoFollowUpGeneration,
   stripStructuredMarkers,
 } from "./outline-intent-clarity"
+
+describe("stripStructuredMarkers", () => {
+  it("also hides chapter co-creation protocol blocks", () => {
+    const text = "判断。\n<!-- chapter_discuss -->\n{\"status\":\"needs_choice\"}\n<!-- /chapter_discuss -->\n结尾"
+    const stripped = stripStructuredMarkers(text)
+    expect(stripped).not.toContain("chapter_discuss")
+    expect(stripped).toContain("判断。")
+    expect(stripped).toContain("结尾")
+  })
+
+  it("hides an unclosed trailing chapter_discuss block", () => {
+    const stripped = stripStructuredMarkers("判断。\n<!-- chapter_discuss -->\n{\"status\":\"needs_choice\"}")
+    expect(stripped).not.toContain("chapter_discuss")
+    expect(stripped).toContain("判断。")
+  })
+})
+
+describe("意图分析提示词的选项要求", () => {
+  const prompt = buildIntentAnalysisPrompt("卷纲", "把十卷拆成折叠树卷纲")
+
+  it("要求 options 直接列出具体候选对象，而不是抽象生成策略", () => {
+    expect(prompt).toContain("具体的")
+    expect(prompt).toContain("options")
+    // 旧模板只给「全部缺失项生成 / 基于已有内容推断」这类抽象策略，
+    // 模型因此把真实卷次全塞进 missingItems、options 留空。
+    expect(prompt).not.toContain("A. 全部缺失项生成")
+    expect(prompt).not.toContain("B. 基于已有内容推断")
+    expect(prompt).not.toContain("C. 最近范围生成")
+  })
+
+  it("明确把 options 为空视为格式错误", () => {
+    expect(prompt).toMatch(/options\s*为空.*(?:格式错误|错误)/)
+  })
+
+  it("说明自定义由系统追加，模型不要再输出", () => {
+    expect(prompt).toContain("自定义")
+    expect(prompt).toMatch(/系统.*追加|不要.*输出.*自定义/)
+  })
+
+  it("要求选项说明引用已读到的资料与现状", () => {
+    expect(prompt).toMatch(/description/)
+  })
+})
+
+describe("意图分析阶段的阶段规则", () => {
+  it("intent_analysis 阶段同样要求给出具体可选项", () => {
+    const rules = buildIntentPhaseSystemRules("intent_analysis")
+    expect(rules).toContain("options")
+    expect(rules).not.toContain('"options":[]')
+  })
+})
 
 describe("parseIntentClarity", () => {
   it("解析 clear 意图", () => {
@@ -54,6 +106,42 @@ describe("parseIntentClarity", () => {
     expect(outcome.result.detectedScope).toBe("补充细节")
     expect(outcome.result.analysis).toBe("完善既有第236章章纲")
     expect(outcome.result.normalizationSource).toBe("legacy_status_unclosed")
+  })
+
+  it("未闭合且 JSON 后还有说明时仍然收下", () => {
+    const text = `判断。\n<!-- intent_clarity -->
+{"clarity":"clear","module":"章节细纲","analysis":"范围已经明确"}
+请确认后继续`
+    const outcome = parseIntentClarityProtocol(text)
+    expect(outcome.kind).toBe("valid")
+    if (outcome.kind !== "valid") return
+    expect(outcome.result.clarity).toBe("clear")
+    expect(outcome.result.normalizationSource).toBe("legacy_unclosed")
+  })
+
+  it("闭合标记在、JSON 包在代码围栏里时仍然收下", () => {
+    const text = `<!-- intent_clarity -->
+\`\`\`json
+{"clarity":"needs_input","module":"卷纲","analysis":"还缺范围","question":"写哪一卷？"}
+\`\`\`
+<!-- /intent_clarity -->`
+    const outcome = parseIntentClarityProtocol(text)
+    expect(outcome.kind).toBe("valid")
+    if (outcome.kind !== "valid") return
+    expect(outcome.result.clarity).toBe("needs_input")
+    expect(outcome.result.normalizationSource).toBe("canonical")
+  })
+
+  it("正文字段 clarity 优先于后面的 status 示例", () => {
+    const text = `<!-- intent_clarity -->
+{"clarity":"clear","module":"章节细纲","analysis":"范围明确"}
+{"status":"needs_input"}
+<!-- /intent_clarity -->`
+    const outcome = parseIntentClarityProtocol(text)
+    expect(outcome.kind).toBe("valid")
+    if (outcome.kind !== "valid") return
+    expect(outcome.result.clarity).toBe("clear")
+    expect(outcome.result.module).toBe("章节细纲")
   })
 
   it("未闭合且 JSON 截断时返回明确协议错误", () => {
@@ -130,6 +218,11 @@ describe("stripStructuredMarkers", () => {
   it("同时移除两种标记块", () => {
     const text = `<!-- intent_clarity -->\n{"clarity":"clear"}\n<!-- /intent_clarity -->\n正文\n<!-- next_step -->\n{"recommendations":[]}\n<!-- /next_step -->`
     expect(stripStructuredMarkers(text).trim()).toBe("正文")
+  })
+
+  it("移除 outline_discuss 标记块", () => {
+    const text = `判断如下\n<!-- outline_discuss -->\n{"status":"ready"}\n<!-- /outline_discuss -->\n\n下一步建议`
+    expect(stripStructuredMarkers(text)).toBe("判断如下\n\n下一步建议")
   })
 
   it("无标记块时原样返回", () => {

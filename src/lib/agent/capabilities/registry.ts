@@ -2,7 +2,7 @@ import type { UserSkill } from "@/lib/novel/skill-library"
 import type { AiCapability, CapabilityIntent, CapabilityKind, CapabilityPermission } from "./types"
 import type { AiWorkflowMode } from "../workflow-mode"
 
-const ALL_MODES: AiWorkflowMode[] = ["fast", "standard", "strict"]
+const ALL_MODES: AiWorkflowMode[] = ["fast", "standard", "strict", "discuss"]
 
 const WRITING_INTENTS: CapabilityIntent[] = [
   "write_chapter",
@@ -55,17 +55,15 @@ const TOOL_LABELS: Record<string, string> = {
   run_chapter_workflow: "Chapter Workflow",
 }
 
-export interface BuildAvailableCapabilitiesOptions {
+interface BuildAvailableCapabilitiesOptions {
   toolNames?: string[]
   selectedSkills?: UserSkill[]
-  mcpCapabilities?: AiCapability[]
 }
 
 export function buildAvailableCapabilities(options: BuildAvailableCapabilitiesOptions): AiCapability[] {
   return [
     ...buildBuiltInToolCapabilities(options.toolNames ?? []),
     ...buildUserSkillCapabilities(options.selectedSkills ?? []),
-    ...(options.mcpCapabilities ?? []),
   ]
 }
 

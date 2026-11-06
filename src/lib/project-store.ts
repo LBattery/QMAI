@@ -1,18 +1,29 @@
 import { getStore } from "@/lib/web-store"
+import { IS_UI_TEST_BUILD } from "@/lib/ui-test"
 import type { WikiProject } from "@/types/wiki"
-import type { LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, ScheduledImportConfig, SourceWatchConfig, NovelConfig, RerankConfig } from "@/stores/wiki-store"
+import type { LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, SourceWatchConfig, NovelConfig, RerankConfig } from "@/stores/wiki-store"
 import { DEFAULT_NOVEL_CONFIG, DEFAULT_RERANK_CONFIG } from "@/stores/wiki-store"
-import type { McpConfig } from "@/lib/mcp/config"
-import { normalizeMcpConfig } from "@/lib/mcp/config"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
-import { normalizeUiFontFamily, type UiFontFamily } from "@/lib/font-settings"
+import {
+  clampBodyFontPx,
+  clampBodyLineHeight,
+  clampBodyLetterSpacing,
+  clampBodyMarginX,
+  clampBodySafeBottom,
+  resolveMigratedBodyFontPx,
+  normalizeBodyFontFamily,
+  normalizeUiFontFamily,
+  type BodyFontFamily,
+  type UiFontFamily,
+} from "@/lib/font-settings"
 import {
   VISUAL_STYLE_STORAGE_VERSION,
   normalizeVisualStyle,
   resolveStoredVisualStyle,
   type VisualStyle,
 } from "@/lib/visual-style-settings"
-import { normalizePath } from "@/lib/path-utils"
+import { isAbsolutePath, normalizePath } from "@/lib/path-utils"
+import { forgetProject, loadRegistry } from "@/lib/project-identity"
 import { readFile, writeFile, fileExists } from "@/commands/fs"
 import {
   normalizeProviderConfigs,
@@ -29,20 +40,51 @@ import {
   type AiWorkflowMode,
   type OutlineWorkflowMode,
 } from "@/lib/agent/workflow-mode"
+import { normalizeReasoningDepth, type ReasoningDepth } from "@/lib/reasoning-depth"
 
 const RECENT_PROJECTS_KEY = "recentProjects"
 const LAST_PROJECT_KEY = "lastProject"
 
+function isStoredProject(value: unknown): value is WikiProject {
+  if (!value || typeof value !== "object") return false
+  const project = value as Partial<WikiProject>
+  return typeof project.id === "string" && !!project.id.trim()
+    && typeof project.name === "string" && !!project.name.trim()
+    && typeof project.path === "string" && !!project.path.trim()
+}
+
 export async function getRecentProjects(): Promise<WikiProject[]> {
   const store = await getStore()
   const projects = await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)
-  return projects ?? []
+  return Array.isArray(projects) ? projects : []
 }
 
 export async function getLastProject(): Promise<WikiProject | null> {
   const store = await getStore()
   const project = await store.get<WikiProject>(LAST_PROJECT_KEY)
-  return project ?? null
+  return isStoredProject(project) ? project : null
+}
+
+/** 书架用的完整书目。recentProjects 只留最近十条，历史书在 projectRegistry。 */
+export async function loadRegisteredProjects(): Promise<WikiProject[]> {
+  const registry = await loadRegistry()
+  return Object.values(registry)
+    .filter((entry) => isStoredProject(entry) && isAbsolutePath(entry.path))
+    .sort((a, b) => (b.lastOpened ?? 0) - (a.lastOpened ?? 0))
+    .map((entry) => ({ id: entry.id, name: entry.name, path: entry.path }))
+}
+
+export async function removeProjectRecords(path: string): Promise<void> {
+  const store = await getStore()
+  const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
+  const key = normalizePath(path)
+  await store.set(RECENT_PROJECTS_KEY, existing.filter((project) => {
+    if (!project || typeof project.path !== "string") return true
+    return normalizePath(project.path) !== key
+  }))
+  const last = await store.get<WikiProject>(LAST_PROJECT_KEY)
+  if (last && typeof last.path === "string" && normalizePath(last.path) === key) await store.delete(LAST_PROJECT_KEY)
+  await forgetProject(path)
 }
 
 export async function saveLastProject(project: WikiProject): Promise<void> {
@@ -51,7 +93,7 @@ export async function saveLastProject(project: WikiProject): Promise<void> {
   await addToRecentProjects(project)
 }
 
-export async function addToRecentProjects(
+async function addToRecentProjects(
   project: WikiProject
 ): Promise<void> {
   const store = await getStore()
@@ -145,7 +187,10 @@ async function markCodexModelMigrationDone(
 const AI_CHAT_MODEL_KEY = "aiChatModel"
 const AI_OUTLINE_MODEL_KEY = "aiOutlineModel"
 const AI_WORKFLOW_MODE_KEY = "aiWorkflowMode"
+const AI_WORKFLOW_MODE_BEFORE_DISCUSS_KEY = "aiWorkflowModeBeforeDiscuss"
 const OUTLINE_WORKFLOW_MODE_KEY = "outlineWorkflowMode"
+const AI_CHAT_REASONING_DEPTH_KEY = "aiChatReasoningDepth"
+const AI_OUTLINE_REASONING_DEPTH_KEY = "aiOutlineReasoningDepth"
 let aiOutlineModelSaveRevision = 0
 let latestAiOutlineModel = ""
 const DEFAULT_LLM_MODEL_KEY = "defaultLlmModel"
@@ -232,6 +277,17 @@ export async function loadAiWorkflowMode(): Promise<AiWorkflowMode | null> {
   return isAiWorkflowMode(saved) ? saved : null
 }
 
+export async function saveAiWorkflowModeBeforeDiscuss(mode: AiWorkflowMode): Promise<void> {
+  const store = await getStore()
+  await store.set(AI_WORKFLOW_MODE_BEFORE_DISCUSS_KEY, resolveAiWorkflowMode(mode))
+}
+
+export async function loadAiWorkflowModeBeforeDiscuss(): Promise<AiWorkflowMode | null> {
+  const store = await getStore()
+  const saved = await store.get<unknown>(AI_WORKFLOW_MODE_BEFORE_DISCUSS_KEY)
+  return isAiWorkflowMode(saved) ? saved : null
+}
+
 export async function saveOutlineWorkflowMode(mode: OutlineWorkflowMode): Promise<void> {
   const store = await getStore()
   await store.set(OUTLINE_WORKFLOW_MODE_KEY, resolveOutlineWorkflowMode(mode))
@@ -241,6 +297,50 @@ export async function loadOutlineWorkflowMode(): Promise<OutlineWorkflowMode | n
   const store = await getStore()
   const saved = await store.get<unknown>(OUTLINE_WORKFLOW_MODE_KEY)
   return isOutlineWorkflowMode(saved) ? saved : null
+}
+
+/**
+ * Serialise writes to one key so a slow earlier write cannot land after a
+ * newer value. Dragging the thinking-depth slider fires one save per step
+ * and `store.set` is async, so last-writer-wins has to be enforced here —
+ * same reason `saveAiOutlineModel` carries its own revision counter.
+ */
+function createLatestWinsWriter(key: string): (value: string) => Promise<void> {
+  let revision = 0
+  let latest = ""
+  return async (value: string) => {
+    const writeRevision = ++revision
+    latest = value
+    const store = await getStore()
+    await store.set(key, value)
+
+    let persistedRevision = writeRevision
+    while (persistedRevision !== revision) {
+      persistedRevision = revision
+      await store.set(key, latest)
+    }
+  }
+}
+
+const writeAiChatReasoningDepth = createLatestWinsWriter(AI_CHAT_REASONING_DEPTH_KEY)
+const writeAiOutlineReasoningDepth = createLatestWinsWriter(AI_OUTLINE_REASONING_DEPTH_KEY)
+
+export async function saveAiChatReasoningDepth(depth: ReasoningDepth): Promise<void> {
+  await writeAiChatReasoningDepth(normalizeReasoningDepth(depth))
+}
+
+export async function loadAiChatReasoningDepth(): Promise<ReasoningDepth> {
+  const store = await getStore()
+  return normalizeReasoningDepth(await store.get<unknown>(AI_CHAT_REASONING_DEPTH_KEY))
+}
+
+export async function saveAiOutlineReasoningDepth(depth: ReasoningDepth): Promise<void> {
+  await writeAiOutlineReasoningDepth(normalizeReasoningDepth(depth))
+}
+
+export async function loadAiOutlineReasoningDepth(): Promise<ReasoningDepth> {
+  const store = await getStore()
+  return normalizeReasoningDepth(await store.get<unknown>(AI_OUTLINE_REASONING_DEPTH_KEY))
 }
 
 export async function saveDefaultLlmModel(model: string): Promise<void> {
@@ -332,19 +432,6 @@ export async function loadSearchApiConfig(): Promise<SearchApiConfig | null> {
   return (await store.get<SearchApiConfig>(SEARCH_API_KEY)) ?? null
 }
 
-const MCP_CONFIG_KEY = "mcpConfig"
-
-export async function saveMcpConfig(config: McpConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(MCP_CONFIG_KEY, normalizeMcpConfig(config))
-  await store.save()
-}
-
-export async function loadMcpConfig(): Promise<McpConfig> {
-  const store = await getStore()
-  return normalizeMcpConfig(await store.get<McpConfig>(MCP_CONFIG_KEY))
-}
-
 const EMBEDDING_KEY = "embeddingConfig"
 
 export async function saveEmbeddingConfig(config: EmbeddingConfig): Promise<void> {
@@ -362,11 +449,6 @@ const MULTIMODAL_KEY = "multimodalConfig"
 export async function saveMultimodalConfig(config: MultimodalConfig): Promise<void> {
   const store = await getStore()
   await store.set(MULTIMODAL_KEY, config)
-}
-
-export async function loadMultimodalConfig(): Promise<MultimodalConfig | null> {
-  const store = await getStore()
-  return (await store.get<MultimodalConfig>(MULTIMODAL_KEY)) ?? null
 }
 
 // IMPORTANT: Keep this key in sync with the Rust setup hook
@@ -392,35 +474,6 @@ export async function saveProxyConfig(config: ProxyConfig): Promise<void> {
 export async function loadProxyConfig(): Promise<ProxyConfig | null> {
   const store = await getStore()
   return (await store.get<ProxyConfig>(PROXY_CONFIG_KEY)) ?? null
-}
-
-const SCHEDULED_IMPORT_KEY_PREFIX = "scheduledImportConfig:"
-
-function scheduledImportKey(projectPath: string): string {
-  return `${SCHEDULED_IMPORT_KEY_PREFIX}${normalizePath(projectPath)}`
-}
-
-const SCHEDULED_IMPORT_GLOBAL_KEY = "scheduledImportConfig"
-
-export async function saveScheduledImportConfig(projectPath: string, config: ScheduledImportConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(scheduledImportKey(projectPath), config)
-  await store.save()
-}
-
-export async function loadScheduledImportConfig(projectPath: string): Promise<ScheduledImportConfig | null> {
-  const store = await getStore()
-  const perProject = await store.get<ScheduledImportConfig>(scheduledImportKey(projectPath))
-  if (perProject) return perProject
-  // Migrate from legacy global key (pre-0.4.8)
-  const legacy = await store.get<ScheduledImportConfig>(SCHEDULED_IMPORT_GLOBAL_KEY)
-  if (legacy) {
-    await store.set(scheduledImportKey(projectPath), legacy)
-    await store.delete(SCHEDULED_IMPORT_GLOBAL_KEY)
-    await store.save()
-    return legacy
-  }
-  return null
 }
 
 export async function removeFromRecentProjects(
@@ -454,6 +507,28 @@ export async function loadLanguage(): Promise<string | null> {
   return (await store.get<string>(LANGUAGE_KEY)) ?? null
 }
 
+const MCP_ENABLED_KEY = "mcpEnabled"
+const MCP_AGENT_SKILLS_DIR_KEY = "mcpAgentSkillsDir"
+
+export interface McpSettings {
+  enabled: boolean
+  agentSkillsDir: string
+}
+
+export async function loadMcpSettings(): Promise<McpSettings> {
+  const store = await getStore()
+  return {
+    enabled: (await store.get<boolean>(MCP_ENABLED_KEY)) === true,
+    agentSkillsDir: (await store.get<string>(MCP_AGENT_SKILLS_DIR_KEY))?.trim() ?? "",
+  }
+}
+
+export async function saveMcpSettings(settings: McpSettings): Promise<void> {
+  const store = await getStore()
+  await store.set(MCP_ENABLED_KEY, settings.enabled)
+  await store.set(MCP_AGENT_SKILLS_DIR_KEY, settings.agentSkillsDir.trim())
+}
+
 const OUTPUT_LANGUAGE_KEY = "outputLanguage"
 const PROJECT_OUTPUT_LANGUAGE_KEY = "projectOutputLanguages"
 const PROJECT_FILE_SYNC_KEY = "projectFileSyncEnabled"
@@ -468,27 +543,7 @@ export async function saveOutputLanguage(lang: OutputLanguage, projectId?: strin
   await store.set(OUTPUT_LANGUAGE_KEY, lang)
 }
 
-export async function loadOutputLanguage(projectId?: string): Promise<OutputLanguage | null> {
-  const store = await getStore()
-  if (projectId) {
-    const projectLanguages = await store.get<Record<string, OutputLanguage>>(PROJECT_OUTPUT_LANGUAGE_KEY)
-    return projectLanguages?.[projectId] ?? null
-  }
-  return (await store.get<OutputLanguage>(OUTPUT_LANGUAGE_KEY)) ?? null
-}
-
-export async function saveProjectFileSyncEnabled(enabled: boolean, projectId?: string): Promise<void> {
-  const store = await getStore()
-  if (projectId) {
-    const existing = (await store.get<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)) ?? {}
-    await store.set(PROJECT_FILE_SYNC_KEY, { ...existing, [projectId]: enabled })
-    return
-  }
-  const existing = (await store.get<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)) ?? {}
-  await store.set(PROJECT_FILE_SYNC_KEY, { ...existing, default: enabled })
-}
-
-export async function loadProjectFileSyncEnabled(projectId?: string): Promise<boolean> {
+async function loadProjectFileSyncEnabled(projectId?: string): Promise<boolean> {
   const store = await getStore()
   const settings = await store.get<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)
   if (projectId && settings && typeof settings[projectId] === "boolean") {
@@ -565,26 +620,6 @@ const PROJECT_NOVEL_MODE_KEY = "projectNovelModes"
 const REVISION_FEEDBACK_WINDOW_CONFIG_KEY = "revisionFeedbackWindowConfig"
 const PROJECT_REVISION_FEEDBACK_WINDOW_CONFIG_KEY = "projectRevisionFeedbackWindowConfigs"
 
-export async function saveNovelMode(mode: boolean, projectId?: string, projectPath?: string): Promise<void> {
-  const store = await getStore()
-  if (projectId) {
-    const existing = (await store.get<Record<string, boolean>>(PROJECT_NOVEL_MODE_KEY)) ?? {}
-    await store.set(PROJECT_NOVEL_MODE_KEY, { ...existing, [projectId]: mode })
-  }
-  await store.set(NOVEL_MODE_KEY, mode)
-  if (projectPath) {
-    try {
-      const { saveNovelProjectMeta, loadNovelProjectMeta } = await import("@/lib/novel/project-meta")
-      const existing = await loadNovelProjectMeta(projectPath)
-      if (existing) {
-        await saveNovelProjectMeta(projectPath, { ...existing, novelMode: mode })
-      }
-    } catch {
-      // non-critical
-    }
-  }
-}
-
 export async function loadNovelMode(projectId?: string, projectPath?: string): Promise<boolean | null> {
   if (projectPath) {
     try {
@@ -608,7 +643,7 @@ export async function loadNovelMode(projectId?: string, projectPath?: string): P
   return (await store.get<boolean>(NOVEL_MODE_KEY)) ?? null
 }
 
-export interface RevisionFeedbackWindowConfig {
+interface RevisionFeedbackWindowConfig {
   currentChapterIncludeShouldImprove: boolean
   previousChapterCarryEnabled: boolean
   lookbackChapterCount: number
@@ -854,7 +889,7 @@ export async function loadRerankConfig(projectId?: string, projectPath?: string)
   return config
 }
 
-const THEME_KEY = "theme"
+const THEME_KEY = IS_UI_TEST_BUILD ? "theme__uiTest" : "theme"
 const VISUAL_STYLE_KEY = "visualStyle"
 const VISUAL_STYLE_VERSION_KEY = "visualStyleVersion"
 
@@ -893,6 +928,17 @@ export async function loadVisualStyle(): Promise<VisualStyle | null> {
 
 const UI_FONT_SIZE_SCALE_KEY = "uiFontSizeScale"
 const UI_FONT_FAMILY_KEY = "uiFontFamily"
+const BODY_FONT_FAMILY_KEY = "uiBodyFontFamily"
+/*
+ * 旧键（倍数）保留**只读**：新版本不再写它，但读回时要用它做一次性迁移。
+ * 不删除的理由与 wiki-store.ts 那边一致 —— 用户回滚到旧版本时旧设置仍在。
+ */
+const BODY_FONT_SIZE_SCALE_KEY = "uiBodyFontSizeScale"
+const BODY_FONT_PX_KEY = "uiBodyFontPx"
+const BODY_LINE_HEIGHT_KEY = "uiBodyLineHeight"
+const BODY_LETTER_SPACING_KEY = "uiBodyLetterSpacing"
+const BODY_MARGIN_X_KEY = "uiBodyMarginX"
+const BODY_SAFE_BOTTOM_KEY = "uiBodySafeBottom"
 const MAX_HISTORY_MESSAGES_KEY = "maxHistoryMessages"
 
 export async function saveUiFontSizeScale(scale: number, _projectId?: string, _projectPath?: string): Promise<void> {
@@ -911,6 +957,111 @@ export async function loadUiFontFamily(): Promise<UiFontFamily | null> {
   const store = await getStore()
   const saved = await store.get<string>(UI_FONT_FAMILY_KEY)
   return saved ? normalizeUiFontFamily(saved) : null
+}
+
+/** 持久化正文字体。与界面字体各用各的键，互不覆盖。 */
+export async function saveUiBodyFontFamily(fontFamily: BodyFontFamily): Promise<void> {
+  const store = await getStore()
+  await store.set(BODY_FONT_FAMILY_KEY, normalizeBodyFontFamily(fontFamily))
+  await store.save()
+}
+
+export async function loadUiBodyFontFamily(): Promise<BodyFontFamily | null> {
+  const store = await getStore()
+  const saved = await store.get<string>(BODY_FONT_FAMILY_KEY)
+  return saved ? normalizeBodyFontFamily(saved) : null
+}
+
+/* ── 正文排版参数（5 个键，各自独立） ──
+ *
+ * 为什么不合成一个「排版设置对象」存一个键：
+ * 这 5 个参数在设置页是 5 个独立控件、在写作现场是 5 个独立滑块。
+ * 合成对象后，任何一次「只改行距」的写入都必须把其它 4 个值一起回写，
+ * 一旦某个控件传了 undefined，就会把别的设置清掉 —— 这正是要防的串味。
+ * 所以一个参数一个键，读写只碰自己那一个。
+ */
+
+/**
+ * 「数字即全部语义」的参数通用落盘。
+ * 只有左右边距不适用（它的 null 有语义，见 saveUiBodyMarginX）。
+ */
+async function saveBodyNumber(key: string, value: number, clamp: (input: unknown) => number): Promise<void> {
+  const store = await getStore()
+  await store.set(key, clamp(value))
+  await store.save()
+}
+
+/** 通用读回。返回 null 表示「没有存过」，由调用方决定是否保留默认值。 */
+async function loadBodyNumber(key: string, clamp: (input: unknown) => number | null): Promise<number | null> {
+  const store = await getStore()
+  const saved = await store.get<number>(key)
+  return saved === null || saved === undefined ? null : clamp(saved)
+}
+
+/** 持久化正文字号（px）。 */
+export async function saveUiBodyFontPx(value: number): Promise<void> {
+  await saveBodyNumber(BODY_FONT_PX_KEY, value, clampBodyFontPx)
+}
+
+/**
+ * 读回正文字号（px）。新键优先；读不到时交给 resolveMigratedBodyFontPx，
+ * 它会乘入界面字号并处理「没存过 + 界面字号非默认」的补种。
+ * 返回 null = 不要覆盖 store 默认值。旧键不删除。
+ *
+ * 为什么要界面倍数当**参数**而不是在这里自己读：
+ * 本模块（app-state）里根本没有 loadUiFontSizeScale ——
+ * app-state.json 里那个 uiFontSizeScale 键是只写不读的既有缺口，
+ * 启动时的界面字号实际来自 wiki-store 的 localStorage 读取。
+ * 与其在这里补一个半吊子读取，不如让已经拿到值的调用方传进来：
+ * App 的启动块本来就有 uiFontSizeScale，传参是零成本的，
+ * 而且两个来源不可能分叉。
+ */
+export async function loadUiBodyFontPx(uiFontScale: number): Promise<number | null> {
+  const direct = await loadBodyNumber(BODY_FONT_PX_KEY, clampBodyFontPx)
+  if (direct !== null) return direct
+  const store = await getStore()
+  const legacy = await store.get<number>(BODY_FONT_SIZE_SCALE_KEY)
+  return resolveMigratedBodyFontPx(legacy, uiFontScale)
+}
+
+export async function saveUiBodyLineHeight(value: number): Promise<void> {
+  await saveBodyNumber(BODY_LINE_HEIGHT_KEY, value, clampBodyLineHeight)
+}
+
+export async function loadUiBodyLineHeight(): Promise<number | null> {
+  return loadBodyNumber(BODY_LINE_HEIGHT_KEY, clampBodyLineHeight)
+}
+
+export async function saveUiBodyLetterSpacing(value: number): Promise<void> {
+  await saveBodyNumber(BODY_LETTER_SPACING_KEY, value, clampBodyLetterSpacing)
+}
+
+export async function loadUiBodyLetterSpacing(): Promise<number | null> {
+  return loadBodyNumber(BODY_LETTER_SPACING_KEY, clampBodyLetterSpacing)
+}
+
+/**
+ * 持久化左右边距。null 表示「跟随窗口」：此时**删除**该键，
+ * 让读回也得到 null（而不是存字符串 "null"，读回时 Number("null") 是 NaN）。
+ */
+export async function saveUiBodyMarginX(value: number | null): Promise<void> {
+  const store = await getStore()
+  const clamped = clampBodyMarginX(value)
+  if (clamped === null) await store.delete(BODY_MARGIN_X_KEY)
+  else await store.set(BODY_MARGIN_X_KEY, clamped)
+  await store.save()
+}
+
+export async function loadUiBodyMarginX(): Promise<number | null> {
+  return loadBodyNumber(BODY_MARGIN_X_KEY, clampBodyMarginX)
+}
+
+export async function saveUiBodySafeBottom(value: number): Promise<void> {
+  await saveBodyNumber(BODY_SAFE_BOTTOM_KEY, value, clampBodySafeBottom)
+}
+
+export async function loadUiBodySafeBottom(): Promise<number | null> {
+  return loadBodyNumber(BODY_SAFE_BOTTOM_KEY, clampBodySafeBottom)
 }
 
 export async function saveMaxHistoryMessages(max: number, _projectId?: string, _projectPath?: string): Promise<void> {
@@ -937,9 +1088,9 @@ function normalizeNovelConfig(
       CHAPTER_TARGET_CHARS_MIN,
       Math.min(CHAPTER_TARGET_CHARS_MAX, config.chapterTargetChars ?? DEFAULT_NOVEL_CONFIG.chapterTargetChars),
     ),
-    autoIngestOnSave: config.autoIngestOnSave ?? DEFAULT_NOVEL_CONFIG.autoIngestOnSave,
     autoExtractOnImport: config.autoExtractOnImport ?? DEFAULT_NOVEL_CONFIG.autoExtractOnImport,
     deepPreviousChaptersAnalysis: config.deepPreviousChaptersAnalysis ?? DEFAULT_NOVEL_CONFIG.deepPreviousChaptersAnalysis,
+    writingWebSearchEnabled: config.writingWebSearchEnabled ?? DEFAULT_NOVEL_CONFIG.writingWebSearchEnabled,
     reviewReasoningEffort: config.reviewReasoningEffort ?? DEFAULT_NOVEL_CONFIG.reviewReasoningEffort,
     defaultLlmModel: config.defaultLlmModel ?? DEFAULT_NOVEL_CONFIG.defaultLlmModel,
     writingModel: config.writingModel ?? DEFAULT_NOVEL_CONFIG.writingModel,
@@ -952,6 +1103,10 @@ function normalizeNovelConfig(
     communitySummaryInterval: Math.max(1, Math.min(50, config.communitySummaryInterval ?? DEFAULT_NOVEL_CONFIG.communitySummaryInterval)),
     communitySummaryAsync: config.communitySummaryAsync ?? DEFAULT_NOVEL_CONFIG.communitySummaryAsync,
     autoGenerateChapterTitle: config.autoGenerateChapterTitle ?? DEFAULT_NOVEL_CONFIG.autoGenerateChapterTitle,
+    draftMemoryHintEnabled: config.draftMemoryHintEnabled ?? DEFAULT_NOVEL_CONFIG.draftMemoryHintEnabled,
+    draftMemoryHintSeen: config.draftMemoryHintSeen ?? DEFAULT_NOVEL_CONFIG.draftMemoryHintSeen,
+    inspirationHintEnabled: config.inspirationHintEnabled ?? DEFAULT_NOVEL_CONFIG.inspirationHintEnabled,
+    inspirationHintSeen: config.inspirationHintSeen ?? DEFAULT_NOVEL_CONFIG.inspirationHintSeen,
   }
 }
 
@@ -959,9 +1114,19 @@ function normalizeRerankConfig(
   config?: Partial<RerankConfig> | null,
 ): RerankConfig | null {
   if (!config) return null
+  /*
+   * 4.3.6 起没有「复用主模型」了：老配置里的 `useMainLlm` 直接丢弃。
+   * 那些靠主模型重排的用户，磁盘上没有自己的重排模型 —— 如果仍把 enabled 读成 true，
+   * 设置页会显示「已启用」但 resolveRerankModel 恒返回 null，检索静默不重排（假绿）。
+   * 所以老配置一律关掉总开关，让用户自己决定要不要配一个真重排模型再打开；
+   * 已经填了独立模型的（换过配置又切回主模型那种）保持原样，它现在会直接用那个模型。
+   */
+  const legacyReuseMainModel = (config as { useMainLlm?: unknown }).useMainLlm === true
+  const enabled = legacyReuseMainModel && !(config.model ?? "").trim()
+    ? false
+    : config.enabled ?? DEFAULT_RERANK_CONFIG.enabled
   return {
-    enabled: config.enabled ?? DEFAULT_RERANK_CONFIG.enabled,
-    useMainLlm: config.useMainLlm ?? DEFAULT_RERANK_CONFIG.useMainLlm,
+    enabled,
     provider: config.provider ?? DEFAULT_RERANK_CONFIG.provider,
     apiKey: config.apiKey ?? DEFAULT_RERANK_CONFIG.apiKey,
     model: config.model ?? DEFAULT_RERANK_CONFIG.model,

@@ -13,6 +13,7 @@ import { RESPONSE_RESERVE_FRAC } from "./context-budget"
 import type { LlmUsage } from "./llm-usage"
 import { isThoughtDumpText } from "./thought-dump"
 import type { UserMemorySurface } from "./user-memory/types"
+import { supportsPromptCacheRouting } from "./prompt-cache-routing"
 
 /**
  * One piece of a multimodal message body. Text + image is the only
@@ -94,6 +95,8 @@ export interface RequestOverrides {
   userMemoryProjectKey?: string
   /** Internal: conversation/session scope key for layered user-memory selection. */
   userMemorySessionKey?: string
+  /** Internal: opaque routing key; emitted only to supported official OpenAI endpoints. */
+  promptCacheKey?: string
 }
 
 interface ProviderConfig {
@@ -223,6 +226,23 @@ function parseOpenAiLine(line: string): string | null {
   } catch {
     return null
   }
+}
+
+/** SSE error objects (cursor-api-proxy agent_exit_*, OpenAI-style `{error:{message}}`). */
+export function parseOpenAiSseError(line: string): string | null {
+  const data = line.startsWith("data: ") ? line.slice(6).trim() : line.trim()
+  if (!data || data === "[DONE]") return null
+  try {
+    const parsed = JSON.parse(data) as { error?: { message?: string } | string }
+    if (typeof parsed.error === "string" && parsed.error.trim()) return parsed.error.trim()
+    if (parsed.error && typeof parsed.error === "object") {
+      const message = parsed.error.message?.trim()
+      if (message) return message
+    }
+  } catch {
+    return null
+  }
+  return null
 }
 
 function tokenCount(value: unknown): number | undefined {
@@ -622,6 +642,7 @@ function buildResponsesBody(
     stream: true,
   }
 
+  if (overrides?.promptCacheKey && supportsPromptCacheRouting(config)) body.prompt_cache_key = overrides.promptCacheKey
   if (overrides?.temperature !== undefined) body.temperature = overrides.temperature
   if (overrides?.top_p !== undefined) body.top_p = overrides.top_p
   if (overrides?.max_tokens !== undefined) body.max_output_tokens = overrides.max_tokens
@@ -643,6 +664,7 @@ function stripWireAgnosticOverrides(overrides?: RequestOverrides): Omit<
   | "userMemorySurface"
   | "userMemoryProjectKey"
   | "userMemorySessionKey"
+  | "promptCacheKey"
   | "tools"
   | "toolChoice"
 > {
@@ -652,6 +674,7 @@ function stripWireAgnosticOverrides(overrides?: RequestOverrides): Omit<
     userMemorySurface: _userMemorySurface,
     userMemoryProjectKey: _userMemoryProjectKey,
     userMemorySessionKey: _userMemorySessionKey,
+    promptCacheKey: _promptCacheKey,
     tools: _tools,
     toolChoice: _toolChoice,
     ...rest
@@ -814,6 +837,79 @@ function isOpenAiStrictCompletionModel(config: LlmConfig): boolean {
   return config.provider === "custom" && isAzureOpenAiEndpoint(config.customEndpoint)
 }
 
+/**
+ * Model families that honour Anthropic extended thinking. Claude 3.5 and
+ * earlier reject a `thinking` block with a 400, so the version gate is
+ * load-bearing rather than cosmetic.
+ *
+ * Covers Claude 3.7, the 4.x families in both the `claude-opus-4` and
+ * `claude-4-opus` spellings, and MiniMax M-series reasoning models served
+ * over the Messages wire.
+ */
+function isAnthropicThinkingModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase()
+  if (/claude[-_]?3[.\-_]?7/.test(normalized)) return true
+  if (/claude[-_](?:opus|sonnet|haiku)[-_]?([4-9]|\d{2,})/.test(normalized)) return true
+  if (/claude[-_]?([4-9]|\d{2,})(?:[.\-_]|$)/.test(normalized)) return true
+  if (/minimax[-_]?m\d/.test(normalized) || /^m\d+$/.test(normalized)) return true
+  return false
+}
+
+/**
+ * Reasoning models reached through OpenAI-compatible aggregators, where the
+ * id usually carries a vendor prefix (`openai/o3`, `x-ai/grok-4-reasoning`).
+ * `isOpenAiStrictCompletionModel` only matches bare ids on first-party
+ * OpenAI/Azure because it also governs the `max_completion_tokens` rewrite,
+ * so aggregator ids need their own gate.
+ */
+function isPrefixedReasoningModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase()
+  const tail = normalized.includes("/")
+    ? normalized.slice(normalized.lastIndexOf("/") + 1)
+    : normalized
+  return /^gpt-5(?:[.\-_]|$)/.test(tail)
+    || /^o\d+(?:[.\-_]|$)/.test(tail)
+    || /(?:^|[-_])(?:reasoning|thinking)(?:[-_]|$)/.test(tail)
+}
+
+/**
+ * Whether thinking depth can actually be steered for this model. False means
+ * every explicit reasoning mode would either be dropped on the floor or
+ * rejected outright, so callers should hide the control rather than offer a
+ * knob that does nothing.
+ *
+ * Deliberately a conservative allow-list instead of the inverse of the wire
+ * adaptations. `buildOpenAiCompatibleBody` sends `reasoning_effort` to any
+ * openai/azure/custom provider that asks for it, which non-reasoning models
+ * like gpt-4o either ignore or 400 on, and the Anthropic path has the same
+ * problem with `thinking` on Claude 3.5. Listing only the families known to
+ * honour the parameter keeps a useless slider off the screen.
+ */
+export function modelSupportsReasoningControl(config: LlmConfig): boolean {
+  // Claude Code CLI takes no thinking parameter at all, and Cursor CLI
+  // carries effort inside the model id (`model[reasoning_effort=high]`)
+  // rather than reading config.reasoning.
+  if (config.provider === "claude-code" || config.provider === "cursor-cli" || config.provider === "antigravity-cli") return false
+  // Codex CLI maps the mode straight onto `turn/start.effort`.
+  if (config.provider === "codex-cli") return true
+  if (config.provider === "google") return googleModelSupportsThinkingConfig(config.model)
+
+  const anthropicWire = config.provider === "anthropic"
+    || config.provider === "minimax"
+    || (config.provider === "custom" && config.apiMode === "anthropic_messages")
+  if (anthropicWire) return isAnthropicThinkingModel(config.model)
+
+  if (config.provider === "custom" && config.apiMode === "responses") {
+    return isOpenAiStrictCompletionModel(config) || isPrefixedReasoningModel(config.model)
+  }
+
+  if (isDeepSeekEndpoint(config)) return true
+  if (isChatTemplateThinkingModel(config.model) || isMiMoEndpoint(config)) return true
+  if (isGLMThinkingModel(config.model) && isZhipuEndpoint(config)) return true
+  if (isOpenAiStrictCompletionModel(config)) return true
+  return isPrefixedReasoningModel(config.model)
+}
+
 function adaptOpenAiStrictCompletionBody(config: LlmConfig, body: Record<string, unknown>): void {
   if (!isOpenAiStrictCompletionModel(config)) return
 
@@ -853,6 +949,7 @@ function buildOpenAiCompatibleBody(
   // Pass full overrides: buildOpenAiBody strips internal/wire-agnostic
   // fields (including tools/toolChoice) then re-emits tools + tool_choice.
   const body: Record<string, unknown> = buildOpenAiBody(wiredMessages, overrides)
+  if (overrides?.promptCacheKey && supportsPromptCacheRouting(config)) body.prompt_cache_key = overrides.promptCacheKey
   if (
     config.provider === "openai"
     || config.provider === "azure"
@@ -1103,7 +1200,7 @@ function requiresBearerAuth(url: string): boolean {
  * A bug where this naively appended "/v1/messages" caused requests to
  * ".../v1/v1/messages" (404) whenever a user typed a URL ending in /v1.
  */
-export function buildAnthropicUrl(base: string): string {
+function buildAnthropicUrl(base: string): string {
   const trimmed = base.replace(/\/+$/, "")
   if (/\/v\d+\/messages$/i.test(trimmed)) return trimmed
   if (/\/v\d+$/i.test(trimmed)) return `${trimmed}/messages`
@@ -1149,7 +1246,7 @@ function flattenGoogleSystemParts(content: string | ContentBlock[]): string {
   return content.map((b) => (b.type === "text" ? b.text : "")).join("")
 }
 
-export function googleModelSupportsThinkingConfig(model: string): boolean {
+function googleModelSupportsThinkingConfig(model: string): boolean {
   const normalized = model.toLowerCase()
   return /gemini-(2\.5|3(?:\.\d+)?|exp)/i.test(normalized) || /thinking/i.test(normalized)
 }
@@ -1353,6 +1450,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
 
     case "claude-code":
     case "codex-cli":
+    case "antigravity-cli":
       // Local CLI providers use subprocess transports (stdin/stdout JSON
       // streams), not HTTP. Dispatch happens one layer up in
       // streamChat() before getProviderConfig is called. Reaching this

@@ -86,6 +86,25 @@ const state: BookAnalysisLibraryState = {
         chapterRange: ["1", "10"],
         createdAt: 1,
       }],
+      evidence: [
+        {
+          version: 1,
+          id: "evidence-style-1",
+          bookId: "book-1",
+          skill: "style",
+          taskId: "analysis-book-1-style",
+          chapterId: "ch-0001",
+          chapterOrder: 1,
+          text: "他不动声色地退后半步，等对方把话说完才开口。",
+          tags: ["对白留白"],
+          reason: "以动作替代解释，贴合已启用的克制描写文风。",
+          purpose: "为文风 Skill 提供对白节奏证据。",
+          enabled: true,
+          userPinned: false,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
     },
   ],
 }
@@ -152,5 +171,66 @@ describe("BookAnalysisLibraryLayout", () => {
     expect(html).toContain("主角")
     expect(html).toContain("韩立")
     expect(html).toContain("重新提取")
+  })
+
+  it("提供 onOpenStoryMap 时渲染「打开故事导图」入口", () => {
+    const html = renderToStaticMarkup(
+      <BookAnalysisLibraryLayout
+        state={state}
+        selectedBookId="book-1"
+        selectedCharacterId="char-hanli"
+        extractingStyle={false}
+        extractingCharacters={false}
+        addingToSoul={false}
+        importTaskPanel={<div>批量导入任务</div>}
+        storyFrameworks={storyFrameworks}
+        onSelectBook={vi.fn()}
+        onSelectCharacter={vi.fn()}
+        onImportNovel={vi.fn()}
+        onExtractStyle={vi.fn()}
+        onToggleStyle={vi.fn()}
+        onAddSelectedSkillsToSoul={vi.fn()}
+        onReextractCharacters={vi.fn()}
+        extractingStoryFramework={false}
+        onExtractStoryFramework={vi.fn()}
+        onCreateOutlineFromFramework={vi.fn()}
+        onOpenStoryMap={vi.fn()}
+        onDeleteBook={vi.fn()}
+      />,
+    )
+    expect(html).toContain("打开故事导图")
+  })
+
+  it("hideBookHeader 时不再重复作品标题，但保留「打开故事导图」入口", () => {
+    const html = renderToStaticMarkup(
+      <BookAnalysisLibraryLayout
+        state={state}
+        selectedBookId="book-1"
+        selectedCharacterId="char-hanli"
+        extractingStyle={false}
+        extractingCharacters={false}
+        addingToSoul={false}
+        importTaskPanel={<div>批量导入任务</div>}
+        storyFrameworks={storyFrameworks}
+        onSelectBook={vi.fn()}
+        onSelectCharacter={vi.fn()}
+        onImportNovel={vi.fn()}
+        onExtractStyle={vi.fn()}
+        onToggleStyle={vi.fn()}
+        onAddSelectedSkillsToSoul={vi.fn()}
+        onReextractCharacters={vi.fn()}
+        extractingStoryFramework={false}
+        onExtractStoryFramework={vi.fn()}
+        onCreateOutlineFromFramework={vi.fn()}
+        onOpenStoryMap={vi.fn()}
+        onDeleteBook={vi.fn()}
+        hideBookHeader
+      />,
+    )
+    expect(html).not.toContain("拆书库")
+    // 章字数摘要只出现在被隐藏的头部里；书名本身在「启用文风」等区块仍会出现，不能当作判据。
+    expect(html).not.toContain("10 章 · 100,000 字")
+    expect(html).toContain("打开故事导图")
+    expect(html).toContain("角色 Skill")
   })
 })

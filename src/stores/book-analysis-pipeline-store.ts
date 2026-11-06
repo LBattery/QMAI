@@ -1,3 +1,4 @@
+import { LlmRequestTraceCollector, type LlmRequestCacheTrace } from "@/lib/llm-request-trace"
 import { create } from "zustand"
 import { normalizePath } from "@/lib/path-utils"
 import { useWikiStore } from "./wiki-store"
@@ -19,6 +20,7 @@ import {
   type AnalysisRuntimeProgress,
   type AnalysisSkill,
   type BookAnalysisPipelineTask,
+  type StyleAnalysisDepth,
 } from "@/lib/novel/book-analysis/analysis-pipeline-types"
 import type { RecognizedCharacter } from "@/lib/novel/book-analysis/types"
 import { createAnalysisScheduler, type AnalysisScheduler } from "@/lib/novel/book-analysis/analysis-scheduler"
@@ -26,8 +28,14 @@ import { characterAnalysisAdapter } from "@/lib/novel/book-analysis/character-an
 import { storyAnalysisAdapter } from "@/lib/novel/book-analysis/story-analysis-adapter"
 import { styleAnalysisAdapter } from "@/lib/novel/book-analysis/style-analysis-adapter"
 import { clearActiveAnalysisSnapshot, setActiveAnalysisSnapshot } from "@/lib/novel/book-analysis/analysis-active-registry"
-import { resolveDefaultModel } from "@/lib/novel/model-resolver"
+import { resolveTaskLlmConfig } from "@/lib/novel/book-analysis/analysis-model-resolver"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
+import { withWorkbenchAdapter } from "@/lib/novel/book-analysis/workbench-adapter"
+import { buildWorkbenchPlan, type WorkbenchRequest } from "@/lib/novel/book-analysis/workbench-core"
+import { readWorkbenchChapters } from "@/lib/novel/book-analysis/workbench-storage"
+import { llmRecognizeCharacters } from "@/lib/novel/book-analysis/character-llm-recognizer"
+import { loadMetadata } from "@/lib/novel/book-analysis/analysis-engine"
+import { syncBookAnalysisActivities } from "./book-analysis-activity-store"
 
 let taskCounter = 0
 
@@ -41,10 +49,12 @@ function safeTaskId(batchId: string | null, bookId: string, forceNew: boolean): 
 function initialTask(input: {
   projectPath: string
   bookId: string
+  bookTitle?: string
   bookPath: string
   batchId: string | null
   selectedSkills: AnalysisSkill[]
   forceNew: boolean
+  forceRefresh: boolean
 }): BookAnalysisPipelineTask {
   const now = Date.now()
   const selectedSkills = normalizeSelectedSkills(input.selectedSkills)
@@ -55,8 +65,10 @@ function initialTask(input: {
     batchId: input.batchId,
     projectPath: input.projectPath,
     bookId: input.bookId,
+    bookTitle: input.bookTitle,
     bookPath: input.bookPath,
     selectedSkills,
+    forceRefresh: input.forceRefresh,
     range: null,
     status: "awaiting-range",
     currentSkill: null,
@@ -79,7 +91,7 @@ function initialTask(input: {
   }
 }
 
-export interface BookAnalysisPipelineState {
+interface BookAnalysisPipelineState {
   projectPath: string | null
   tasks: BookAnalysisPipelineTask[]
   chunks: AnalysisChunkRecord[]
@@ -89,16 +101,25 @@ export interface BookAnalysisPipelineState {
   createAwaitingRangeTask(input: {
     batchId?: string | null
     bookId: string
+    bookTitle?: string
     bookPath: string
     selectedSkills: AnalysisSkill[]
     forceNew?: boolean
+    forceRefresh?: boolean
   }): Promise<BookAnalysisPipelineTask | null>
-  configureTaskRange(taskId: string, range: AnalysisChapterRange, selectedSkills?: AnalysisSkill[]): Promise<void>
+  configureTaskRange(
+    taskId: string,
+    range: AnalysisChapterRange,
+    selectedSkills?: AnalysisSkill[],
+    options?: { modelKey?: string; styleDepth?: StyleAnalysisDepth; workbenchRequest?: WorkbenchRequest },
+  ): Promise<void>
+  recognizeWorkbenchCharacters(taskId: string): Promise<void>
   setTaskRecognizedCharacters(taskId: string, characters: RecognizedCharacter[]): Promise<void>
   failTask(taskId: string, error: string): Promise<void>
   confirmCharacterSelection(taskId: string, selectedIds: string[]): Promise<void>
   /** 写入运行时进度（如角色识别）；scheduler 快照不会覆盖以 `:recognition` 结尾的 key */
   setRuntimeProgress(key: string, progress: AnalysisRuntimeProgress | null): void
+  recordTaskRequestTrace(taskId: string, trace: LlmRequestCacheTrace): Promise<void>
   startTask(taskId: string): Promise<void>
   pauseTask(taskId: string): Promise<void>
   continueTask(taskId: string): Promise<void>
@@ -116,6 +137,8 @@ export function createBookAnalysisPipelineStore() {
   let scheduler: AnalysisScheduler | null = null
   let unsubscribe: (() => void) | null = null
   let generation = 0
+  const traceWrites = new Map<string, Promise<void>>()
+  const recognitionControllers = new Map<string, AbortController>()
 
   return create<BookAnalysisPipelineState>((set, get) => ({
     projectPath: null,
@@ -130,6 +153,7 @@ export function createBookAnalysisPipelineStore() {
       // 避免组件卸载-重挂时清空进度、停止正在运行的分析任务
       if (get().projectPath === projectPath && scheduler) return
       generation += 1
+      recognitionControllers.forEach((controller) => controller.abort())
       const token = generation
       unsubscribe?.()
       unsubscribe = null
@@ -150,11 +174,11 @@ export function createBookAnalysisPipelineStore() {
       ).values()]
       const nextScheduler = createAnalysisScheduler({
         adapters: {
-          characters: characterAnalysisAdapter,
-          story: storyAnalysisAdapter,
-          style: styleAnalysisAdapter,
+          characters: withWorkbenchAdapter(characterAnalysisAdapter),
+          story: withWorkbenchAdapter(storyAnalysisAdapter),
+          style: withWorkbenchAdapter(styleAnalysisAdapter),
         },
-        llmConfig: () => resolveDefaultModel(useWikiStore.getState().llmConfig),
+        llmConfig: (task) => resolveTaskLlmConfig(task),
       })
       scheduler = nextScheduler
       nextScheduler.initialize(mergedTasks, mergedChunks)
@@ -175,36 +199,71 @@ export function createBookAnalysisPipelineStore() {
         setActiveAnalysisSnapshot(projectPath, snapshot.tasks)
       })
     },
+    async recordTaskRequestTrace(taskId, trace) {
+      const task = get().tasks.find((item) => item.id === taskId)
+      if (!task) return
+      if (scheduler) {
+        await scheduler.recordRequestTrace(task, { ...trace, surface: "book-analysis" })
+        return
+      }
+      // 初始化尚未结束时也保留识别请求；恢复合并后由调度器接管。
+      const collector = new LlmRequestTraceCollector(task.requestUsageTotals ? {
+        requests: task.requestTraces ?? [], usageTotals: task.requestUsageTotals, requestIds: task.requestTraceIds,
+        omittedRequestCount: task.omittedRequestTraceCount ?? 0,
+      } : undefined)
+      collector.record({ ...trace, surface: "book-analysis" })
+      const ledger = collector.snapshot()
+      const next = { ...task, requestTraces: ledger.requests, requestTraceIds: ledger.requestIds, requestUsageTotals: ledger.usageTotals,
+        omittedRequestTraceCount: ledger.omittedRequestCount }
+      set((state) => ({ tasks: state.tasks.map((item) => item.id === taskId ? next : item) }))
+      const pending = (traceWrites.get(taskId) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+        const latest = get().tasks.find((item) => item.id === taskId)
+        if (latest) await saveAnalysisTask(latest)
+      })
+      traceWrites.set(taskId, pending)
+      try { await pending } finally { if (traceWrites.get(taskId) === pending) traceWrites.delete(taskId) }
+    },
     async createAwaitingRangeTask(input) {
       const projectPath = get().projectPath
       if (!projectPath) throw new Error("请先初始化拆书分析项目")
       const selectedSkills = normalizeSelectedSkills(input.selectedSkills)
       if (selectedSkills.length === 0) return null
-      if (!input.forceNew) {
+      if (!input.forceNew && !input.forceRefresh) {
         const existing = get().tasks.find((task) => task.batchId === (input.batchId ?? null) && task.bookId === input.bookId)
         if (existing) return existing
       }
       const task = initialTask({
         projectPath,
         bookId: input.bookId,
+        bookTitle: input.bookTitle,
         bookPath: normalizePath(input.bookPath),
         batchId: input.batchId ?? null,
         selectedSkills,
-        forceNew: input.forceNew ?? false,
+        forceNew: input.forceNew === true || input.forceRefresh === true,
+        forceRefresh: input.forceRefresh ?? false,
       })
       await saveAnalysisTask(task)
       set((state) => ({ tasks: [...state.tasks, task] }))
+      await scheduler?.registerTask(task)
       setActiveAnalysisSnapshot(projectPath, [...get().tasks])
       return task
     },
-    async configureTaskRange(taskId, range, nextSkills) {
+    async configureTaskRange(taskId, range, nextSkills, options) {
       const task = get().tasks.find((item) => item.id === taskId)
       if (!task) throw new Error("未找到分析任务")
       const selectedSkills = normalizeSelectedSkills(nextSkills ?? task.selectedSkills)
       if (selectedSkills.length === 0) throw new Error("请至少选择一个提取项目")
+      const modelKey = options?.modelKey?.trim() ?? task.modelKey ?? ""
+      const styleDepth = options?.styleDepth ?? task.styleDepth
       const chapters = await loadChapterList(task.bookPath)
-      const llmConfig = resolveDefaultModel(useWikiStore.getState().llmConfig)
-      const plan = buildAnalysisChunkPlan(
+      // 仍按任务模型解析 maxContextSize，但 computeAnalysisChunkCharLimit 当前对所有已配置模型都返回 40000
+      const llmConfig = resolveTaskLlmConfig({ modelKey })
+      const workbenchRequest = options?.workbenchRequest
+        ? { ...options.workbenchRequest, ...(selectedSkills.includes("style") ? { styleProfileVersion: 1 as const } : {}) }
+        : undefined
+      const plan = workbenchRequest ? buildWorkbenchPlan(
+        await readWorkbenchChapters(task.bookPath, workbenchRequest.selectedChapterIds), workbenchRequest.selectedChapterIds,
+      ) : buildAnalysisChunkPlan(
         chapters.map((chapter) => ({ id: chapter.chapterId, order: chapter.order, wordCount: chapter.wordCount })),
         range,
         { maxChunkChars: computeAnalysisChunkCharLimit(llmConfig.maxContextSize) },
@@ -213,8 +272,11 @@ export function createBookAnalysisPipelineStore() {
       const needsCharacterSelection = selectedSkills.includes("characters")
       const configured: BookAnalysisPipelineTask = {
         ...task,
+        ...(workbenchRequest ? { workbenchVersion: 2 as const, workbenchRequest: structuredClone(workbenchRequest) } : {}),
         selectedSkills,
         range,
+        modelKey: modelKey || undefined,
+        styleDepth,
         status: needsCharacterSelection ? "awaiting-character-selection" : "queued",
         currentSkill: null,
         error: null,
@@ -252,7 +314,64 @@ export function createBookAnalysisPipelineStore() {
         tasks: state.tasks.map((item) => item.id === taskId ? configured : item),
         chunks: [...state.chunks.filter((chunk) => chunk.taskId !== taskId), ...chunks],
       }))
+      await scheduler?.registerTask(configured, chunks)
       setActiveAnalysisSnapshot(task.projectPath, get().tasks)
+    },
+    async recognizeWorkbenchCharacters(taskId) {
+      const task = get().tasks.find((item) => item.id === taskId)
+      if (!task?.workbenchRequest || task.status !== "awaiting-character-selection" || recognitionControllers.has(taskId)) return
+      const controller = new AbortController()
+      recognitionControllers.set(taskId, controller)
+      const progressKey = `${taskId}:characters:recognition`
+      try {
+        if (task.error) {
+          const retrying = { ...task, error: null, updatedAt: Date.now() }
+          await saveAnalysisTask(retrying)
+          if (controller.signal.aborted) return
+          set((state) => ({ tasks: state.tasks.map((item) => item.id === taskId ? retrying : item) }))
+          await scheduler?.registerTask(retrying)
+        }
+        const chapters = await readWorkbenchChapters(task.bookPath, task.workbenchRequest.selectedChapterIds)
+        const plan = buildWorkbenchPlan(chapters, task.workbenchRequest.selectedChapterIds)
+        const metadata = await loadMetadata(task.bookPath)
+        const characters = new Map<string, RecognizedCharacter>()
+        for (const [index, chunk] of plan.entries()) {
+          if (controller.signal.aborted) throw new Error("用户取消识别")
+          get().setRuntimeProgress(progressKey, { stageLabel: `识别角色 ${index + 1}/${plan.length}`, percentage: index / plan.length * 100 })
+          const found = await llmRecognizeCharacters({
+            chapters: chunk.segments.map((s) => ({ index: s.order - 1, content: chapters.find((c) => c.id === s.chapterId)!.content.slice(s.start, s.end) })),
+            llmConfig: resolveTaskLlmConfig(task), sourceBook: metadata?.title ?? task.bookId, bookPath: task.bookPath,
+            signal: controller.signal, onRequestTrace: (trace) => { void get().recordTaskRequestTrace(taskId, trace) },
+          })
+          for (const character of found) {
+            const previous = characters.get(character.name)
+            characters.set(character.name, previous ? {
+              ...previous, aliases: [...new Set([...previous.aliases, ...character.aliases])],
+              chapterIndices: [...new Set([...previous.chapterIndices, ...character.chapterIndices])].sort((a, b) => a - b),
+              importanceScore: Math.max(previous.importanceScore, character.importanceScore),
+              appearances: previous.appearances + character.appearances,
+              category: previous.category === "主角" || character.category === "主角" ? "主角" : previous.category,
+            } : character)
+          }
+        }
+        if (controller.signal.aborted) return
+        if (!characters.size) throw new Error("所选章节未识别到角色，请调整范围")
+        await get().setTaskRecognizedCharacters(taskId, [...characters.values()].sort((a, b) => b.importanceScore - a.importanceScore))
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          // 留在选择阶段，允许重试识别，不让恢复按钮绕过目标选择。
+          const current = get().tasks.find((item) => item.id === taskId)
+          if (current) {
+            const next = { ...current, error: error instanceof Error ? error.message : "识别失败", updatedAt: Date.now() }
+            await saveAnalysisTask(next)
+            set((state) => ({ tasks: state.tasks.map((item) => item.id === taskId ? next : item) }))
+            await scheduler?.registerTask(next)
+          }
+        }
+      } finally {
+        recognitionControllers.delete(taskId)
+        get().setRuntimeProgress(progressKey, null)
+      }
     },
     async setTaskRecognizedCharacters(taskId, characters) {
       const task = get().tasks.find((item) => item.id === taskId)
@@ -270,6 +389,7 @@ export function createBookAnalysisPipelineStore() {
       set((state) => ({
         tasks: state.tasks.map((item) => item.id === taskId ? updated : item),
       }))
+      await scheduler?.registerTask(updated)
       setActiveAnalysisSnapshot(task.projectPath, get().tasks)
     },
     async failTask(taskId, error) {
@@ -285,6 +405,7 @@ export function createBookAnalysisPipelineStore() {
       set((state) => ({
         tasks: state.tasks.map((item) => item.id === taskId ? updated : item),
       }))
+      await scheduler?.registerTask(updated)
       setActiveAnalysisSnapshot(task.projectPath, get().tasks)
     },
     async confirmCharacterSelection(taskId, selectedIds) {
@@ -309,6 +430,7 @@ export function createBookAnalysisPipelineStore() {
       set((state) => ({
         tasks: state.tasks.map((item) => item.id === taskId ? updated : item),
       }))
+      await scheduler?.registerTask(updated)
       setActiveAnalysisSnapshot(task.projectPath, get().tasks)
     },
     setRuntimeProgress(key, progress) {
@@ -339,9 +461,11 @@ export function createBookAnalysisPipelineStore() {
       if (task.status === "awaiting-character-selection") {
         throw new Error("请先选择要深度分析的角色")
       }
-      const wikiState = useWikiStore.getState()
-      if (!hasUsableLlm(resolveDefaultModel(wikiState.llmConfig), wikiState.providerConfigs)) {
-        throw new Error("未配置可用模型，请先在设置中配置默认模型")
+      const { providerConfigs } = useWikiStore.getState()
+      if (!hasUsableLlm(resolveTaskLlmConfig(task), providerConfigs)) {
+        throw new Error(task.modelKey
+          ? `所选模型「${task.modelKey}」不可用，请重新选择模型或在设置中补全其配置`
+          : "未配置可用模型，请先在设置中配置默认模型")
       }
       await current.enqueue(task, get().chunks.filter((chunk) => chunk.taskId === taskId))
     },
@@ -351,6 +475,14 @@ export function createBookAnalysisPipelineStore() {
     },
     async continueTask(taskId) {
       if (!scheduler) throw new Error("分析任务尚未初始化")
+      const task = get().tasks.find((item) => item.id === taskId)
+      if (task?.workbenchVersion === 2 && task.selectedSkills.includes("characters") && !task.targetCharacters?.length) {
+        const next = { ...task, status: "awaiting-character-selection" as const, error: null, updatedAt: Date.now() }
+        await saveAnalysisTask(next)
+        set((state) => ({ tasks: state.tasks.map((item) => item.id === taskId ? next : item) }))
+        await scheduler.registerTask(next)
+        return
+      }
       await scheduler.continueTask(taskId)
     },
     async retryFailedChunk(taskId, skill, chunkId) {
@@ -358,6 +490,7 @@ export function createBookAnalysisPipelineStore() {
       await scheduler.retryFailedChunk(taskId, skill, chunkId)
     },
     async cancelTask(taskId) {
+      recognitionControllers.get(taskId)?.abort()
       const task = get().tasks.find((item) => item.id === taskId)
       if (!task) throw new Error("未找到分析任务")
       if (task.status === "awaiting-range" || task.status === "awaiting-character-selection") {
@@ -371,6 +504,7 @@ export function createBookAnalysisPipelineStore() {
         set((state) => ({
           tasks: state.tasks.map((item) => item.id === taskId ? updated : item),
         }))
+        await scheduler?.registerTask(updated)
         setActiveAnalysisSnapshot(task.projectPath, get().tasks)
         return
       }
@@ -381,6 +515,7 @@ export function createBookAnalysisPipelineStore() {
       set((state) => ({ dismissedBatchIds: [...new Set([...state.dismissedBatchIds, batchId])] }))
     },
     async dispose() {
+      recognitionControllers.forEach((controller) => controller.abort())
       generation += 1
       const projectPath = get().projectPath
       unsubscribe?.()
@@ -394,3 +529,4 @@ export function createBookAnalysisPipelineStore() {
 }
 
 export const useBookAnalysisPipelineStore = createBookAnalysisPipelineStore()
+useBookAnalysisPipelineStore.subscribe(syncBookAnalysisActivities)

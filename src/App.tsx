@@ -1,21 +1,24 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import i18n from "@/i18n"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
 import { isTauri, pickDirectory } from "@/lib/platform"
 import { useChatStore } from "@/stores/chat-store"
 import { useOutlineChatStore } from "@/stores/outline-chat-store"
-import { openProject, fileExists, listDirectory, readFile } from "@/commands/fs"
-import { getLastProject, saveLastProject, loadLlmConfig, loadAiChatModel, loadAiWorkflowMode, loadDefaultLlmModel, loadLanguage, loadEmbeddingConfig, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadNovelMode, loadNovelConfig, loadRevisionFeedbackWindowConfig, loadTheme, loadMaxHistoryMessages, loadUiFontFamily, loadVisualStyle, saveLlmConfig, loadLastReadChapter, loadMcpConfig, loadSearchApiConfig, loadOutlineWorkflowMode } from "@/lib/project-store"
+import { openProject, fileExists } from "@/commands/fs"
+import { getLastProject, saveLastProject, loadLlmConfig, loadAiChatModel, loadAiWorkflowMode, loadAiWorkflowModeBeforeDiscuss, loadDefaultLlmModel, loadEmbeddingConfig, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadNovelMode, loadNovelConfig, loadRevisionFeedbackWindowConfig, loadTheme, loadMaxHistoryMessages, loadUiFontFamily, loadUiBodyFontFamily, loadUiBodyFontPx, loadUiBodyLineHeight, loadUiBodyLetterSpacing, loadUiBodyMarginX, loadUiBodySafeBottom, loadVisualStyle, saveLlmConfig, loadLastReadChapter, loadSearchApiConfig, loadOutlineWorkflowMode, loadAiChatReasoningDepth, loadAiOutlineReasoningDepth } from "@/lib/project-store"
 import { loadReviewItems, loadChatHistory, saveChatHistory, saveReviewItems } from "@/lib/persist"
 import { initializeAiOutlineModelFromStorage } from "@/lib/ai-outline-model-initialization"
 import { setupAutoSave, teardownAutoSave } from "@/lib/auto-save"
 import { flushAppState } from "@/lib/web-store"
+import { runPreCloseFlushes } from "@/lib/pre-close-flush"
+import { flushPendingChapterSave } from "@/lib/chapter-save-flush"
 import { checkForAppUpdate } from "@/lib/app-updater"
-import { initAnalytics } from "@/lib/analytics"
-import { AppLayout } from "@/components/layout/app-layout"
-import { WelcomeScreen } from "@/components/project/welcome-screen"
-import { CreateProjectDialog } from "@/components/project/create-project-dialog"
+import { confirmAppQuit } from "@/components/uitest/models/model-draft-guard"
+import { restoreUiTestWorkspace, readUiTestWorkspacePreference } from "@/lib/ui-test-workspace-preferences"
+import { UiTestShell } from "@/components/uitest/ui-test-shell"
+import { PersonaSkillCompletionDialog } from "@/components/skill-library/persona-skill-completion-dialog"
+import { StyleEvolutionNoticeDialog } from "@/components/skill-library/style-evolution-notice-dialog"
 import { formatAppTitle } from "@/lib/app-title"
 import { resetProjectState } from "@/lib/reset-project-state"
 import { findLlmPresetById } from "@/components/settings/llm-presets"
@@ -23,15 +26,18 @@ import { resolveConfig } from "@/components/settings/preset-resolver"
 import { toast } from "@/lib/toast"
 import type { WikiProject } from "@/types/wiki"
 import { applyTheme, watchSystemTheme } from "@/lib/theme-utils"
-import { applyUiFontFamily } from "@/lib/font-settings"
+import { applyBodyTypography, applyBodyFontFamily, applyUiFontFamily } from "@/lib/font-settings"
 import { applyVisualStyle } from "@/lib/visual-style-settings"
 import { isChapterPathInProject, normalizePath } from "@/lib/path-utils"
-import { countChapterBodyWords } from "@/lib/chapter-word-count"
-import { flattenMdFiles } from "@/lib/novel/chapter-utils"
+import { useWritingStatsStore } from "@/stores/writing-stats-store"
 import { runUserMemoryMaintenance } from "@/lib/user-memory/maintenance"
+import { bootMcp } from "@/lib/mcp/startup"
+import { registerShelfOpener } from "@/lib/mcp/bookshelf"
 import { initializeProjectContextCache } from "@/lib/context-hub/context-hub"
+import { useEnsureAiChatModel } from "@/lib/ensure-ai-chat-model"
 
 function App() {
+  useEnsureAiChatModel()
   const project = useWikiStore((s) => s.project)
   const setProject = useWikiStore((s) => s.setProject)
   const setFileTree = useWikiStore((s) => s.setFileTree)
@@ -39,16 +45,40 @@ function App() {
   const setActiveView = useWikiStore((s) => s.setActiveView)
   const uiFontSizeScale = useWikiStore((s) => s.uiFontSizeScale)
   const uiFontFamily = useWikiStore((s) => s.uiFontFamily)
+  const uiBodyFontFamily = useWikiStore((s) => s.uiBodyFontFamily)
+  const uiBodyFontPx = useWikiStore((s) => s.uiBodyFontPx)
+  const uiBodyLineHeight = useWikiStore((s) => s.uiBodyLineHeight)
+  const uiBodyLetterSpacing = useWikiStore((s) => s.uiBodyLetterSpacing)
+  const uiBodyMarginX = useWikiStore((s) => s.uiBodyMarginX)
+  const uiBodySafeBottom = useWikiStore((s) => s.uiBodySafeBottom)
   const visualStyle = useWikiStore((s) => s.visualStyle)
   const communitySummaryError = useWikiStore((s) => s.communitySummaryError)
   const setCommunitySummaryError = useWikiStore((s) => s.setCommunitySummaryError)
+  const personaSkillLearningError = useWikiStore((s) => s.personaSkillLearningError)
+  const setPersonaSkillLearningError = useWikiStore((s) => s.setPersonaSkillLearningError)
   const dataVersion = useWikiStore((s) => s.dataVersion)
-  const [showCreateDialog, setShowCreateDialog] = useState(false)
+  /** 全书正文字数由 writingStatsStore 统一维护（窗口标题与底部状态栏共用）。 */
+  const appTitleTotalWordCount = useWritingStatsStore((s) => s.totalChars)
+  const [, setShowCreateDialog] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [appTitleTotalWordCount, setAppTitleTotalWordCount] = useState<number | null>(null)
 
   useEffect(() => {
     runUserMemoryMaintenance()
+  }, [])
+
+  useEffect(() => {
+    let stop = () => {}
+    let cancelled = false
+    void bootMcp().then((dispose) => {
+      if (cancelled) dispose()
+      else stop = dispose
+    }).catch((error) => {
+      console.warn("[mcp] 初始化失败：", error)
+    })
+    return () => {
+      cancelled = true
+      stop()
+    }
   }, [])
 
   function isCurrentProject(proj: WikiProject): boolean {
@@ -97,16 +127,6 @@ function App() {
     if (!isCurrentProject(proj)) return
 
     try {
-      const { restoreQueue } = await import("@/lib/ingest-queue")
-      if (!isCurrentProject(proj)) return
-      await restoreQueue(proj.id, proj.path)
-    } catch (err) {
-      console.error("恢复摄取队列失败:", err)
-    }
-
-    if (!isCurrentProject(proj)) return
-
-    try {
       const { restoreQueue: restoreDedupQueue } = await import("@/lib/dedup-queue")
       await restoreDedupQueue(proj.id, proj.path)
     } catch (err) {
@@ -137,6 +157,40 @@ function App() {
     } catch (err) {
       console.warn("[startup] 加载技能收藏失败:", err)
     }
+
+    if (!isCurrentProject(proj)) return
+    /*
+     * 「文风自进化」的启动 tick。
+     *
+     * ⚠️ 刻意 **不 await**：一轮自进化是「一次分析 + 一到两次探针」，几十秒量级，
+     * 而本函数本身就是启动路径上的 `void hydrateDeferredProjectState(proj)`（:576）。
+     * 改成 await 会让「打开项目」一直卡着，用户看到的是软件没反应。
+     *
+     * ⚠️ 而「不 await」正是重入的来源：用户切书 A→B→A 会再进来一次。
+     * 两道防线都在被调用的那一侧（不在这一行）：
+     *   ① 同一打开日最多尝试一次（lastAttemptedOn，且引擎**在跑模型前**就落盘）；
+     *   ② 每个项目一把的进程内 in-flight 标记（`runStyleEvolutionTick` 里，同步占位）。
+     * 所以这里可以放心地 fire-and-forget。
+     */
+    if (isTauri()) {
+      try {
+        const { runStyleEvolutionTick } = await import("@/lib/novel/style-evolution-runner")
+        void runStyleEvolutionTick(proj.path)
+      } catch (err) {
+        console.warn("[startup] 文风自进化 tick 启动失败:", err)
+      }
+
+      /*
+       * 「人物 Skill 自进化」的启动 tick：节律、开关、in-flight 守卫与文风完全同构
+       * （都由被调用方把关），所以同样 fire-and-forget。
+       */
+      try {
+        const { runPersonaSkillEvolutionTick } = await import("@/lib/novel/persona-skill-evolution-runner")
+        void runPersonaSkillEvolutionTick(proj.path)
+      } catch (err) {
+        console.warn("[startup] 人物 Skill 自进化 tick 启动失败:", err)
+      }
+    }
   }
 
   useEffect(() => {
@@ -147,8 +201,44 @@ function App() {
     applyUiFontFamily(uiFontFamily)
   }, [uiFontFamily])
 
+  // 正文字体独立应用：只写 --qmai-body-font-family，不碰界面字体。
   useEffect(() => {
-    applyVisualStyle(visualStyle)
+    applyBodyFontFamily(uiBodyFontFamily)
+  }, [uiBodyFontFamily])
+
+  /*
+   * 正文排版参数：一次写齐 5 个 CSS 变量。
+   *
+   * 为什么合并成一个 effect 而不是 5 个：它们共用同一个写入函数
+   * applyBodyTypography，拆成 5 个 effect 会写 5 次。
+   *
+   * ── 这个写法各自由什么保证（三种失效模式，别混为一谈）──
+   *   1. 字段**漏写**（少一个 key）→ 类型系统保证：参数是必填对象的字段，
+   *      少一个就是 TS2345。这是类型系统唯一能保证的一件事。
+   *   2. 字段**串味**（lineHeight 配成 uiBodySafeBottom）→ 类型系统**无感**
+   *      （五个值都是 number），由界面守卫里的"配对"断言保证。
+   *   3. 函数**内部**漏写某条 setProperty → 类型系统同样无感，
+   *      由 font-settings.spec.ts 保证。
+   *   4. 下面依赖数组**漏项** → 由界面守卫里的依赖数组断言保证。
+   * （早先这里写的是"5 个参数是否都被应用由类型系统保证"—— 那样说把
+   *  1 和 2/3/4 混作一件事，会让后来者以为覆盖比实际更强。已改正。）
+   *
+   * 正文字号由「倍数」改为绝对 px：正文自此**不随界面字号缩放**
+   * （用户已确认接受）。上限 32px 低于旧模型理论上限 40.5px，
+   * 故裁切风险下降。
+   */
+  useEffect(() => {
+    applyBodyTypography({
+      fontPx: uiBodyFontPx,
+      lineHeight: uiBodyLineHeight,
+      letterSpacing: uiBodyLetterSpacing,
+      marginX: uiBodyMarginX,
+      safeBottom: uiBodySafeBottom,
+    })
+  }, [uiBodyFontPx, uiBodyLineHeight, uiBodyLetterSpacing, uiBodyMarginX, uiBodySafeBottom])
+
+  useEffect(() => {
+    applyVisualStyle("classic")
   }, [visualStyle])
 
   // 监听社区摘要生成错误，弹窗提示
@@ -159,25 +249,85 @@ function App() {
     }
   }, [communitySummaryError, setCommunitySummaryError])
 
+  // 监听人物 Skill 学习失败。学习是后台 void 调用，以前只写 console，
+  // 用户看到的现象是「提取完了技能库还是空的」，却完全不知道哪里出了问题。
+  useEffect(() => {
+    if (personaSkillLearningError) {
+      toast.error(i18n.t("novel.personaSkill.learningFailed", { message: personaSkillLearningError }))
+      setPersonaSkillLearningError(null)
+    }
+  }, [personaSkillLearningError, setPersonaSkillLearningError])
+
   // Set up auto-save once on mount
   useEffect(() => {
     setupAutoSave()
 
     // 注册 Tauri 窗口关闭前保存
     let unlisten: (() => void) | undefined
-    let isClosing = false // 防止递归关闭
+    let isClosing = false // 确认通过后的保存期间，挡住重复的关闭请求
     if (isTauri()) {
       import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
         getCurrentWindow().onCloseRequested(async (event) => {
-          // 防止递归：close() 会再次触发 onCloseRequested
+          // 先同步阻止本次关闭：确认与保存都是异步的，不先阻止窗口会先被销毁。
+          event.preventDefault()
           if (isClosing) return
+          if (!(await confirmAppQuit())) return
           isClosing = true
 
-          // 阻止窗口立即关闭，等待保存完成
-          event.preventDefault()
+          /*
+           * 各模块自己声明的「关窗前必须落盘」（见 src/lib/pre-close-flush.ts）。
+           *
+           * ⚠ 单靠下面那句 `flushAppState()` 不够 —— 它只 flush **app-state 那一层**
+           * 的 store。正文排版的去抖在**组件层**（preview-panel 的
+           * bodyTypographyPersist，400ms），任务没到点时 `saveUiBody*` 一次都没调过，
+           * app-state 里没有任何待写的东西可 flush。
+           * 而再往下的 `destroy()` 是销毁 webview，**React 不走 unmount**，
+           * 所以 preview-panel 卸载 effect 里的 flush 也救不了这条路。
+           * 结果是：拖完滑块 400ms 内关窗口 → 下次开软件设置变回去。
+           *
+           * 必须 `await`：这些动作里是真写盘，紧随其后的 destroy 会把没写完的切断。
+           */
+          /*
+           * ⚠ `runPreCloseFlushes()` **不会 reject** —— 它内部把每个动作的异常
+           * 都吞掉并记进返回值的 `failed`（设计如此：一个模块写盘失败不该让
+           * 另一个模块的设置也丢）。所以下面这个 `.catch` 只兜得住"函数本身炸了"
+           * 这种意外；**真正需要看的是 `failed > 0`**。
+           *
+           * 本轮终审第 6 条指出：原来只写了 `.catch(...)`，于是 `failed > 0` 时
+           * 唯一的痕迹是一行 console.error，而紧接着就 destroy()，
+           * 用户永远看不到 —— "关窗前落盘失败"实际上是不可观测的。
+           * 这里把失败数显式打出来，让它在日志里能被搜到、能被截图。
+           */
+          const flushResult = await runPreCloseFlushes().catch((err) => {
+            console.error("关闭前保存排版设置失败:", err)
+            return null
+          })
+          if (flushResult && flushResult.failed > 0) {
+            console.error(
+              `关窗前有 ${flushResult.failed} 个落盘动作失败（成功 ${flushResult.ran} 个）—— `
+              + "相关设置可能未写入，下次启动会回退到上一次保存的值",
+            )
+          }
 
           // LLM 模型配置走 app-state 防抖写入；关窗前必须立刻 flush，否则自定义模型会丢失。
           await flushAppState().catch((err) => console.error("关闭前保存应用配置失败:", err))
+
+          /*
+           * 章节正文自动保存间隔是 3 分钟；关窗前必须把待落盘的那一份写下去，
+           * 否则最后几分钟写的字会随窗口一起消失。
+           *
+           * ⚠ 这一句与上面那句 `runPreCloseFlushes()` **不是重复的，别合并它们**：
+           * 两条分支各自独立引入了各自的机制，覆盖面不重叠 ——
+           *   · `runPreCloseFlushes()`（注册表）服务于**组件级去抖**：
+           *     排版设置的 400ms 去抖没到点时，app-state 层没有待写内容可 flush，
+           *     由模块自己声明要做什么；
+           *   · `flushPendingChapterSave()`（单一登记处）服务于**长间隔定时器**：
+           *     正文自动保存是 3 分钟一次的定时器，不在任何 store 的去抖队列里，
+           *     注册表里也没有它。
+           * 谁把后者"顺手"挪进注册表，就得同时在 preview-panel 里注册；
+           * 谁把这一句删掉当作"已经 flush 过了"，正文最后几分钟的字就会丢。
+           */
+          await flushPendingChapterSave().catch((err) => console.error("关闭前保存章节正文失败:", err))
 
           // 关闭前执行最终保存，防止丢失最后几秒的数据
           const project = useWikiStore.getState().project
@@ -199,8 +349,9 @@ function App() {
             }
           }
 
-          // 保存完成后手动关闭窗口
-          await getCurrentWindow().close()
+          // 保存完成后强制销毁窗口。不能改用 close()：它会再触发一次 close-requested，
+          // 而这里已阻止关闭，会变成「永远关不掉」。
+          await getCurrentWindow().destroy().catch((err) => console.error("关闭窗口失败:", err))
         }).then((fn) => { unlisten = fn })
       })
     }
@@ -225,12 +376,47 @@ function App() {
         const savedVisualStyle = await loadVisualStyle()
         const visualStyleToUse = savedVisualStyle ?? useWikiStore.getState().visualStyle
         useWikiStore.getState().setVisualStyle(visualStyleToUse)
-        applyVisualStyle(visualStyleToUse)
+        applyVisualStyle("classic")
         const savedUiFontFamily = await loadUiFontFamily()
         if (savedUiFontFamily) {
           useWikiStore.getState().setUiFontFamily(savedUiFontFamily)
           applyUiFontFamily(savedUiFontFamily)
         }
+
+        // 正文字体与界面字体各自独立读回，缺一不可
+        const savedUiBodyFontFamily = await loadUiBodyFontFamily()
+        if (savedUiBodyFontFamily) {
+          useWikiStore.getState().setUiBodyFontFamily(savedUiBodyFontFamily)
+          applyBodyFontFamily(savedUiBodyFontFamily)
+        }
+
+        /*
+         * 正文排版参数：逐项读回。返回 null 表示"这个键从来没有存过"，
+         * 此时保留 store 的默认值（默认值来自 font-settings.ts 的单一来源）。
+         * 注意 setUiBodyMarginX(null) 是合法的：它表示"跟随窗口"，
+         * 所以这里的判断是"读回值非 null 才写"，而不是"非 null 就用 null"。
+         *
+         * 正文字号要把**界面字号**传进去：老设置是"界面字号 × 正文倍数"
+         * 相乘得到的，迁移时不乘界面字号会让界面 150% 的用户发现正文变小。
+         * uiFontSizeScale 就是本组件第 41 行的 selector，可直接用。
+         *
+         * ⚠ 不要把它加进本 effect 的依赖数组。这个初始化 effect 的依赖是
+         * 空的（`}, []`，见文件里 init 那个 effect 的结尾），只跑一次；
+         * 加上去会让用户每改一次界面字号就重跑整个初始化（包含
+         * openProject 打开上次的项目）。这里的取值是安全的：
+         * wiki-store 的 uiFontSizeScale 初值由模块加载期的
+         * readStoredUiFontSizeScale() 同步算出，首帧就已经是正确值。
+         */
+        const savedBodyFontPx = await loadUiBodyFontPx(uiFontSizeScale)
+        if (savedBodyFontPx !== null) useWikiStore.getState().setUiBodyFontPx(savedBodyFontPx)
+        const savedBodyLineHeight = await loadUiBodyLineHeight()
+        if (savedBodyLineHeight !== null) useWikiStore.getState().setUiBodyLineHeight(savedBodyLineHeight)
+        const savedBodyLetterSpacing = await loadUiBodyLetterSpacing()
+        if (savedBodyLetterSpacing !== null) useWikiStore.getState().setUiBodyLetterSpacing(savedBodyLetterSpacing)
+        const savedBodyMarginX = await loadUiBodyMarginX()
+        if (savedBodyMarginX !== null) useWikiStore.getState().setUiBodyMarginX(savedBodyMarginX)
+        const savedBodySafeBottom = await loadUiBodySafeBottom()
+        if (savedBodySafeBottom !== null) useWikiStore.getState().setUiBodySafeBottom(savedBodySafeBottom)
 
         const savedConfig = await loadLlmConfig()
         if (savedConfig) {
@@ -245,10 +431,16 @@ function App() {
         if (savedAiWorkflowMode) {
           useWikiStore.getState().setAiWorkflowMode(savedAiWorkflowMode)
         }
+        const savedAiWorkflowModeBeforeDiscuss = await loadAiWorkflowModeBeforeDiscuss()
+        if (savedAiWorkflowModeBeforeDiscuss) {
+          useWikiStore.setState({ aiWorkflowModeBeforeDiscuss: savedAiWorkflowModeBeforeDiscuss })
+        }
         const savedOutlineWorkflowMode = await loadOutlineWorkflowMode()
         if (savedOutlineWorkflowMode) {
           useWikiStore.getState().setOutlineWorkflowMode(savedOutlineWorkflowMode)
         }
+        useWikiStore.getState().setAiChatReasoningDepth(await loadAiChatReasoningDepth())
+        useWikiStore.getState().setAiOutlineReasoningDepth(await loadAiOutlineReasoningDepth())
         const savedDefaultLlmModel = await loadDefaultLlmModel()
         if (savedDefaultLlmModel) {
           useWikiStore.getState().setDefaultLlmModel(savedDefaultLlmModel)
@@ -280,8 +472,6 @@ function App() {
         if (savedEmbeddingConfig) {
           useWikiStore.getState().setEmbeddingConfig(savedEmbeddingConfig)
         }
-        const savedMcpConfig = await loadMcpConfig()
-        useWikiStore.getState().setMcpConfig(savedMcpConfig)
         const savedSearchApiConfig = await loadSearchApiConfig()
         if (savedSearchApiConfig) {
           useWikiStore.getState().setSearchApiConfig(savedSearchApiConfig)
@@ -290,10 +480,7 @@ function App() {
         if (savedProxy) {
           useWikiStore.getState().setProxyConfig(savedProxy)
         }
-        const savedLang = await loadLanguage()
-        if (savedLang) {
-          await i18n.changeLanguage(savedLang)
-        }
+        await i18n.changeLanguage("zh")
         const savedNovelMode = await loadNovelMode()
         if (savedNovelMode !== null) {
           useWikiStore.getState().setNovelMode(savedNovelMode)
@@ -317,8 +504,18 @@ function App() {
         console.error("应用初始化失败:", err)
       } finally {
         setLoading(false)
+        // 启动后检查更新：发现新版本会弹窗询问是否下载安装。
+        //
+        // 这一行在 26f80ee（"fix(ui): 调整对话输入框与界面资源"）里被误删，
+        // 之后 checkForAppUpdate 再无调用者，整个 app-updater 模块被
+        // tree-shake 掉 —— v4.0.0 到 v4.1.1 的 6 个版本，用户打开旧版本
+        // 都收不到更新提示。回归守卫见 app-updater-wiring.test.ts。
+        //
+        // 这里刻意不套 UI 测试版的编译期开关：src/lib/ui-test.ts 里那个常量
+        // 已硬编码为 true，且 vite.config.ts 没有对应的构建期替换，套上就是
+        // 恒假 —— 调用写了也等于没写，而 tsc 与测试都不会报错。
+        // 非 Tauri 环境与非 Windows 平台由 checkForAppUpdate 内部自行返回。
         void checkForAppUpdate()
-        void initAnalytics()
       }
     }
     init()
@@ -340,30 +537,23 @@ function App() {
 
   useEffect(() => {
     if (!project?.path) {
-      setAppTitleTotalWordCount(null)
+      useWritingStatsStore.getState().reset()
       return
     }
 
     let cancelled = false
 
-    const loadAppTitleTotalWordCount = async () => {
-      try {
-        const chapterNodes = await listDirectory(`${normalizePath(project.path)}/wiki/chapters`)
-        const files = flattenMdFiles(chapterNodes)
-        const contents = await Promise.all(
-          files.map((file) => readFile(file.path).catch(() => "")),
-        )
-        const total = contents.reduce(
-          (sum, markdown) => sum + countChapterBodyWords(markdown),
-          0,
-        )
-        if (!cancelled) setAppTitleTotalWordCount(total)
-      } catch {
-        if (!cancelled) setAppTitleTotalWordCount(null)
-      }
+    // 全书字数与今日写作统计都收在 writingStatsStore 里：窗口标题、目录里的
+    // 字数、底部状态栏读的是同一个数字，不再各算一遍（此前是三份独立实现，
+    // 口径一旦漂移，三处会显示三个不同的总字数）。
+    const loadWritingStats = async () => {
+      const stats = useWritingStatsStore.getState()
+      await stats.initializeProject(project.path)
+      if (cancelled) return
+      await stats.refreshTotalChars()
     }
 
-    void loadAppTitleTotalWordCount()
+    void loadWritingStats()
 
     return () => {
       cancelled = true
@@ -381,6 +571,7 @@ function App() {
   }, [appTitleTotalWordCount, project?.name])
 
   async function handleProjectOpened(proj: WikiProject) {
+    const uiTestPreference = readUiTestWorkspacePreference(proj.id)
     await resetProjectState()
     await initializeProjectContextCache(proj.path)
 
@@ -430,9 +621,20 @@ function App() {
       useWikiStore.getState().setChatExpanded(true)
     }
 
-    // 文件树由 AppLayout 通过 refreshProjectFileTree 加载；重队列/定时导入/审查/聊天后置 hydration。
+    if (uiTestPreference && isCurrentProject(proj)) {
+      await restoreUiTestWorkspace(proj, uiTestPreference)
+    }
+
+    // 文件树由新版外壳通过 refreshProjectFileTree 加载；重队列/定时导入/审查/聊天后置 hydration。
     void hydrateDeferredProjectState(proj)
   }
+
+  const openShelfRef = useRef(handleProjectOpened)
+  openShelfRef.current = handleProjectOpened
+  useEffect(() => {
+    registerShelfOpener((project) => openShelfRef.current(project))
+    return () => registerShelfOpener(null)
+  }, [])
 
   async function handleSelectRecent(proj: WikiProject) {
     try {
@@ -467,36 +669,23 @@ function App() {
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">
-        Loading...
+        "正在打开…"
       </div>
-    )
-  }
-
-  if (!project) {
-    return (
-      <>
-        <WelcomeScreen
-          onCreateProject={() => setShowCreateDialog(true)}
-          onOpenProject={handleOpenProject}
-          onSelectProject={handleSelectRecent}
-        />
-        <CreateProjectDialog
-          open={showCreateDialog}
-          onOpenChange={setShowCreateDialog}
-          onCreated={handleProjectOpened}
-        />
-      </>
     )
   }
 
   return (
     <>
-      <AppLayout onSwitchProject={handleSwitchProject} />
-      <CreateProjectDialog
-        open={showCreateDialog}
-        onOpenChange={setShowCreateDialog}
-        onCreated={handleProjectOpened}
+      <UiTestShell
+        project={project}
+        onCreateProject={() => setShowCreateDialog(true)}
+        onOpenProject={handleOpenProject}
+        onSelectProject={handleSelectRecent}
+        onSwitchProject={handleSwitchProject}
+        onProjectOpened={handleProjectOpened}
       />
+      <PersonaSkillCompletionDialog />
+      <StyleEvolutionNoticeDialog />
     </>
   )
 }

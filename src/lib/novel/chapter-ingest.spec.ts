@@ -1,10 +1,6 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
-import { buildSnapshotMemorySyncPreview, normalizeChapterSnapshot } from "./chapter-ingest"
-import { buildChapterIngestOutput } from "./chapter-ingest-output"
-import { buildStructuredMemoryDocuments } from "./memory-rebuild"
-import { buildChapterExtractUserPrompt } from "./chapter-ingest-extract"
 
 const source = readFileSync(resolve(__dirname, "chapter-ingest.ts"), "utf8")
 
@@ -14,7 +10,15 @@ describe("chapter ingest draft boundary", () => {
     expect(source).toContain("allowDraft?: boolean")
     expect(source).toContain("options: IngestChapterOptions = {}")
     expect(source).toContain("if (!options.allowDraft && !isFinalChapter(fm))")
-    expect(source).toContain('failReason: "not_final"')
+    expect(source).toContain('return logFail("not_final", "章节不是正式稿")')
+  })
+
+  it("writes extract failures to .qmai/chapter-ingest.log and returns error", () => {
+    expect(source).toContain("appendChapterIngestLog")
+    expect(source).toContain('event: "fail"')
+    expect(source).toContain('event: "start"')
+    expect(source).toContain('event: "ok"')
+    expect(source).toContain("failReason, error: message")
   })
 
   it("does not persist a snapshot before syncSnapshotToMemory", () => {
@@ -29,54 +33,25 @@ describe("chapter ingest draft boundary", () => {
   })
 })
 
-describe("chapter snapshot appearance compatibility", () => {
-  it("preserves clothing data from legacy snapshots", () => {
-    const snapshot = normalizeChapterSnapshot({
-      chapterId: "chapter-12",
-      chapterNumber: 12,
-      characterAppearanceAndStatus: ["林夏：白色针织衫、深色长裤；左臂受伤"],
-      femaleCharacterSexualEvents: ["legacy-data"],
-    })
-
-    expect(snapshot?.characterAppearanceAndStatus).toEqual([
-      "林夏：白色针织衫、深色长裤；左臂受伤",
-    ])
-    expect(snapshot?.femaleCharacterSexualEvents).toEqual(["legacy-data"])
+/**
+ * 这些名字曾经每摄入一章就写一次盘，但全仓库没有任何读取方。
+ * 它们不是「暂时没人用」——查过 TS/Rust/脚本/快照查看器四条路径都没有读者，
+ * 并且唯一读 .output.json 的 story-extractor 只用 wikiUpdatePatch.entries。
+ * 这里钉死它们不会被无意中加回来（加回来等于每章多写两个没人读的文件）。
+ */
+describe("chapter ingest 不写无人读取的派生产物", () => {
+  it("不再写搜索索引 / 向量索引文件", () => {
+    expect(source).not.toContain(".search-index.json")
+    expect(source).not.toContain(".vector-index.json")
+    // 仍然写这两个：wiki-patch 被图谱与 story-extractor 读，output 被 story-extractor 读
+    expect(source).toContain(".wiki-patch.json")
+    expect(source).toContain(".output.json")
   })
 
-  it("normalizes snapshots created before the clothing field existed", () => {
-    const snapshot = normalizeChapterSnapshot({ chapterId: "chapter-1", chapterNumber: 1 })
-
-    expect(snapshot?.characterAppearanceAndStatus).toEqual([])
-  })
-
-  it("keeps clothing extraction and memory-sync preview in the ingest contract", () => {
-    const extractPrompt = buildChapterExtractUserPrompt(2, "正文")
-    expect(extractPrompt).toContain('"characterAppearanceAndStatus": ["角色名：外貌与衣着；当前状态"]')
-    expect(extractPrompt).toContain("不得推测")
-
-    const snapshot = normalizeChapterSnapshot({
-      chapterId: "chapter-2",
-      chapterNumber: 2,
-      characters: ["周宁"],
-      characterAppearanceAndStatus: ["周宁：黑色风衣；正在追踪目标"],
-    })
-    expect(snapshot).not.toBeNull()
-    expect(buildSnapshotMemorySyncPreview(snapshot!)).toContain("周宁：黑色风衣；正在追踪目标")
-
-    const output = buildChapterIngestOutput(snapshot!)
-    expect(output.searchIndexText.sections).toContainEqual(expect.objectContaining({
-      name: "角色外貌、衣着和当前状态",
-      content: "周宁：黑色风衣；正在追踪目标",
-    }))
-    expect(output.vectorIndexText.chunks).toContainEqual(expect.objectContaining({
-      kind: "appearance",
-      text: "周宁：黑色风衣；正在追踪目标",
-    }))
-    expect(output.wikiUpdatePatch.entries.find((entry) => entry.entryId === "character:周宁")?.fields)
-      .toEqual(expect.objectContaining({ appearanceAndStatus: "黑色风衣；正在追踪目标" }))
-
-    const documents = buildStructuredMemoryDocuments([snapshot!])
-    expect(documents["chapter-snapshots.md"]).toContain("周宁：黑色风衣；正在追踪目标")
+  it("不再维护 entityIsNew（只写不读的逐实体标志位）", () => {
+    expect(source).not.toContain("entityIsNew")
+    expect(source).not.toContain("normalizeEntityFlags")
+    // 但「新实体」这条校验警告必须保留：它会渲染进 .snapshot.md 给人看
+    expect(source).toContain('type: "entity_new"')
   })
 })

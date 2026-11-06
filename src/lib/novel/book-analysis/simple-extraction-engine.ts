@@ -1,23 +1,23 @@
 import type { LlmConfig } from "@/stores/wiki-store"
 import type { RecognizedCharacter, PersonalityProfile } from "./types"
-import { buildSimpleExtractionPrompt } from "./simple-extraction-prompts"
+import { buildSimpleExtractionPromptParts } from "./simple-extraction-prompts"
 
-export interface SimpleExtractionInput {
+interface SimpleExtractionInput {
   candidates: RecognizedCharacter[]
   chapterSamples: string
   llmConfig: LlmConfig
   signal?: AbortSignal
   // 测试注入点
-  _llmCall?: (prompt: string) => Promise<string>
+  _llmCall?: (prompt: string, cachePrefix?: string) => Promise<string>
   onProgress?: (completed: number, total: number) => void
 }
 
-export interface SimpleProfileResult {
+interface SimpleProfileResult {
   name: string
   profile: PersonalityProfile
 }
 
-export interface SimpleExtractionOutput {
+interface SimpleExtractionOutput {
   profiles: SimpleProfileResult[]
   error?: string
 }
@@ -26,14 +26,14 @@ export async function extractSimpleProfiles(
   input: SimpleExtractionInput
 ): Promise<SimpleExtractionOutput> {
   const { candidates, chapterSamples, signal, _llmCall, onProgress } = input
-  const prompt = buildSimpleExtractionPrompt({
+  const { stablePrefix, dynamicSuffix } = buildSimpleExtractionPromptParts({
     characterNames: candidates.map((c) => c.name),
     chapterSamples,
   })
 
   try {
     const llmFn = _llmCall ?? defaultLlmCall
-    const raw = await llmFn(prompt)
+    const raw = await llmFn(stablePrefix + dynamicSuffix, stablePrefix)
     if (signal?.aborted) throw new Error("aborted")
 
     // 剥离 markdown 代码块包裹（```json ... ``` 或 ``` ... ```）
@@ -76,15 +76,15 @@ export async function extractSimpleProfiles(
 
 // === 单角色简单提取（feature/book-analysis-reuse）===
 
-export interface SingleProfileInput {
+interface SingleProfileInput {
   character: RecognizedCharacter
   chapterSamples: string
   llmConfig: LlmConfig
   signal?: AbortSignal
-  _llmCall?: (prompt: string) => Promise<string>
+  _llmCall?: (prompt: string, cachePrefix?: string) => Promise<string>
 }
 
-export interface SingleProfileResult {
+interface SingleProfileResult {
   name: string
   profile: PersonalityProfile
   error?: string
@@ -102,13 +102,13 @@ export async function extractSingleProfile(
   const { character, chapterSamples, signal, _llmCall } = input
 
   try {
-    const prompt = buildSimpleExtractionPrompt({
+    const { stablePrefix, dynamicSuffix } = buildSimpleExtractionPromptParts({
       characterNames: [character.name],
       chapterSamples,
     })
 
     const llmFn = _llmCall ?? defaultLlmCall
-    const raw = await llmFn(prompt)
+    const raw = await llmFn(stablePrefix + dynamicSuffix, stablePrefix)
     if (signal?.aborted) throw new Error("aborted")
 
     // 剥离 markdown 代码块包裹（```json ... ``` 或 ``` ... ```）

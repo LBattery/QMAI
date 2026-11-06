@@ -58,21 +58,14 @@ export interface WikiUpdatePatch {
   entries: WikiUpdateEntry[]
 }
 
-export interface SharedWikiState {
-  sharedWiki: true
-  entries: Record<string, WikiUpdateEntry>
-  chapterWikiIds: string[]
-  isolatedChapterWikiIds: string[]
-}
-
-export interface GraphDerivationNode {
+interface GraphDerivationNode {
   id: string
   label: string
   type: NovelNodeType
   source: IngestSourceRef
 }
 
-export interface GraphDerivationEdge {
+interface GraphDerivationEdge {
   source: string
   target: string
   relation: string
@@ -84,30 +77,7 @@ export interface GraphDerivationCandidates {
   edges: GraphDerivationEdge[]
 }
 
-export interface SearchIndexSection {
-  name: string
-  content: string
-  weight: number
-}
-
-export interface SearchIndexText {
-  documentId: string
-  title: string
-  sections: SearchIndexSection[]
-}
-
-export interface VectorIndexChunk {
-  kind: "summary" | "character" | "appearance" | "event" | "foreshadowing" | "canon" | "timeline" | "conflict"
-  text: string
-  metadata: Record<string, string | number>
-}
-
-export interface VectorIndexText {
-  documentId: string
-  chunks: VectorIndexChunk[]
-}
-
-export interface ChapterIngestOutputOptions {
+interface ChapterIngestOutputOptions {
   title?: string
   volume?: string
   chapterGoal?: string
@@ -121,8 +91,6 @@ export interface ChapterIngestOutput {
   snapshotWikiFields: ChapterWikiFields
   wikiUpdatePatch: WikiUpdatePatch
   graphDerivation: GraphDerivationCandidates
-  searchIndexText: SearchIndexText
-  vectorIndexText: VectorIndexText
 }
 
 export function buildChapterIngestOutput(snapshot: ChapterSnapshot, options: ChapterIngestOutputOptions = {}): ChapterIngestOutput {
@@ -150,8 +118,6 @@ export function buildChapterIngestOutput(snapshot: ChapterSnapshot, options: Cha
     snapshotWikiFields,
     wikiUpdatePatch: buildWikiUpdatePatch(normalizedSnapshot, snapshotWikiFields, source),
     graphDerivation: buildGraphDerivation(normalizedSnapshot, source),
-    searchIndexText: buildSearchIndexText(normalizedSnapshot, title),
-    vectorIndexText: buildVectorIndexText(normalizedSnapshot),
   }
 }
 
@@ -256,120 +222,14 @@ function buildGraphDerivation(snapshot: ChapterSnapshot, source: IngestSourceRef
   return { nodes, edges }
 }
 
-function buildSearchIndexText(snapshot: ChapterSnapshot, title: string): SearchIndexText {
-  return {
-    documentId: `chapter:${snapshot.chapterNumber}`,
-    title,
-    sections: [
-      section("摘要", snapshot.summary, 3),
-      section("人物", snapshot.characters.join("\n"), 2),
-      section("角色外貌、衣着和当前状态", (snapshot.characterAppearanceAndStatus ?? []).join("\n"), 3),
-      section("地点", snapshot.locations.join("\n"), 2),
-      section("组织", snapshot.organizations.join("\n"), 2),
-      section("物品", snapshot.items.join("\n"), 2),
-      section("事件", snapshot.events.join("\n"), 3),
-      section("人物状态", snapshot.characterStateChanges.join("\n"), 3),
-      section("角色认知", snapshot.knowledgeChanges.join("\n"), 3),
-      section("伏笔", snapshot.foreshadowingChanges.join("\n"), 3),
-      section("冲突", snapshot.conflicts.join("\n"), 3),
-      section("时间线", snapshot.timelineEvents.join("\n"), 3),
-      section("正史规则", snapshot.newCanonFacts.join("\n"), 3),
-      section("结尾钩子", snapshot.endingHook, 2),
-    ].filter((item) => item.content.trim()),
-  }
-}
-
-function buildVectorIndexText(snapshot: ChapterSnapshot): VectorIndexText {
-  const metadata = { chapterNumber: snapshot.chapterNumber, snapshotId: snapshot.chapterId }
-  return {
-    documentId: `chapter:${snapshot.chapterNumber}`,
-    chunks: [
-      ...chunk("summary", [snapshot.summary], metadata),
-      ...chunk("character", snapshot.characterStateChanges, metadata),
-      ...chunk("appearance", snapshot.characterAppearanceAndStatus ?? [], metadata),
-      ...chunk("event", snapshot.events, metadata),
-      ...chunk("foreshadowing", snapshot.foreshadowingChanges, metadata),
-      ...chunk("conflict", snapshot.conflicts, metadata),
-      ...chunk("canon", snapshot.newCanonFacts, metadata),
-      ...chunk("timeline", snapshot.timelineEvents, metadata),
-    ],
-  }
-}
-
 function sourceRef(snapshot: ChapterSnapshot, evidence?: string): IngestSourceRef {
   return evidence?.trim()
     ? { chapterNumber: snapshot.chapterNumber, snapshotId: snapshot.chapterId, evidence }
     : { chapterNumber: snapshot.chapterNumber, snapshotId: snapshot.chapterId }
 }
 
-export function applyWikiUpdatePatch(state: SharedWikiState | undefined, patch: WikiUpdatePatch): SharedWikiState {
-  const next: SharedWikiState = state
-    ? {
-      sharedWiki: true,
-      entries: { ...state.entries },
-      chapterWikiIds: [...state.chapterWikiIds],
-      isolatedChapterWikiIds: [...state.isolatedChapterWikiIds],
-    }
-    : { sharedWiki: true, entries: {}, chapterWikiIds: [], isolatedChapterWikiIds: [] }
-
-  for (const incoming of patch.entries) {
-    const existing = next.entries[incoming.entryId]
-    next.entries[incoming.entryId] = existing
-      ? {
-        ...existing,
-        title: incoming.title,
-        fields: mergeFields(existing.fields, incoming.fields),
-        sources: mergeSources(existing.sources, incoming.sources),
-      }
-      : { ...incoming, fields: { ...incoming.fields }, sources: [...incoming.sources] }
-
-    if (incoming.entryType === "chapter" && !next.chapterWikiIds.includes(incoming.entryId)) {
-      next.chapterWikiIds.push(incoming.entryId)
-    }
-  }
-
-  return next
-}
-
-function mergeFields(existing: Record<string, unknown>, incoming: Record<string, unknown>): Record<string, unknown> {
-  const merged = { ...existing }
-  for (const [key, value] of Object.entries(incoming)) {
-    const current = merged[key]
-    if (Array.isArray(current) && Array.isArray(value)) {
-      merged[key] = Array.from(new Set([...current, ...value]))
-    } else if (isRecord(current) && isRecord(value)) {
-      merged[key] = mergeFields(current, value)
-    } else if (value !== "" && value !== undefined) {
-      merged[key] = value
-    }
-  }
-  return merged
-}
-
-function mergeSources(existing: IngestSourceRef[], incoming: IngestSourceRef[]): IngestSourceRef[] {
-  const result = [...existing]
-  for (const source of incoming) {
-    if (!result.some((item) => item.chapterNumber === source.chapterNumber && item.snapshotId === source.snapshotId && item.evidence === source.evidence)) {
-      result.push(source)
-    }
-  }
-  return result
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
 function entry(entryId: string, entryType: WikiEntryType, title: string, fields: Record<string, unknown>, source: IngestSourceRef): WikiUpdateEntry {
   return { entryId, entryType, title, mergeStrategy: "merge-by-entry-id", fields, sources: [source] }
-}
-
-function section(name: string, content: string, weight: number): SearchIndexSection {
-  return { name, content, weight }
-}
-
-function chunk(kind: VectorIndexChunk["kind"], values: string[], metadata: Record<string, string | number>): VectorIndexChunk[] {
-  return values.filter((text) => text.trim()).map((text) => ({ kind, text, metadata }))
 }
 
 function dedupeById<T extends { id: string }>(items: T[]): T[] {

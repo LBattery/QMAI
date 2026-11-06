@@ -25,7 +25,7 @@ export interface ContextUsageSnapshot {
   estimated: boolean
 }
 
-export interface BuildContextUsageSnapshotInput {
+interface BuildContextUsageSnapshotInput {
   windowTokens: number
   softwareRules?: string
   toolDefinitionsJson?: string
@@ -170,6 +170,8 @@ export function composeLiveContextUsage(
   lastUsage: ContextUsageSnapshot | null | undefined,
   live: {
     windowTokens?: number
+    softwareRules?: string
+    toolDefinitionsJson?: string
     sessionSummaryText?: string
     historyTexts?: string[]
     currentInput?: string
@@ -188,10 +190,8 @@ export function composeLiveContextUsage(
   const summaryTokens = live.sessionSummaryText !== undefined
     ? estimateText(live.sessionSummaryText)
     : nonNegativeInt(lastUsage?.segments.find((segment) => segment.key === "sessionSummary")?.tokens)
-  const windowTokens = Math.max(
-    1,
-    nonNegativeInt(live.windowTokens) || nonNegativeInt(lastUsage?.windowTokens) || 1,
-  )
+  const windowTokens = nonNegativeInt(live.windowTokens) || nonNegativeInt(lastUsage?.windowTokens)
+  if (windowTokens <= 0) return null
   const lastByKey = new Map(
     (lastUsage?.segments ?? []).map((segment) => [segment.key, nonNegativeInt(segment.tokens)]),
   )
@@ -201,6 +201,8 @@ export function composeLiveContextUsage(
   const segments: ContextUsageSegment[] = CONTEXT_USAGE_SEGMENT_ORDER.map((key) => {
     if (key === "currentInput") return { key, tokens: currentInputTokens }
     if (key === "toolResults") return { key, tokens: pendingToolTokens }
+    if (!calibrated && key === "softwareRules") return { key, tokens: estimateText(live.softwareRules) }
+    if (!calibrated && key === "toolDefinitions") return { key, tokens: estimateText(live.toolDefinitionsJson) }
     if (!calibrated && key === "history") return { key, tokens: historyTokens }
     if (!calibrated && key === "sessionSummary") return { key, tokens: summaryTokens }
     return { key, tokens: lastByKey.get(key) ?? 0 }
@@ -239,7 +241,7 @@ export function formatContextTokenCount(tokens: number): string {
   return `${Math.round(thousands)}K`
 }
 
-export function isContextUsageSnapshot(value: unknown): value is ContextUsageSnapshot {
+function isContextUsageSnapshot(value: unknown): value is ContextUsageSnapshot {
   if (!value || typeof value !== "object") return false
   const candidate = value as Partial<ContextUsageSnapshot>
   if (

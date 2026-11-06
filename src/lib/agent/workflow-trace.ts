@@ -1,7 +1,8 @@
 import type { ContextTrace } from "./context-trace"
 import type { ToolCallStatus } from "./types"
+import { displayWritingEntitySearchWorkflowContent } from "@/lib/novel/writing-entity-web-search"
 
-export type AgentWorkflowStepStatus =
+type AgentWorkflowStepStatus =
   | "pending"
   | "running"
   | "done"
@@ -9,7 +10,7 @@ export type AgentWorkflowStepStatus =
   | "error"
   | "cancelled"
 
-export type AgentWorkflowStepKind =
+type AgentWorkflowStepKind =
   | "intent"
   | "skill"
   | "context"
@@ -29,13 +30,13 @@ export interface WorkflowToolCall {
   finishedAt?: number
 }
 
-export interface AgentWorkflowDetail {
+interface AgentWorkflowDetail {
   label: string
   value: string
   tone?: "default" | "muted" | "warning" | "error" | "success"
 }
 
-export interface AgentWorkflowStep {
+interface AgentWorkflowStep {
   id: string
   kind: AgentWorkflowStepKind
   title: string
@@ -155,7 +156,7 @@ export function getWorkflowToolResultDisplay(result: string | undefined): string
     && parsed.content.trim()
     && (Array.isArray(parsed.items) || Array.isArray(parsed.searchedNames))
   ) {
-    return parsed.content.trim()
+    return displayWritingEntitySearchWorkflowContent(result)
   }
   return (result ?? "").trim()
 }
@@ -188,9 +189,10 @@ function describeWebSearchCall(call: WorkflowToolCall): string {
   if (status === "not_configured") {
     return query ? `联网搜索「${query}」未执行：未配置外部搜索` : "联网搜索未执行：未配置外部搜索"
   }
-  if (query && resultCount != null) return `联网搜索「${query}」（${resultCount} 条来源）`
+  // Gemini / 反重力 CLI 只有摘要、没有链接时 resultCount 为 0，「0 条来源」没意义，直接不写。
+  if (query && resultCount != null && resultCount > 0) return `联网搜索「${query}」（${resultCount} 条来源）`
   if (query) return `联网搜索「${query}」`
-  if (resultCount != null) return `联网搜索（${resultCount} 条来源）`
+  if (resultCount != null && resultCount > 0) return `联网搜索（${resultCount} 条来源）`
   return "联网搜索"
 }
 
@@ -285,6 +287,8 @@ export function getWorkflowToolDescription(call: WorkflowToolCall): string {
       return "分析前情章节"
     case "chapter_task_brief":
       return "生成写作任务书"
+    case "chapter_task_brief_retry":
+      return "重新生成写作任务书"
     case "chapter_draft":
       return "生成章节正文初稿"
     case "chapter_expansion":
@@ -296,7 +300,7 @@ export function getWorkflowToolDescription(call: WorkflowToolCall): string {
     case "chapter_post_revision_review":
       return "返修后角色一致性复审"
     case "chapter_final_polish":
-      return "简单审查与去AI味"
+      return "简单审查与修改"
     case "chapter_execution_report":
       return "检查章节执行清单"
     case "chapter_execution_repair":

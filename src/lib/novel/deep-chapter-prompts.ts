@@ -1,10 +1,12 @@
 import type { NovelReviewResult } from "./review-adapter"
 import { buildGoldenThreeChapterDirective, type GoldenThreeChapterRequest } from "./golden-three-chapters"
-import { CHINESE_NOVEL_DE_AI_RULES } from "./de-ai-rules"
+import { DE_AI_GENERATION_RULES, DE_AI_REVISION_BOUNDARY } from "./de-ai-generation-rules"
 
 export const DEEP_CHAPTER_TARGET_CHARS = 3000
 export const DEEP_CHAPTER_MIN_CHARS = 2200
 export const DEEP_CHAPTER_DRAFT_MAX_CHARS = 3500
+/** 写作任务书失败探针：低于此字数视为生成失败，整份重生成。 */
+export const DEEP_CHAPTER_BRIEF_MIN_CHARS = 100
 /** 与写作设置 UI 的单章目标字数范围保持一致，避免设置值被运行时悄悄钳死。 */
 export const CHAPTER_TARGET_CHARS_MIN = 1000
 export const CHAPTER_TARGET_CHARS_MAX = 10_000
@@ -17,7 +19,7 @@ export interface ChapterLengthSpec {
   draftMaxChars: number
 }
 
-export const DEFAULT_CHAPTER_LENGTH_SPEC: ChapterLengthSpec = {
+const DEFAULT_CHAPTER_LENGTH_SPEC: ChapterLengthSpec = {
   targetChars: DEEP_CHAPTER_TARGET_CHARS,
   minChars: DEEP_CHAPTER_MIN_CHARS,
   draftMaxChars: DEEP_CHAPTER_DRAFT_MAX_CHARS,
@@ -44,7 +46,7 @@ function chapterLengthBoundary(lengthSpec: ChapterLengthSpec): string {
  * 跨阶段稳定上下文前缀：把“完整大纲 + 上下文包”放在每个阶段提示词的最前面，
  * 且在同一次章节生成里逐字节相同。
  *
- * 任务书 / 初稿 / 扩写 / 返修 / 去AI味这几个阶段都由同一份 outline + contextPrompt
+ * 任务书 / 初稿 / 扩写 / 返修 / 阶段6局部修改这几个阶段都由同一份 outline + contextPrompt
  * 拼出相同前缀，DeepSeek / OpenAI 的自动前缀缓存即可命中这段最大的内容，
  * 重复阶段按命中价计费（约 1/10），不再每阶段全价重发整段上下文。
  *
@@ -60,8 +62,20 @@ export function buildStableContextPrefix(outline: string, contextPrompt: string)
 }
 
 /** 可变 Skill 约束必须放在稳定缓存前缀之后，避免截断公共前缀。 */
-export function skillsConstraintSection(skillsPrompt?: string): string {
+function skillsConstraintSection(skillsPrompt?: string): string {
   return skillsPrompt?.trim() ?? ""
+}
+
+/**
+ * 把一段多行文本包成**独立段落**。
+ *
+ * 本文件的 builder 都走 `[...].filter(Boolean).join("\n")`，而 `filter(Boolean)` 会**丢掉**
+ * 所有 `""` 占位符——所以想靠相邻的 `""` 造空行是**无效**的（历史写法即此误区）。
+ * 要让规则块与紧随其后的边界句自成一段（否则边界句会被读成规则列表最后一条的续行，
+ * 它本来是用来限制规则适用范围的，读错就失去意义），必须把空行**并进字符串本身**。
+ */
+function asOwnParagraph(text: string): string {
+  return `\n${text}\n`
 }
 
 export function buildDeepChapterBriefPrompt(
@@ -176,7 +190,10 @@ export function buildDeepChapterDraftPrompt(
     "9. 不要写成说明文：不解释设计、不替角色总结动机、不用旁白概括冲突；信息必须通过动作、对话、场景细节、人物反应呈现。",
     "10. 开头承接上一章并立刻给当前问题；结尾完成阶段结果，并留下下一章必须解决的动作、信息或危险。",
     "11. 对话必须有目标和攻防，通过试探、隐瞒、压迫、诱导或回避推动关系或信息状态变化，禁止无用闲聊。",
-    "",
+    "12. 「本章相关材料」只是路径清单，不是正文。不要按文件名判断本章需要哪一篇。任务书写了已读材料的约束时，只遵守那一部分。",
+    // 反 AI 腔约束必须排在稳定缓存前缀之后（见文件头 buildStableContextPrefix 的说明）。
+    // asOwnParagraph：这个数组走 filter(Boolean)，靠相邻的 "" 造空行是无效的。
+    asOwnParagraph(DE_AI_GENERATION_RULES),
     chapterNumber ? `目标章节：第${chapterNumber}章` : "目标章节：用户请求中的章节",
     `用户请求：${userRequest}`,
     goldenThreeChapterSection(goldenThreeChapter),
@@ -212,7 +229,9 @@ export function buildDeepChapterRevisionPrompt(
     "5. 必须继续遵守写作任务书和上下文。",
     "6. 不再强制调整到固定字数区间；只修复审稿指出的阻断问题，并保留当前章节的有效剧情容量。",
     "7. 禁止复读、循环输出、重复同一段落或用相同句式堆字数；写到完整结尾后立即停止。",
-    "",
+    // 返修会重写正文，所以规则之后必须跟边界句：只在点名的审稿问题范围内顺带满足。
+    // 两者合成一段（段内空行），让边界句自成一句而不是挂在上一条 bullet 后面当续行。
+    asOwnParagraph(`${DE_AI_GENERATION_RULES}\n\n${DE_AI_REVISION_BOUNDARY}`),
     chapterNumber ? `目标章节：第${chapterNumber}章` : "目标章节：用户请求中的章节",
     `用户请求：${userRequest}`,
     goldenThreeChapterSection(goldenThreeChapter),
@@ -252,7 +271,8 @@ export function buildDeepChapterExpansionPrompt(
     "5. 扩写时补足场景铺陈、动作细节、对话交锋、心理变化、冲突升级和结尾钩子。",
     "6. 必须严格遵守写作任务书、上下文、人物状态、伏笔和时间线，不要新增会推翻设定的剧情。",
     "7. 禁止复读、循环输出、重复同一段落或用相同句式堆字数；写到完整结尾后立即停止。",
-    "",
+    // 扩写最容易堆出 AI 腔（注水、排比、空修饰），是规则块的关键落点。
+    asOwnParagraph(DE_AI_GENERATION_RULES),
     chapterNumber ? `目标章节：第${chapterNumber}章` : "目标章节：用户请求中的章节",
     `用户请求：${userRequest}`,
     goldenThreeChapterSection(goldenThreeChapter),
@@ -270,28 +290,23 @@ export function buildDeepChapterFinalPolishPrompt(
   contextPrompt: string,
   taskBrief: string,
   currentContent: string,
+  pendingFixIssues: NovelReviewResult[],
   userRequest: string,
   chapterNumber?: number,
   goldenThreeChapter?: GoldenThreeChapterRequest,
-  customDeAiSkill?: string,
 ): string {
-  const deAiRules = customDeAiSkill && customDeAiSkill.trim() ? customDeAiSkill.trim() : CHINESE_NOVEL_DE_AI_RULES
   return [
     buildStableContextPrefix(outline, contextPrompt),
     "",
-    "你是小说正文最终质检与去AI味助手。",
-    "请对二次审查/返修后的章节做最后一遍简单审查，并进行去AI味处理。",
+    "你是小说正文简单审查与局部修改助手。",
+    "请只根据下方剩余问题清单，对当前正文做局部修改。",
     "",
     "处理目标：",
-    "1. 检查是否存在明显复读、循环段落、前后矛盾、突兀跳转、解释腔和机械套话。",
-    "2. 去掉 AI 味：减少总结腔、模板句、过度解释、相同句式堆叠和空泛形容。",
-    "3. 保留原有剧情事实、人物关系、时间线、伏笔和章节结尾钩子，不要另起新剧情。",
-    "4. 只做必要的自然化、顺滑化和轻量修补，不要大幅重写。",
-    "5. 不再强制压缩到固定字数区间；只做必要的自然化、顺滑化和轻量修补，禁止为了凑字数复读。",
-    `6. ${chapterTitleRequirement()}`,
-    "7. 只输出最终可保存的小说正文，不要输出审查报告、解释或修改说明。",
-    "",
-    deAiRules,
+    "1. 只修改清单中指出的有问题部分。",
+    "2. 保留原有剧情事实、人物关系、时间线、伏笔和章节结尾钩子，不要另起新剧情。",
+    "3. 不再强制压缩到固定字数区间；禁止为了凑字数复读。",
+    `4. ${chapterTitleRequirement()}`,
+    "5. 只输出修改后的完整小说正文，不要输出审查报告、解释或修改说明。",
     "",
     chapterNumber ? `目标章节：第${chapterNumber}章` : "目标章节：用户请求中的章节",
     `用户请求：${userRequest}`,
@@ -300,47 +315,12 @@ export function buildDeepChapterFinalPolishPrompt(
     "写作任务书：",
     taskBrief,
     "",
-    "待最终简单审查与去AI味正文：",
+    "剩余问题：",
+    formatReviewIssues(pendingFixIssues),
+    "",
+    "待局部修改正文：",
     currentContent,
   ].filter(Boolean).join("\n")
-}
-
-export function buildDeepChapterLengthRewritePrompt(
-  contextPrompt: string,
-  taskBrief: string,
-  currentContent: string,
-  userRequest: string,
-  chapterNumber?: number,
-  goldenThreeChapter?: GoldenThreeChapterRequest,
-  options?: { autoGenerateTitle?: boolean },
-): string {
-  const autoTitle = options?.autoGenerateTitle !== false
-  return [
-    "你是小说正文轻量整理助手。",
-    "请基于阶段3正文草稿做必要整理，在不影响剧情主线、人物行动、关键冲突和结尾钩子的前提下，酌情删减明显重复、循环输出和无效解释。",
-    "",
-    "硬性要求：",
-    "1. 只输出优化后的完整小说正文，不要输出解释、分析或修改说明。",
-    autoTitle ? `2. ${chapterTitleRequirement()}` : "2. 不要输出章节标题。",
-    "3. 不强制压缩到固定字数区间；保留当前章节的有效剧情容量。",
-    "4. 如果当前正文明显重复或循环，优先删掉重复内容，不得继续扩写。",
-    "5. 不得改变剧情因果、人物目标、已完成事件、关键对话含义和下一章钩子。",
-    "6. 可以优化环境、氛围、心理和过渡，但每一段都必须推动剧情、冲突、人物关系或期待。",
-    "7. 写到完整结尾后立即停止。",
-    "",
-    chapterNumber ? `目标章节：第${chapterNumber}章` : "目标章节：用户请求中的章节",
-    `用户请求：${userRequest}`,
-    goldenThreeChapterSection(goldenThreeChapter),
-    "",
-    "写作任务书：",
-    taskBrief,
-    "",
-    "当前过长正文：",
-    currentContent,
-    "",
-    "上下文：",
-    contextPrompt,
-  ].join("\n")
 }
 
 function goldenThreeChapterSection(goldenThreeChapter?: GoldenThreeChapterRequest): string {

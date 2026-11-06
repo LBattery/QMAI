@@ -520,7 +520,7 @@ export function InspirationDialog({ open, onOpenChange }: InspirationDialogProps
   }
 
   function selectRecentChapters(count: number) {
-    const selectable = chapters.filter((file) => file.chapterStatus !== "outline")
+    const selectable = chapters
     setSelected(new Set(selectable.slice(-count).map((file) => file.path)))
   }
 

@@ -198,6 +198,34 @@ describe("parseContextHubSnapshot", () => {
     expect(damaged?.stats.requestDiagnostics).not.toHaveProperty("requestCountAvailable")
     expect(damaged?.stats.requestDiagnostics).not.toHaveProperty("usageScope")
   })
+
+  it("保留章节工作流完整总账，供界面显示真实用量", () => {
+    const snapshot = parseContextHubSnapshot({
+      schemaVersion: CONTEXT_CACHE_SCHEMA_VERSION,
+      id: "assistant:chapter-usage",
+      surface: "ai-chat",
+      createdAt: 12,
+      stats: {
+        ...currentStats,
+        requestDiagnostics: {
+          requestCount: 3,
+          providerUsageAvailable: true,
+          usageTotals: { requestCount: 3, inputTokens: 1000, outputTokens: 200, cachedInputTokens: 600 },
+        },
+      },
+      items: [],
+      stableCore: "stable",
+      sessionSummary: "",
+      dynamicContext: "dynamic",
+    })
+
+    expect(snapshot?.stats.requestDiagnostics?.usageTotals).toEqual({
+      requestCount: 3,
+      inputTokens: 1000,
+      outputTokens: 200,
+      cachedInputTokens: 600,
+    })
+  })
 })
 
 describe("parseContextHubSnapshotRef", () => {
@@ -208,5 +236,53 @@ describe("parseContextHubSnapshotRef", () => {
       createdAt: 10,
       stats: { hits: 1, refreshed: 0, failures: 0 },
     })).toBeNull()
+  })
+})
+
+
+describe("local cache counter normalization", () => {
+  function parseStats(counters: Record<string, unknown>) {
+    return parseContextHubSnapshotRef({
+      id: "assistant:cache-metrics",
+      surface: "ai-chat",
+      createdAt: 10,
+      stats: { ...currentStats, ...counters },
+    })?.stats
+  }
+
+  it.each([
+    { cacheableLoaded: 8, cacheableHits: 8 },
+    { cacheableLoaded: 8, cacheableHits: 0 },
+    { cacheableLoaded: 0, cacheableHits: 0 },
+  ])("preserves valid local counters, including explicit zero: %j", (counters) => {
+    expect(parseStats(counters)).toMatchObject(counters)
+  })
+
+  it("keeps old snapshots without inventing task hits or new counters", () => {
+    const stats = parseStats({ cacheHits: 12, taskScopedLoaded: 4 })
+    expect(stats).toMatchObject({ cacheHits: 12, taskScopedLoaded: 4 })
+    expect(stats).not.toHaveProperty("cacheableLoaded")
+    expect(stats).not.toHaveProperty("cacheableHits")
+  })
+
+  it.each([
+    { cacheableLoaded: 8 },
+    { cacheableHits: 4 },
+    { cacheableLoaded: 8, cacheableHits: 9 },
+    { cacheableLoaded: 0, cacheableHits: 1 },
+    { cacheableLoaded: -1, cacheableHits: 0 },
+    { cacheableLoaded: 8, cacheableHits: -1 },
+    { cacheableLoaded: 8.5, cacheableHits: 4 },
+    { cacheableLoaded: 8, cacheableHits: 0.5 },
+    { cacheableLoaded: Number.NaN, cacheableHits: 0 },
+    { cacheableLoaded: 8, cacheableHits: Number.POSITIVE_INFINITY },
+    { cacheableLoaded: Number.MAX_SAFE_INTEGER + 1, cacheableHits: 0 },
+    { cacheableLoaded: "8", cacheableHits: 4 },
+    { cacheableLoaded: 8, cacheableHits: null },
+  ])("drops an invalid or incomplete pair without discarding other stats: %j", (counters) => {
+    const stats = parseStats(counters)
+    expect(stats).toMatchObject(currentStats)
+    expect(stats).not.toHaveProperty("cacheableLoaded")
+    expect(stats).not.toHaveProperty("cacheableHits")
   })
 })

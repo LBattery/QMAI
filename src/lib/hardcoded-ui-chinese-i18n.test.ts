@@ -10,7 +10,6 @@ describe("user-facing hardcoded chinese strings", () => {
     const graphView = read("../components/graph/graph-view.tsx")
     const lint = read("../lib/lint.ts")
     const lintLib = read("../components/lint/lint-view.tsx")
-    const outlineIngest = read("../lib/novel/outline-ingest.ts")
     const sourcesView = read("../components/sources/sources-view.tsx")
     const outlineActionToolbar = read("../components/sources/outline-action-toolbar.tsx")
     const appLayout = read("../components/layout/app-layout.tsx")
@@ -19,7 +18,6 @@ describe("user-facing hardcoded chinese strings", () => {
     const knowledgeTree = read("../components/layout/knowledge-tree.tsx")
     const iconSidebar = read("../components/layout/icon-sidebar.tsx")
     const chatPanel = read("../components/chat/chat-panel.tsx")
-    const activityPanel = read("../components/layout/activity-panel.tsx")
     const llmProviderSection = read("../components/settings/sections/llm-provider-section.tsx")
     const changelogSection = read("../components/settings/sections/changelog-section.tsx")
 
@@ -48,12 +46,6 @@ describe("user-facing hardcoded chinese strings", () => {
     expect(lint).not.toContain("Broken link")
     expect(lint).not.toContain("target page not found")
     expect(lintLib).not.toContain("# Wiki Index\n")
-
-    expect(outlineIngest).not.toContain("大纲已生成完成")
-    expect(outlineIngest).not.toContain("已打开大纲")
-    expect(outlineIngest).not.toContain("正在摄取大纲...")
-    expect(outlineIngest).not.toContain("大纲摄取成功")
-    expect(outlineIngest).not.toContain("大纲摄取失败")
 
     expect(sourcesView).not.toContain("OUTLINE_SECTION_GENERATION_CONFIGS")
     expect(sourcesView).not.toContain("setOutlineDialogSectionKey")
@@ -107,11 +99,6 @@ describe("user-facing hardcoded chinese strings", () => {
     expect(chatPanel).not.toContain("审稿中...")
     expect(chatPanel).not.toContain("审稿发现")
     expect(chatPanel).not.toContain("缺少LLM配置，跳过自动提取")
-
-    expect(activityPanel).not.toContain("文件同步失败")
-    expect(activityPanel).not.toContain("重新扫描")
-    expect(activityPanel).not.toContain("摄取队列")
-    expect(activityPanel).not.toContain("清除已完成")
 
     expect(llmProviderSection).not.toContain("仅桌面端可用")
     expect(llmProviderSection).not.toContain("CLI status")

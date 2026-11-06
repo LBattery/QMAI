@@ -34,12 +34,19 @@ const SIM_ROOT = ".qmai/simulations"
 const FRAMEWORKS_DIR = `${SIM_ROOT}/frameworks`
 const RESULTS_DIR = `${SIM_ROOT}/results`
 
-const VALID_MODES: SimulationMode[] = [
+export const VALID_MODES: SimulationMode[] = [
   "event-driven",
   "free-emergence",
   "decision-tree",
   "hybrid",
 ]
+
+/**
+ * 解析不到合法 simulationMode 时的回退值，也是桥接（plot-framework-bridge）
+ * 给新框架选用的模式。声明在 VALID_MODES 旁边 + 单测断言
+ * `VALID_MODES.includes(DEFAULT_SIMULATION_MODE)`，避免两处各写一个字面量后漂移。
+ */
+export const DEFAULT_SIMULATION_MODE: SimulationMode = "hybrid"
 
 // ── 路径辅助 ──
 
@@ -61,7 +68,7 @@ function frameworkResultsDir(projectPath: string, frameworkId: string): string {
  * 创建 .qmai/simulations/{frameworks,results,bindings} 目录。
  * createDirectory 内部使用 create_dir_all，已存在时不会报错。
  */
-export async function ensureSimulationDirs(projectPath: string): Promise<void> {
+async function ensureSimulationDirs(projectPath: string): Promise<void> {
   const root = `${normalizePath(projectPath)}/${SIM_ROOT}`
   await createDirectory(`${root}/frameworks`)
   await createDirectory(`${root}/results`)
@@ -76,7 +83,7 @@ function yamlString(value: string): string {
 }
 
 /** 将 StoryFramework 序列化为 Markdown 文档。 */
-export function frameworkToMarkdown(framework: StoryFramework): string {
+function frameworkToMarkdown(framework: StoryFramework): string {
   const lines: string[] = []
   lines.push("---")
   lines.push(`id: ${yamlString(framework.id)}`)
@@ -238,7 +245,7 @@ function parseNodes(nodesSection: string): StoryNode[] {
  * 将 Markdown 文档解析回 StoryFramework。
  * 解析尽量健壮：缺失字段使用默认值，frontmatter 异常时尽量恢复。
  */
-export function markdownToFramework(
+function markdownToFramework(
   content: string,
   fallbackId?: string,
 ): StoryFramework | null {
@@ -258,7 +265,7 @@ export function markdownToFramework(
       modeValue as SimulationMode,
     )
       ? (modeValue as SimulationMode)
-      : "hybrid"
+      : DEFAULT_SIMULATION_MODE
     const userIdeaValue = fmStr(fm.userIdea)
     const userIdea = userIdeaValue || undefined
 
@@ -459,11 +466,8 @@ export async function deleteSimulationResult(
   }
 }
 
-/** 加载框架的所有推演结果，按 report.createdAt 降序排列。 */
-export async function loadSimulationResults(
-  projectPath: string,
-  frameworkId: string,
-): Promise<{
+/** 一条已保存的推演结果。`loadSimulationResults` / `loadLatestSimulationResult` 的返回元素。 */
+export interface SimulationResultRecord {
   id: string
   report: SimulationReport
   draft?: StoryDraft | null
@@ -474,7 +478,13 @@ export async function loadSimulationResults(
   status: SimulationResultStatus
   partialReason?: string | null
   resume?: SimulationResumePoint | null
-}[]> {
+}
+
+/** 加载框架的所有推演结果，按 report.createdAt 降序排列。 */
+export async function loadSimulationResults(
+  projectPath: string,
+  frameworkId: string,
+): Promise<SimulationResultRecord[]> {
   const dir = frameworkResultsDir(projectPath, frameworkId)
   let entries: FileNode[]
   try {
@@ -483,18 +493,7 @@ export async function loadSimulationResults(
     return []
   }
 
-  const results: {
-    id: string
-    report: SimulationReport
-    draft?: StoryDraft | null
-    timelineEvents?: TimelineEvent[]
-    agentSnapshot?: SerializedSimulationSnapshot | null
-    rumors?: RumorEvent[]
-    debugTraces?: SimulationDebugTrace[]
-    status: SimulationResultStatus
-    partialReason?: string | null
-    resume?: SimulationResumePoint | null
-  }[] = []
+  const results: SimulationResultRecord[] = []
   for (const entry of entries) {
     if (entry.is_dir) continue
     if (!entry.name.toLowerCase().endsWith(".json")) continue
@@ -536,4 +535,66 @@ export async function loadSimulationResults(
     return 0
   })
   return results
+}
+
+/**
+ * 只读取该框架**最新的一条**推演结果；没有则返回 null。
+ *
+ * 为什么单独开一个函数、而不是 `loadSimulationResults(...)[0]`：
+ * 后者会把目录下**所有**结果都解析出来，而每条里都带着完整时间线与
+ * agent 快照（可达数百 KB）。剧情推演室的落地页只要「上次那条」，
+ * 用全量接口会把一个入口页变成一次批量磁盘读。
+ *
+ * 文件名由 `saveSimulationResult` 生成为 `result-${Date.now()}`，
+ * 是等宽的数字时间戳，所以**按文件名**倒序排第一个就是最新的一条 ——
+ * 于是只解析 1 个文件，而不是「先全读、再按 report.createdAt 排序」。
+ */
+export async function loadLatestSimulationResult(
+  projectPath: string,
+  frameworkId: string,
+): Promise<SimulationResultRecord | null> {
+  const dir = frameworkResultsDir(projectPath, frameworkId)
+  let entries: FileNode[]
+  try {
+    entries = await listDirectory(dir)
+  } catch {
+    return null
+  }
+
+  const candidates = entries
+    .filter((entry) => !entry.is_dir && entry.name.toLowerCase().endsWith(".json"))
+    .sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0))
+
+  const latest = candidates[0]
+  if (!latest) return null
+
+  try {
+    const content = await readFile(latest.path)
+    const parsed = JSON.parse(content) as {
+      report: SimulationReport
+      draft?: StoryDraft | null
+      timelineEvents?: TimelineEvent[]
+      agentSnapshot?: SerializedSimulationSnapshot | null
+      rumors?: RumorEvent[]
+      debugTraces?: SimulationDebugTrace[]
+      status?: SimulationResultStatus
+      partialReason?: string | null
+      resume?: SimulationResumePoint | null
+    }
+    if (!parsed?.report) return null
+    return {
+      id: latest.name.replace(/\.json$/i, ""),
+      report: parsed.report,
+      draft: parsed.draft ?? null,
+      timelineEvents: parsed.timelineEvents ?? [],
+      agentSnapshot: parsed.agentSnapshot ?? null,
+      rumors: parsed.rumors ?? [],
+      debugTraces: parsed.debugTraces ?? [],
+      status: parsed.status ?? "complete",
+      partialReason: parsed.partialReason ?? null,
+      resume: parsed.resume ?? null,
+    }
+  } catch {
+    return null
+  }
 }

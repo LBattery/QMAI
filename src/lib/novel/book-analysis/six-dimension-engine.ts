@@ -1,3 +1,4 @@
+import type { LlmRequestCacheTrace } from "@/lib/llm-request-trace"
 /**
  * 拆书 6 维度分析 - 6 维度提取引擎
  *
@@ -21,17 +22,19 @@ import type {
   SixDimensionResearch,
   SixDimensionStatus,
 } from "./types"
-import { streamChat, type ChatMessage } from "@/lib/llm-client"
+import type { ChatMessage } from "@/lib/llm-client"
+import { callAnalysisModelText } from "@/lib/novel/book-analysis/analysis-model-call"
 import {
   ALL_DIMENSIONS,
   DIMENSION_LABELS,
   PROMPT_BUILDERS,
+  buildSixDimensionCachePrefix,
   type PromptInput,
 } from "./six-dimension-prompts"
 import { buildNameAliasMap } from "./alias-resolver"
 import { fetchCharacterExternalMaterial } from "./web-search"
 
-export interface SixDimensionInput {
+interface SixDimensionInput {
   character: ExtractedCharacter
   /** 该角色对应的全部章节语料（已拼好） */
   corpus: string
@@ -41,6 +44,7 @@ export interface SixDimensionInput {
   bookAuthor?: string
   onProgress?: (p: SixDimensionProgress) => void
   signal?: AbortSignal
+  onRequestTrace?: (trace: LlmRequestCacheTrace) => void
 }
 
 /**
@@ -55,7 +59,7 @@ export interface SixDimensionInput {
  * - dimensions  6 维度完整状态清单（UI 可直接渲染）
  * - characterName  当前处理到的角色名（让上层知道"6 维度分析中"是哪个角色）
  */
-export interface SixDimensionProgress {
+interface SixDimensionProgress {
   stage: "init" | "fetching_web" | "dimension" | "done" | "error"
   label: string
   completed: number
@@ -67,7 +71,7 @@ export interface SixDimensionProgress {
   characterName?: string
 }
 
-export interface SixDimensionResult {
+interface SixDimensionResult {
   character: ExtractedCharacter
   webSearchUsed: boolean
   llmFallbackUsed: boolean
@@ -111,25 +115,22 @@ function fastResearch(character: ExtractedCharacter): SixDimensionResearch {
 async function callLlmForDimension(
   llmConfig: LlmConfig,
   prompt: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onRequestTrace?: (trace: LlmRequestCacheTrace) => void,
+  cachePrefix?: string,
 ): Promise<string> {
-  const messages: ChatMessage[] = [{ role: "user", content: prompt }]
-  let response = ""
-  await streamChat(
-    llmConfig,
-    messages,
-    {
-      onToken: (text) => {
-        response += text
-      },
-      onDone: () => {},
-      onError: (err) => {
-        console.error("[six-dimension] LLM error:", err)
-      },
-    },
-    signal
-  )
-  return response.trim()
+  const messages: ChatMessage[] = [{ role: "user", content: cachePrefix ? [
+    { type: "text", text: cachePrefix, cacheControl: true },
+    { type: "text", text: prompt },
+  ] : prompt }]
+  // 原实现把 onError 吞成 console.error，于是「模型只输出思考、没输出正文」会被
+  // 记成「提取失败或返回空」而且状态还是 done。改为向上抛：调用方会标成 failed
+  // 并显示真实原因，用户才知道该换模型，而不是以为这章没内容。
+  return callAnalysisModelText(llmConfig, messages, {
+    signal,
+    onRequestTrace,
+    cancelMessage: "用户取消分析",
+  })
 }
 
 /**
@@ -251,9 +252,9 @@ export async function analyzeSixDimensions(
       throw new Error("aborted")
     }
 
-    const prompt = builder(promptInput)
+    const prompt = builder({ ...promptInput, corpus: "请使用前面提供的原文章节语料。" })
     try {
-      const text = await callLlmForDimension(llmConfig, prompt, signal)
+      const text = await callLlmForDimension(llmConfig, prompt, signal, input.onRequestTrace, buildSixDimensionCachePrefix(promptInput))
       research[key] = text || `（${label} 提取失败或返回空）`
       runningState = setItemStatus(runningState, key, "done")
     } catch (e) {
@@ -310,15 +311,6 @@ export async function analyzeSixDimensions(
   })
 
   return { character, webSearchUsed, llmFallbackUsed }
-}
-
-/**
- * 重新跑 6 维度（用于旧 skill 的"重跑"按钮）
- */
-export async function reanalyzeSixDimensions(
-  input: SixDimensionInput
-): Promise<SixDimensionResult> {
-  return await analyzeSixDimensions(input)
 }
 
 /**

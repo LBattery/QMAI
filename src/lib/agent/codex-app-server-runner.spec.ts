@@ -96,6 +96,46 @@ describe("CodexAppServerRunner", () => {
     })
   })
 
+  it("forceRequiredToolsImmediately executes the shared deterministic fallback without starting app-server", async () => {
+    const tool: Tool = {
+      name: "run_chapter_workflow",
+      description: "workflow",
+      category: "action",
+      finalizesRun: true,
+      buildRequiredToolFallbackParams: ({ taskGoal }) => ({ userRequest: taskGoal }),
+      parameters: {},
+      execute: vi.fn(async (_params, _signal, context) => {
+        context?.onFinalContent?.("Codex 共用兜底正文")
+        return "ok"
+      }),
+    }
+    const registry = new ToolRegistry()
+    registry.register(tool)
+    const cb = callbacks()
+
+    const result = await new CodexAppServerRunner().run(
+      config([tool], {
+        taskGoal: "写第8章",
+        requiredToolsOnce: ["run_chapter_workflow"],
+        forceRequiredToolsImmediately: true,
+      }),
+      registry,
+      messages,
+      cb,
+    )
+
+    expect(appServerMock.call).not.toHaveBeenCalled()
+    expect(tool.execute).toHaveBeenCalledWith(
+      { userRequest: "写第8章" },
+      undefined,
+      expect.any(Object),
+    )
+    expect(result.finalText).toBe("Codex 共用兜底正文")
+    expect(result.requiredToolDiagnostics?.fallbackStatus).toBe("success")
+    expect(cb.onDone).toHaveBeenCalledOnce()
+    expect(cb.onError).not.toHaveBeenCalled()
+  })
+
   it("publishes QMAI dynamic tools, executes a read tool, and returns the final record", async () => {
     const tool: Tool = {
       name: "read_outline",
@@ -142,6 +182,9 @@ describe("CodexAppServerRunner", () => {
       dynamicTools: [expect.objectContaining({ name: "read_outline" })],
     }))
     expect(threadStart?.[1].baseInstructions).toContain("## 任务契约")
+    expect(threadStart?.[1]).not.toHaveProperty("serviceTier")
+    const turnStart = appServerMock.call.mock.calls.find(([method]) => method === "turn/start")
+    expect(turnStart?.[1]).not.toHaveProperty("serviceTier")
     expect(tool.execute).toHaveBeenCalledWith(
       { path: "QM/outlines/总纲.md" }, undefined, expect.any(Object),
     )
@@ -154,6 +197,27 @@ describe("CodexAppServerRunner", () => {
     expect(cb.onText).toHaveBeenCalledWith("最终回答")
     expect(cb.onDone).toHaveBeenCalledOnce()
     expect(cb.onError).not.toHaveBeenCalled()
+  })
+
+  it("passes Fast mode to every app-server turn as the priority service tier", async () => {
+    appServerMock.onTurn = () => {
+      envelope("item/agentMessage/delta", { threadId: "thread-1", delta: "快速结果" })
+      envelope("turn/completed", { threadId: "thread-1", turn: { status: "completed" } })
+    }
+
+    const record = await new CodexAppServerRunner().run(
+      config([], { llmConfig: { ...llmConfig, codexSpeedMode: "fast" } }),
+      new ToolRegistry(),
+      messages,
+      callbacks(),
+    )
+
+    const threadStart = appServerMock.call.mock.calls.find(([method]) => method === "thread/start")
+    const turnStarts = appServerMock.call.mock.calls.filter(([method]) => method === "turn/start")
+    expect(threadStart?.[1]).toEqual(expect.objectContaining({ serviceTier: "priority" }))
+    expect(turnStarts).toHaveLength(1)
+    expect(turnStarts[0][1]).toEqual(expect.objectContaining({ serviceTier: "priority" }))
+    expect(record.finalText).toBe("快速结果")
   })
 
   it("returns approval_required previews without executing confirmation tools", async () => {
@@ -387,4 +451,26 @@ describe("CodexAppServerRunner", () => {
     expect(cb.onError).toHaveBeenCalledWith(expect.objectContaining({ message: "操作已取消" }))
     expect(cb.onDone).not.toHaveBeenCalled()
   })
+  it("原生传输同样把可变任务资料和契约放在稳定指令之后", async () => {
+    appServerMock.onTurn = () => {
+      envelope("item/completed", { threadId: "thread-1", item: { id: "answer-1", type: "agentMessage", text: "完成" } })
+      envelope("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } })
+    }
+    const cachedMessages: AgentMessage[] = [{ role: "system", content: [
+      { type: "text", text: "固定软件规则" },
+      { type: "text", text: "项目稳定核心", cacheControl: true },
+      { type: "text", text: "本轮变化的章节材料" },
+    ] }, { role: "user", content: "完成第二章" }]
+    const cb = callbacks()
+    await new CodexAppServerRunner().run(config([], { taskGoal: "完成第二章" }), new ToolRegistry(), cachedMessages, cb)
+    expect(cb.onError).not.toHaveBeenCalled()
+    const threadStart = appServerMock.call.mock.calls.find(([method]) => method === "thread/start")![1]
+    const turnStart = appServerMock.call.mock.calls.find(([method]) => method === "turn/start")![1]
+    expect(threadStart.baseInstructions).toContain("项目稳定核心")
+    expect(threadStart.baseInstructions).not.toContain("本轮变化的章节材料")
+    expect(threadStart.baseInstructions).not.toContain("任务契约")
+    expect(JSON.stringify(turnStart.input)).toContain("本轮变化的章节材料")
+    expect(JSON.stringify(turnStart.input)).toContain("任务契约")
+  })
+
 })

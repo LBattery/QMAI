@@ -3,13 +3,13 @@ import type { NovelTaskIntent } from "@/lib/novel/task-router"
 
 export const DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 
-export interface ClarificationCandidate {
+interface ClarificationCandidate {
   intent: NovelTaskIntent
   label: string
   confidence: number
 }
 
-export interface ConfidenceGatePluginDeps {
+interface ConfidenceGatePluginDeps {
   threshold?: number
   getCandidates?: (userMessage: string) => ClarificationCandidate[]
   onError?: (error: Error) => void
@@ -33,6 +33,7 @@ const INTENT_LABELS: Record<NovelTaskIntent, string> = {
   story_framework_generate: "故事框架生成",
   multi_agent_simulate: "多智能体推演",
   character_interview: "角色采访",
+  scenario_simulate: "舞台情景",
 }
 
 export function intentToLabel(intent: NovelTaskIntent): string {

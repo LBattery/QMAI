@@ -1,5 +1,29 @@
 import pangu from "pangu/browser"
 import { parseFrontmatter } from "@/lib/frontmatter"
+import { syncChapterFrontmatterFromBody } from "@/lib/novel/chapter-meta"
+
+// pangu 10 still treats CJK-N hyphen as an operator: 苏-35 → 苏 - 35
+const CJK_MODEL_HYPHEN =
+  /(?<=[\p{Script=Han}])-(?=(?=[A-Z0-9-]*\d)[A-Z0-9]+(?:-[A-Z0-9]+)*)/gu
+// pangu 10 still normalizes · • ‧ to katakana ・
+const LOSSY_MIDDLE_DOT = /[·•‧]/gu
+const PROTECTED_TEXT_PATTERN = /\uE100(\d+)\uE101/gu
+
+function spacingChapterText(text: string): string {
+  const protectedValues: string[] = []
+  const protect = (value: string): string => {
+    const index = protectedValues.push(value) - 1
+    return `\uE100${index}\uE101`
+  }
+
+  const protectedText = text
+    .replace(LOSSY_MIDDLE_DOT, (value) => protect(value))
+    .replace(CJK_MODEL_HYPHEN, () => protect("-"))
+
+  return pangu
+    .spaceText(protectedText)
+    .replace(PROTECTED_TEXT_PATTERN, (_match, index: string) => protectedValues[Number(index)] ?? "")
+}
 
 function isStructuralMarkdownLine(trimmed: string): boolean {
   return /^(#{1,6}\s|>\s|[-*+]\s|\d+\.\s|\|)/.test(trimmed) || /^\s*[-]{3,}\s*$/.test(trimmed)
@@ -58,7 +82,7 @@ export function formatChapterWriting(markdown: string): string {
       formatted.push("")
     }
     const content = trimmed.replace(/^[　 ]+/, "")
-    formatted.push(`　　${pangu.spacingText(content)}`)
+    formatted.push(`　　${spacingChapterText(content)}`)
     pendingBlank = true
     lastKind = "normal"
   }
@@ -68,4 +92,9 @@ export function formatChapterWriting(markdown: string): string {
   }
 
   return rawBlock + formatted.join("\n")
+}
+
+/** 一键排版：先同步章节 frontmatter，再整理正文段落。 */
+export function normalizeChapterWriting(markdown: string): string {
+  return formatChapterWriting(syncChapterFrontmatterFromBody(markdown))
 }

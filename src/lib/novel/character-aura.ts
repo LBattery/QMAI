@@ -10,6 +10,13 @@ import { getHttpFetch } from "@/lib/tauri-fetch"
 import { webSearch, type WebSearchResult } from "@/lib/web-search"
 import { isTauri } from "@/lib/platform"
 import { useWikiStore } from "@/stores/wiki-store"
+import { parsePortablePersonality, personalityFields, renderPersonalitySkill, renderBoundPersonalities, PersonalityConstraintError, type BoundPersonality, type PortablePersonality } from "./portable-personality"
+import {
+  computeBindableFingerprint,
+  loadBindableCharactersWithCache,
+  readBindableCharactersCache,
+  writeBindableCharactersCache,
+} from "./bindable-characters-cache"
 import { pinyin } from "pinyin-pro"
 import * as OpenCC from "opencc-js/t2cn"
 
@@ -33,6 +40,8 @@ function toSimplified(text: string): string {
 }
 
 export interface CharacterAura {
+  portablePersonality?: PortablePersonality
+  sourceBook?: string
   id: string
   builtIn: boolean
   name: string
@@ -64,20 +73,20 @@ export interface CharacterAuraBinding {
   aliases?: string[]
 }
 
-export interface BuildCharacterAuraContextOptions {
+interface BuildCharacterAuraContextOptions {
   fallbackAuraId?: string
   previewMode?: "context" | "writing"
   matchingText?: string
 }
 
-export interface CharacterAuraStore {
+interface CharacterAuraStore {
   customAuras: CharacterAura[]
   bindings: CharacterAuraBinding[]
 }
 
-export type CharacterAuraInput = Omit<CharacterAura, "id" | "builtIn" | "createdAt" | "updatedAt">
+type CharacterAuraInput = Omit<CharacterAura, "id" | "builtIn" | "createdAt" | "updatedAt">
 
-export interface CustomCharacterAuraSkillInput {
+interface CustomCharacterAuraSkillInput {
   name: string
   category?: string
   corpus?: string
@@ -92,6 +101,7 @@ export interface CustomCharacterAuraSkillInput {
  * 适用于：6 维度分析已经在外部跑完，只需要把结果保存为角色灵魂
  */
 export interface GeneratedCharacterAuraSkillInput {
+  portablePersonality?: PortablePersonality
   name: string
   category?: string
   sourceBook?: string
@@ -165,7 +175,7 @@ export interface CharacterAuraGenerationProgress {
   researchFileName?: CharacterAuraResearchFileName
 }
 
-export interface CharacterAuraGenerationOptions {
+interface CharacterAuraGenerationOptions {
   onProgress?: (progress: CharacterAuraGenerationProgress) => void
 }
 
@@ -216,7 +226,7 @@ const AURA_WORKFLOW_STAGES: AuraWorkflowStage[] = [
 ]
 
 export const CHARACTER_AURA_BINDING_BLOCK_MESSAGE = "请先在大纲中添加人物小传或人物设定，再绑定角色灵魂"
-export const CHARACTER_AURA_INVALID_AURA_MESSAGE = "请选择有效的角色灵魂"
+const CHARACTER_AURA_INVALID_AURA_MESSAGE = "请选择有效的角色灵魂"
 
 export const BUILT_IN_CHARACTER_AURAS: CharacterAura[] = [
   createBuiltInAura("builtin-qin-shihuang", "历史帝王", "秦始皇", "统一、法度、中央集权、标准化、长线工程", "表达特征：短促、命令式、重秩序和尺度；先定天下框架，再谈个人得失。", "心智模型：把局部冲突放进统一秩序、制度成本和后世延续中评估。", "决策启发式：先收权、再定法、后标准化；面对分裂优先消除多头规则。", "价值观反模式：警惕把强控制写成万能答案，避免忽视民力、恐惧和信息失真。"),
@@ -304,28 +314,13 @@ export async function loadCharacterAuraStore(projectPath: string): Promise<Chara
   }
 }
 
-export async function saveCharacterAuraStore(projectPath: string, store: CharacterAuraStore): Promise<void> {
+async function saveCharacterAuraStore(projectPath: string, store: CharacterAuraStore): Promise<void> {
   await writeFileAtomic(storePath(projectPath), JSON.stringify(store, null, 2))
 }
 
 export async function listCharacterAuras(projectPath: string): Promise<CharacterAura[]> {
   const store = await loadCharacterAuraStore(projectPath)
   return [...BUILT_IN_CHARACTER_AURAS, ...store.customAuras]
-}
-
-export async function createCustomCharacterAura(projectPath: string, input: CharacterAuraInput): Promise<CharacterAura> {
-  const store = await loadCharacterAuraStore(projectPath)
-  const now = Date.now()
-  const aura: CharacterAura = {
-    id: `custom-${now}-${Math.random().toString(36).slice(2, 8)}`,
-    builtIn: false,
-    ...input,
-    createdAt: now,
-    updatedAt: now,
-  }
-  store.customAuras.push(aura)
-  await saveCharacterAuraStore(projectPath, store)
-  return aura
 }
 
 export async function createCustomCharacterAuraSkill(
@@ -441,6 +436,8 @@ export async function createCustomCharacterAuraFromGeneratedSkill(
     builtIn: false,
     name: input.name,
     category: input.category || "拆书角色",
+    sourceBook: input.sourceBook,
+    ...(input.portablePersonality ? { portablePersonality: parsePortablePersonality(input.portablePersonality) } : {}),
     sourceNote: input.sourceNote,
     corpus: input.corpus,
     styleDescription: input.styleDescription,
@@ -480,6 +477,15 @@ export async function updateCustomCharacterAura(projectPath: string, auraId: str
   const index = store.customAuras.findIndex((aura) => aura.id === auraId)
   if (index < 0) throw new Error("未找到自定义灵魂")
   const updated = { ...store.customAuras[index], ...patch, builtIn: false, updatedAt: Date.now() }
+  if (updated.portablePersonality) {
+    updated.portablePersonality = parsePortablePersonality(updated.portablePersonality)
+    if (JSON.stringify(updated.portablePersonality) !== JSON.stringify(store.customAuras[index].portablePersonality)) {
+      updated.portablePersonality.editedByUser = true
+    }
+    Object.assign(updated, personalityFields(updated.portablePersonality))
+    updated.styleDescription = updated.portablePersonality.summary
+    updated.behaviorRules = updated.decisionHeuristics ?? ""
+  }
   store.customAuras[index] = updated
   await saveCharacterAuraStore(projectPath, store)
   await syncStoredCustomAuraFiles(updated)
@@ -598,8 +604,17 @@ export async function buildCharacterAuraContext(
   task: string,
   options: BuildCharacterAuraContextOptions = {},
 ): Promise<string> {
+  return (await buildCharacterSoulContext(projectPath, task, options)).text
+}
+
+export async function buildCharacterSoulContext(
+  projectPath: string,
+  task: string,
+  options: BuildCharacterAuraContextOptions = {},
+): Promise<{ text: string; portablePersonalities: BoundPersonality[] }> {
+  const empty = { text: "", portablePersonalities: [] }
   const store = await loadCharacterAuraStore(projectPath)
-  if (store.bindings.length === 0) return ""
+  if (store.bindings.length === 0) return empty
   const allAuras = [...BUILT_IN_CHARACTER_AURAS, ...store.customAuras]
   const matchingText = [task, options.matchingText ?? ""].filter(Boolean).join("\n")
   const normalizedTask = normalizeCharacterText(matchingText)
@@ -633,14 +648,25 @@ export async function buildCharacterAuraContext(
   const effectiveMatched = matched.length > 0 || !options.fallbackAuraId
     ? matched
     : store.bindings.filter((binding) => binding.auraId === options.fallbackAuraId)
-  if (effectiveMatched.length === 0) return ""
+  if (effectiveMatched.length === 0) return empty
   if (options.previewMode === "writing") {
-    return buildCharacterAuraWritingPreview(task, effectiveMatched, allAuras)
+    return { text: buildCharacterAuraWritingPreview(task, effectiveMatched, allAuras), portablePersonalities: [] }
   }
   const lines: string[] = []
+  const portablePersonalities: BoundPersonality[] = []
   for (const binding of effectiveMatched) {
     const aura = allAuras.find((item) => item.id === binding.auraId)
     if (!aura) continue
+    if (aura.portablePersonality !== undefined) {
+      let personality: PortablePersonality
+      try { personality = parsePortablePersonality(aura.portablePersonality) } catch {
+        throw new PersonalityConstraintError(`「${binding.characterName}」绑定的人格规则损坏，请重新生成或修复后再写作`)
+      }
+      const bound = { characterName: binding.characterName, personality }
+      portablePersonalities.push(bound)
+      lines.push(renderBoundPersonalities([bound]))
+      continue
+    }
     lines.push(
       `- ${binding.characterName}：${aura.name}`,
       `  - 人物分类：${aura.category ?? "自定义灵魂"}`,
@@ -653,9 +679,9 @@ export async function buildCharacterAuraContext(
       ...(await buildCompressedSkillSummary(aura)),
     )
   }
-  if (lines.length === 0) return ""
+  if (lines.length === 0) return empty
   lines.push("- 角色灵魂必须服从大纲、人物小传、角色认知和正史规则，不得覆盖或改写硬性设定。")
-  return lines.join("\n")
+  return { text: lines.join("\n"), portablePersonalities }
 }
 
 function buildCharacterAuraWritingPreview(
@@ -736,32 +762,31 @@ function isCharacterEntityContent(content: string): boolean {
   return tags.includes("character")
 }
 
-export async function listBindableNovelCharacters(projectPath: string): Promise<string[]> {
-  const pp = normalizePath(projectPath)
-  const names = new Set<string>()
+/**
+ * 后台精修单个大纲页的 LLM 超时。旧的 30s 超时 × 串行多份大纲，是
+ * 灵魂页「加完人物后要等 3 分钟」的直接原因。
+ */
+export const BINDABLE_CHARACTERS_LLM_TIMEOUT_MS = 8000
 
-  const addName = (value: string | null | undefined) => {
-    const trimmed = value?.trim()
-    if (!trimmed || trimmed.length > 40) return
-    if (IGNORE_BINDABLE_CHARACTER_NAMES.has(trimmed)) return
-    names.add(trimmed)
-  }
+type BindableOutlineSource = {
+  pageTitle: string
+  content: string
+}
 
-  try {
-    const entityTree = await listDirectory(`${pp}/wiki/entities`)
-    for (const file of flattenMarkdownNodes(entityTree)) {
-      try {
-        const content = await readFile(file.path)
-        if (!isCharacterEntityContent(content)) continue
-        addName(extractPrimaryTitle(content, file.name))
-      } catch {
-        // Skip entities that can't be read.
-      }
-    }
-  } catch {
-    // Projects may not have entity pages yet.
-  }
+function addBindableCharacterName(names: Set<string>, value: string | null | undefined): void {
+  const trimmed = value?.trim()
+  if (!trimmed || trimmed.length > 40) return
+  if (IGNORE_BINDABLE_CHARACTER_NAMES.has(trimmed)) return
+  names.add(trimmed)
+}
 
+function sortBindableCharacterNames(names: Iterable<string>): string[] {
+  return [...names].sort((left, right) => left.localeCompare(right, "zh-CN"))
+}
+
+/** 读出所有符合条件的人设大纲页，本地解析与后台精修共用同一套筛选规则。 */
+async function readBindableOutlineSources(pp: string): Promise<BindableOutlineSource[]> {
+  const sources: BindableOutlineSource[] = []
   try {
     const outlineTree = await listDirectory(`${pp}/wiki/outlines`)
     for (const file of flattenMarkdownNodes(outlineTree)) {
@@ -769,14 +794,7 @@ export async function listBindableNovelCharacters(projectPath: string): Promise<
         const content = await readFile(file.path)
         const pageTitle = extractPrimaryTitle(content, file.name)
         if (!isCharacterOutlineFile(file.path, pageTitle, content)) continue
-        const extractedNames = await extractCharacterNamesFromOutlineEnhanced(content)
-        if (extractedNames.length === 0) {
-          addName(pageTitle)
-          continue
-        }
-        for (const characterName of extractedNames) {
-          addName(characterName)
-        }
+        sources.push({ pageTitle, content })
       } catch {
         // Keep the dropdown resilient when a single outline page is broken.
       }
@@ -784,8 +802,140 @@ export async function listBindableNovelCharacters(projectPath: string): Promise<
   } catch {
     // Projects may not have outline pages yet.
   }
+  return sources
+}
 
-  return [...names].sort((left, right) => left.localeCompare(right, "zh-CN"))
+/** 只做本地解析（实体页 + 大纲标题），绝不发起网络/LLM 请求。毫秒级。 */
+export async function listBindableNovelCharactersLocal(projectPath: string): Promise<string[]> {
+  const { names } = await listBindableNovelCharactersLocalDetailed(projectPath)
+  return names
+}
+
+/**
+ * 本地解析，并额外报告「是否有文件读不出来」。
+ * hadReadError 为真时名单是残缺的：指纹只看文件清单的路径/大小/修改时间，
+ * 单个文件读失败并不会改变指纹，所以这种残缺名单一旦落盘就会被当成有效命中
+ * 一直用下去（某个角色从此在绑定列表里消失）。调用方据此放弃缓存。
+ */
+async function listBindableNovelCharactersLocalDetailed(
+  projectPath: string,
+): Promise<{ names: string[]; hadReadError: boolean }> {
+  const pp = normalizePath(projectPath)
+  const names = new Set<string>()
+  let hadReadError = false
+
+  try {
+    const entityTree = await listDirectory(`${pp}/wiki/entities`)
+    for (const file of flattenMarkdownNodes(entityTree)) {
+      try {
+        const content = await readFile(file.path)
+        if (!isCharacterEntityContent(content)) continue
+        addBindableCharacterName(names, extractPrimaryTitle(content, file.name))
+      } catch {
+        // 这个文件这次读不出来：名单会缺它，但先让界面有内容可用。
+        hadReadError = true
+      }
+    }
+  } catch {
+    // Projects may not have entity pages yet.
+  }
+
+  for (const source of await readBindableOutlineSources(pp)) {
+    const extractedNames = extractCharacterNamesFromOutline(source.content)
+    if (extractedNames.length === 0) {
+      addBindableCharacterName(names, source.pageTitle)
+      continue
+    }
+    for (const characterName of extractedNames) {
+      addBindableCharacterName(names, characterName)
+    }
+  }
+
+  return { names: sortBindableCharacterNames(names), hadReadError }
+}
+
+/**
+ * 可绑定人物名单（缓存感知）：命中缓存立即返回，未命中只做本地解析。
+ * 绝不等待 LLM —— LLM 精修由 refineBindableCharactersWithLlm 在后台补上。
+ */
+export async function listBindableNovelCharacters(projectPath: string): Promise<string[]> {
+  // 有实体页这次读不出来时，名单是残缺的 —— 立刻返回让界面先有内容，
+  // 但不落盘，免得这份残缺名单被当成有效缓存一直用下去。
+  let hadReadError = false
+  const { names } = await loadBindableCharactersWithCache(
+    projectPath,
+    async () => {
+      const scan = await listBindableNovelCharactersLocalDetailed(projectPath)
+      hadReadError = scan.hadReadError
+      return scan.names
+    },
+    { persist: () => !hadReadError },
+  )
+  return names
+}
+
+/** 本地/缓存名单兜底读取：任何异常都不能往外抛。 */
+async function readBindableNamesFallback(projectPath: string): Promise<string[]> {
+  try {
+    const cached = await readBindableCharactersCache(projectPath)
+    if (cached) return cached.names
+  } catch {}
+  try {
+    return await listBindableNovelCharactersLocal(projectPath)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 后台用 LLM 精修人物名单并写回缓存。失败时静默降级，绝不抛错。
+ * 同一指纹只精修一次，指纹变化（wiki 有改动）才会重新请求模型。
+ */
+export async function refineBindableCharactersWithLlm(projectPath: string): Promise<string[]> {
+  const pp = normalizePath(projectPath)
+
+  try {
+    const fingerprint = await computeBindableFingerprint(pp)
+    const cached = await readBindableCharactersCache(pp)
+    // 当前 wiki 状态已经精修过：这是「每次打开对话框都重新问模型」的拦截点。
+    if (cached?.llmRefinedFingerprint === fingerprint) return cached.names
+
+    const state = useWikiStore.getState()
+    const llmConfig = resolveDefaultModel(state.llmConfig)
+    if (!hasUsableLlm(llmConfig, state.providerConfigs)) {
+      // 模型还没配好：返回本地名单，且不标记已精修，等用户配置后还能精修。
+      return await readBindableNamesFallback(pp)
+    }
+
+    const localNames = await listBindableNovelCharactersLocal(pp)
+    const sources = await readBindableOutlineSources(pp)
+    const llmBatches = await Promise.all(
+      sources.map((source) => requestCharacterNamesWithLLM(source.content, BINDABLE_CHARACTERS_LLM_TIMEOUT_MS)),
+    )
+
+    // 本地顺序优先，其后按 LLM 发现顺序追加本地没有的名字。
+    const merged = new Set<string>()
+    for (const name of localNames) addBindableCharacterName(merged, name)
+    for (const batch of llmBatches) {
+      for (const name of batch.names) addBindableCharacterName(merged, name)
+    }
+    const names = [...merged]
+
+    // 只有每一批都真正成功才算「这个指纹已精修」。否则模型一挂就被误标，
+    // 之后同一指纹永远走缓存短路，精修静默失效、再也不问模型。
+    const refined = llmBatches.length > 0 && llmBatches.every((batch) => batch.ok)
+
+    await writeBindableCharactersCache(pp, {
+      fingerprint,
+      names,
+      ...(refined ? { llmRefinedFingerprint: fingerprint } : {}),
+      updatedAt: Date.now(),
+    })
+    return names
+  } catch {
+    // LLM 报错/超时/文件读不动：保持本地名单可用，也不写入假的「已精修」标记。
+    return await readBindableNamesFallback(pp)
+  }
 }
 
 async function readSkillFileWithFallback(filePath: string, projectPath?: string): Promise<string> {
@@ -1763,6 +1913,23 @@ async function syncStoredCustomAuraFiles(aura: CharacterAura): Promise<void> {
   if (!aura.skillFolder) return
   await createDirectory(aura.skillFolder)
   await createDirectory(joinPath(aura.skillFolder, "references", "research"))
+  if (aura.portablePersonality) {
+    const profile = parsePortablePersonality(aura.portablePersonality)
+    await writeFileAtomic(joinPath(aura.skillFolder, "SKILL.md"), renderPersonalitySkill(aura.name, aura.sourceBook ?? "", profile))
+    const fields = personalityFields(profile)
+    const documents: Record<CharacterAuraResearchFileName, string> = {
+      "01-writings.md": profile.scope,
+      "02-conversations.md": fields.expressionDna,
+      "03-expression-dna.md": fields.mentalModel,
+      "04-external-views.md": profile.evidence.map((item) => `${item.id} [${item.chapterId}] ${item.quote}`).join("\n"),
+      "05-decisions.md": fields.decisionHeuristics,
+      "06-timeline.md": `${profile.scope}\n仅为原作研究范围，不成为目标人物经历。`,
+    }
+    for (const file of CHARACTER_AURA_RESEARCH_FILES) {
+      await writeFileAtomic(joinPath(aura.skillFolder, "references", "research", file.fileName), documents[file.fileName])
+    }
+    return
+  }
   const existingResearchFiles = await loadExistingResearchFiles(aura.skillFolder)
   await writeFileAtomic(joinPath(aura.skillFolder, "SKILL.md"), storedCustomSkillMarkdown(aura, existingResearchFiles))
   for (const file of CHARACTER_AURA_RESEARCH_FILES) {
@@ -2107,13 +2274,22 @@ function extractCharacterNamesFromOutline(content: string): string[] {
 }
 
 /**
- * 使用 LLM 从大纲文本中提取真实人物名称。
- * 当标题解析结果不足或质量可疑时调用，作为增强提取手段。
+ * 用 LLM 从大纲文本中提取真实人物名称。
+ *
+ * 返回 { ok, names } 而不是裸数组：streamChat 把真实的 HTTP/网络失败通过
+ * onError 回调上报（llm-client.ts 里二十多处），只有少数分支才 throw；
+ * 超时中止更隐蔽 —— AbortSignal 一 aborted，isUserAbortError 就返回 true，
+ * 于是走 onDone() 分支，看起来跟成功一模一样。这两条路若被当成成功，
+ * 会把当前指纹永久标记为「已精修」，精修从此静默失效。
+ * 所以这里显式记录 onError / onDone / 自建超时三个信号，任何一个不成立都算失败。
  */
-async function extractCharacterNamesWithLLM(content: string): Promise<string[]> {
+async function requestCharacterNamesWithLLM(
+  content: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; names: string[] }> {
   const state = useWikiStore.getState()
   const llmConfig = resolveDefaultModel(state.llmConfig)
-  if (!hasUsableLlm(llmConfig, state.providerConfigs)) return []
+  if (!hasUsableLlm(llmConfig, state.providerConfigs)) return { ok: false, names: [] }
 
   const prompt = `请从以下小说大纲/人物设定文本中，提取所有真实的小说人物姓名。
 
@@ -2126,41 +2302,41 @@ async function extractCharacterNamesWithLLM(content: string): Promise<string[]> 
 文本内容：
 ${content.slice(0, 6000)}`
 
-  try {
-    const messages: ChatMessage[] = [
-      { role: "system", content: "你是一个专业的小说人物名称提取助手。只输出人物姓名，每行一个。" },
-      { role: "user", content: prompt },
-    ]
+  const messages: ChatMessage[] = [
+    { role: "system", content: "你是一个专业的小说人物名称提取助手。只输出人物姓名，每行一个。" },
+    { role: "user", content: prompt },
+  ]
 
-    let result = ""
+  let result = ""
+  let failed = false
+  let completed = false
+  // 自己起超时：这样能确切知道「是被超时掐掉的」，而不是靠 signal.aborted 猜。
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  try {
     await streamChat(
       llmConfig,
       messages,
       {
         onToken: (token: string) => { result += token },
-        onDone: () => {},
-        onError: () => {},
+        onDone: () => { completed = true },
+        onError: () => { failed = true },
       },
-      AbortSignal.timeout(30000),
+      controller.signal,
     )
-
-    return result
-      .split("\n")
-      .map((line) => line.replace(/^[\d\.\、\s\-]+/, "").trim())
-      .filter((name) => name.length > 0 && name.length <= 20 && name !== "无")
-  } catch {
-    return []
+  } finally {
+    clearTimeout(timer)
   }
-}
 
-/**
- * 从大纲内容中提取人物名称，优先使用 LLM 提取，回退到标题解析。
- */
-async function extractCharacterNamesFromOutlineEnhanced(content: string): Promise<string[]> {
-  // 先尝试 LLM 提取
-  const llmNames = await extractCharacterNamesWithLLM(content)
-  if (llmNames.length > 0) return llmNames
+  const names = result
+    .split("\n")
+    .map((line) => line.replace(/^[\d\.\、\s\-]+/, "").trim())
+    .filter((name) => name.length > 0 && name.length <= 20 && name !== "无")
 
-  // 回退到标题解析
-  return extractCharacterNamesFromOutline(content)
+  // 成功 = 明确走完 onDone、没有 onError、也没有被超时中止。
+  return { ok: completed && !failed && !timedOut, names }
 }

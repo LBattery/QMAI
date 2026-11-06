@@ -1,25 +1,43 @@
+import { filterUiTestDirectory } from "@/lib/ui-test-layout"
+import { MoreHorizontal } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { BookOpen, ChevronDown, ChevronRight, FileText, Folder, FolderInput, FolderOpen, Globe, Loader2, MessageCircle, Pencil, Plus, Sparkles, Trash2, Check, X } from "lucide-react"
+import { BookOpen, ChevronDown, ChevronRight, FileText, Folder, FolderInput, FolderOpen, Loader2, MessageCircle, Pencil, Plus, Search, Trash2, Check, X } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { useWikiStore } from "@/stores/wiki-store"
 import { createDirectory, deleteFile, fileExists, listDirectory, readFile, writeFile, openFileLocation, copyFile } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { buildChapterWordCountLabel, getChapterStatusLabel } from "@/lib/chapter-display"
-import { normalizePath } from "@/lib/path-utils"
+import { isChapterPathInProject, normalizePath } from "@/lib/path-utils"
 import { countChapterBodyWords } from "@/lib/chapter-word-count"
+import { scrollChapterDirectory } from "@/lib/chapter-directory-scroll"
 import { normalizeChapterStatus, type ChapterStatus } from "@/lib/novel/chapter-meta"
+import {
+  extractPageOrderFromTitle,
+  resolveChapterDotNumbers,
+  resolveChapterPageTitle,
+} from "@/lib/novel/chapter-utils"
+import { chapterSnapshotNumbersFrom, chapterSnapshotNumbersFromFileNames, resolveChapterMemoryDotState, type ChapterMemoryDotState } from "@/lib/novel/chapter-memory-dot"
 import { moveFileToTrash } from "@/lib/trash"
-import { makeChapterFileName, makeDefaultChapterTitle, makeSafeFileSlug } from "@/lib/wiki-filename"
+import { makeSafeFileSlug } from "@/lib/wiki-filename"
+import { allocateUniqueSiblingPath, planPageRename } from "@/lib/wiki/rename-page"
 import { useImportProgressStore, type ImportProgressTask } from "@/stores/import-progress-store"
-import { useDeAiTaskStore } from "@/stores/de-ai-task-store"
+import { selectProjectDeAiTasks, useDeAiTaskStore } from "@/stores/de-ai-task-store"
 import { useOutlineGenerationStore } from "@/stores/outline-generation-store"
-import { startOutlineIngestTask } from "@/lib/novel/outline-generation"
+import { useWritingStatsStore } from "@/stores/writing-stats-store"
 import { getOutlineFileName, outlineSnapshotExists } from "@/lib/novel/outline-ingest-utils"
 import { saveLastReadChapter } from "@/lib/project-store"
 import { mapWithConcurrency } from "@/lib/async-pool"
 import type { ReferenceToken } from "@/lib/reference/types"
+
+/**
+ * 章节行最前面那一格圆点的尺寸 class。真点与占位点**共用**这一份，
+ * 这是"没提取过的行也留出同样宽度"能成立的唯一保证 ——
+ * 两处各写一份 Tailwind 字符串，早晚会改歪一处而没人发现。
+ */
+const MEMORY_DOT_SLOT_CLASS = "h-1.5 w-1.5 shrink-0 rounded-full"
 
 function formatImportProgressRunningLabel(task: ImportProgressTask, kindLabel: string): string {
   if (task.cancelling) return `正在取消${kindLabel}提取...`
@@ -49,6 +67,13 @@ interface WikiPageInfo {
   title: string
   type: "chapter" | "outline"
   chapterNumber?: number
+  /**
+   * 文件名里的数字。**只**给「是否已提取记忆」那枚绿点用：
+   * 树推不出 chapterNumber 时（frontmatter 没有 chapter_number、标题里也没有数字），
+   * `ingestChapter` 自己会回退到文件名取号，绿点也必须跟着回退，否则会漏报。
+   * 排序仍然用 chapterNumber —— 这里刻意不合并，避免改动既有的排序行为。
+   */
+  fileChapterNumber?: number
   tags: string[]
   origin?: string
   status?: ChapterStatus
@@ -63,6 +88,10 @@ export interface KnowledgeCreateRequest {
 }
 
 interface KnowledgeTreeProps {
+  searchQuery?: string
+  onSearchQueryChange?: (query: string) => void
+  /** 章节视图下把当前书籍所有章节的字数合计回传给目录头部。 */
+  onChapterTotalWordsChange?: (total: number) => void
   filterType: "chapter" | "outline"
   refreshKey?: number
   pendingPages?: WikiPageInfo[]
@@ -83,60 +112,16 @@ interface CreateMenuState {
 const EMPTY_PENDING_PAGES: WikiPageInfo[] = []
 const PAGE_METADATA_CONCURRENCY = 16
 
-function parseChineseNumber(input: string): number | null {
-  const digitMap: Record<string, number> = {
-    零: 0,
-    一: 1,
-    二: 2,
-    两: 2,
-    三: 3,
-    四: 4,
-    五: 5,
-    六: 6,
-    七: 7,
-    八: 8,
-    九: 9,
-  }
-
-  if (/^\d+$/.test(input)) return Number.parseInt(input, 10)
-  if (input === "十") return 10
-
-  const tenIndex = input.indexOf("十")
-  if (tenIndex >= 0) {
-    const left = input.slice(0, tenIndex)
-    const right = input.slice(tenIndex + 1)
-    const tens = left ? (digitMap[left] ?? 0) : 1
-    const units = right ? (digitMap[right] ?? 0) : 0
-    return tens * 10 + units
-  }
-
-  let value = 0
-  for (const ch of input) {
-    const digit = digitMap[ch]
-    if (digit === undefined) return null
-    value = value * 10 + digit
-  }
-  return value
-}
-
-function extractPageOrderFromTitle(title: string): number | null {
-  const titleMatch = title.match(/第\s*([0-9零一二两三四五六七八九十]+)\s*[章节卷]/)
-  if (titleMatch?.[1]) {
-    const value = parseChineseNumber(titleMatch[1])
-    if (value !== null) return value
-  }
-
-  const numberMatch = title.match(/(\d+)/)
-  if (numberMatch?.[1]) return Number.parseInt(numberMatch[1], 10)
-  return null
-}
-
-function extractChapterNumberFromContent(content: string): number | null {
-  const match = content.match(/^chapter_number:\s*(\d+)\s*$/m)
-  if (!match?.[1]) return null
-  const parsed = Number.parseInt(match[1], 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
-}
+/*
+ * `parseChineseNumber` / `extractPageOrderFromTitle` / `extractChapterNumberFromContent`
+ * 三个函数原先是本文件的私有实现，现已搬到 `@/lib/novel/chapter-utils`。
+ *
+ * 原因（真实缺陷，别搬回来）：编辑器标题行的「正式/草稿」徽章要判断
+ * 「这一章提取过记忆没有」，而它原先用 frontmatter 的 `chapter_number` 取号，
+ * 与这里绿点用的三级回退（内容 → 标题 → 文件名）是**两套规则**。
+ * 两者只在"恰好同号"时一致，于是出现「没有提取过记忆却显示正式」。
+ * 搬到共享模块后两边调用同一个 `resolveChapterDotNumbers`，按构造同号。
+ */
 
 function getDirName(path: string): string {
   const normalized = normalizePath(path)
@@ -156,21 +141,6 @@ function createPageReferenceToken(page: WikiPageInfo): ReferenceToken {
     path: page.path,
     displayTitle: truncateReferenceTitle(page.title),
   }
-}
-
-async function getUniquePagePath(dir: string, fileName: string, excludePath?: string): Promise<string> {
-  const firstPath = `${dir}/${fileName}`
-  if (firstPath === excludePath || !(await fileExists(firstPath))) return firstPath
-
-  const extensionIndex = fileName.lastIndexOf(".")
-  const stem = extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName
-  const extension = extensionIndex > 0 ? fileName.slice(extensionIndex) : ""
-  for (let index = 2; index <= 99; index += 1) {
-    const candidate = `${dir}/${stem}-${index}${extension}`
-    if (candidate === excludePath || !(await fileExists(candidate))) return candidate
-  }
-
-  return `${dir}/${stem}-${Date.now()}${extension}`
 }
 
 function flattenMdFiles(nodes: FileNode[]): FileNode[] {
@@ -241,7 +211,13 @@ function parsePageInfo(path: string, fileName: string, content: string): WikiPag
   const type = normalizedPath.includes("/wiki/chapters/") ? "chapter" : normalizedPath.includes("/wiki/outlines/") ? "outline" : null
   if (!type) return null
 
-  let title = fileName.replace(/\.md$/, "").replace(/-/g, " ")
+  /*
+   * 标题的三级回退（frontmatter `title` → 首个 `#` 标题 → 文件名去连字符）
+   * 现在只有一份实现，就在 `resolveChapterPageTitle` 里 ——
+   * 因为它同时是 `resolveChapterDotNumbers` 取号失败时的回退依据，
+   * 两处各写一份的话，绿点与徽章又会算出不同的号。
+   */
+  const title = resolveChapterPageTitle(fileName, content)
   const tags: string[] = []
   let origin: string | undefined
   let status: ChapterStatus | undefined
@@ -249,8 +225,6 @@ function parsePageInfo(path: string, fileName: string, content: string): WikiPag
   const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/)
   if (frontmatterMatch) {
     const frontmatter = frontmatterMatch[1]
-    const titleMatch = frontmatter.match(/^title:\s*["']?(.+?)["']?\s*$/m)
-    if (titleMatch?.[1]) title = titleMatch[1].trim()
 
     const tagsMatch = frontmatter.match(/^tags:\s*\[(.+?)\]/m)
     if (tagsMatch?.[1]) {
@@ -266,21 +240,21 @@ function parsePageInfo(path: string, fileName: string, content: string): WikiPag
     }
   }
 
-  if (title === fileName.replace(/\.md$/, "").replace(/-/g, " ")) {
-    const headingMatch = content.match(/^#\s+(.+)$/m)
-    if (headingMatch?.[1]) title = headingMatch[1].trim()
-  }
-
   const wordCount = type === "chapter" ? countChapterBodyWords(content) : undefined
-  const chapterNumber = type === "chapter"
-    ? (extractChapterNumberFromContent(content) ?? extractPageOrderFromTitle(title) ?? undefined)
-    : undefined
+  /*
+   * 章号（含绿点专用的文件名回退来源）走共享解析器，见 chapter-utils 的说明。
+   * 非章节页两个号都留空 —— 与改造前逐字一致。
+   */
+  const { chapterNumber, fileChapterNumber } = type === "chapter"
+    ? resolveChapterDotNumbers({ content, filePath: normalizedPath })
+    : { chapterNumber: undefined, fileChapterNumber: undefined }
 
   return {
     path: normalizedPath,
     title,
     type,
     chapterNumber,
+    fileChapterNumber,
     tags,
     origin,
     status,
@@ -333,6 +307,9 @@ function countMarkdownDescendants(node: FileNode): number {
 }
 
 export function KnowledgeTree({
+  searchQuery = "",
+  onSearchQueryChange,
+  onChapterTotalWordsChange,
   filterType,
   refreshKey,
   pendingPages = EMPTY_PENDING_PAGES,
@@ -354,10 +331,14 @@ export function KnowledgeTree({
   const outlineImportTasks = useImportProgressStore((s) => s.tasks)
   const [pages, setPages] = useState<WikiPageInfo[]>([])
   const [extractedOutlinePaths, setExtractedOutlinePaths] = useState<Set<string>>(() => new Set())
+  /** 盘上已有章节记忆快照的章号集合，绿点的判定依据。 */
+  const [chapterSnapshotNumbers, setChapterSnapshotNumbers] = useState<Set<number>>(() => new Set())
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({})
   const [armedPath, setArmedPath] = useState<string | null>(null)
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
   const [createMenu, setCreateMenu] = useState<CreateMenuState | null>(null)
+  const [findOpen, setFindOpen] = useState(false)
+  const [findDraft, setFindDraft] = useState("")
   const [pageMenu, setPageMenu] = useState<{ path: string; x: number; y: number } | null>(null)
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState("")
@@ -382,6 +363,10 @@ export function KnowledgeTree({
   const lastPointerTypeRef = useRef<string>("mouse")
   const removeGlobalPointerListenersRef = useRef<(() => void) | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const initialChapterScrollRef = useRef<{
+    projectPath: string
+    selectedChapterPath: string | null
+  } | null>(null)
 
   useEffect(() => { dragSourceRef.current = dragSource }, [dragSource])
   useEffect(() => { dragInsertIndexRef.current = dragInsertIndex }, [dragInsertIndex])
@@ -441,7 +426,9 @@ export function KnowledgeTree({
   }, [armedPath])
 
   useEffect(() => {
-    const closeMenus = () => {
+    const closeMenus = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.key !== "Escape") return
+      if (event.type === "keydown") containerRef.current?.querySelector<HTMLButtonElement>(`[data-page-path="${pageMenu?.path}"] > button`)?.focus()
       setCreateMenu(null)
       setPageMenu(null)
     }
@@ -452,6 +439,11 @@ export function KnowledgeTree({
       document.removeEventListener("keydown", closeMenus)
     }
   }, [])
+
+  useEffect(() => {
+    if (!pageMenu) return
+    containerRef.current?.querySelector<HTMLButtonElement>('[aria-label="文档更多操作"] button')?.focus()
+  }, [pageMenu])
 
   const pageInfoByPath = useMemo(() => {
     const map = new Map<string, WikiPageInfo>()
@@ -491,6 +483,64 @@ export function KnowledgeTree({
     }
   }, [filterType, novelMode, outlinePages, project, dataVersion, outlineTasks, outlineImportTasks])
 
+  /**
+   * 章节记忆快照的号码集合。只在**章节**页签下读。
+   *
+   * 这里直接读 `.novel/snapshots` 目录名，而不是走 `chapter-ingest` 的
+   * `listSnapshots`：那条路径要先动态 import 整个 chapter-ingest 模块图，
+   * 于是章节目录第一次打开时绿点要等模块加载完才亮（少则几十毫秒，
+   * 慢机器上肉眼可见），而绿点需要的只是目录里的几个文件名。
+   * 解析规则与 `listSnapshots` 共用 chapter-memory-dot.ts 里的同一个函数，
+   * 所以两条路径不会给出不同的号。
+   *
+   * 依赖 `settledChapterKey` 而不是整个 tasks 数组：批量提取时每个章节都会
+   * updateTask 一次，若用数组当依赖，每章都会重读一次快照目录 —— 白读 N 次。
+   * 只在任务真正结束时重读一次，那时才会有新快照落盘。
+   */
+  const settledChapterKey = useMemo(() => {
+    if (!project) return ""
+    const pp = normalizePath(project.path)
+    return outlineImportTasks
+      .filter((task) => task.projectPath === pp && task.kind === "chapter" && task.status !== "running")
+      .map((task) => `${task.id}:${task.status}:${task.updatedAt}`)
+      .join("|")
+  }, [outlineImportTasks, project])
+
+  useEffect(() => {
+    if (!project || filterType !== "chapter") {
+      setChapterSnapshotNumbers(new Set())
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const snapshotDir = `${normalizePath(project.path)}/.novel/snapshots`
+        const tree = await listDirectory(snapshotDir)
+        // 先解析出全部快照号（含大纲的负数），再只留章节的正数。
+        const numbers = chapterSnapshotNumbersFrom(chapterSnapshotNumbersFromFileNames(tree.map((file) => file.name)))
+        if (!cancelled) setChapterSnapshotNumbers(new Set(numbers))
+      } catch {
+        // 快照目录不存在（还没提取过任何章节）是正常状态，静默当作「一个都没有」。
+        if (!cancelled) setChapterSnapshotNumbers(new Set())
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [filterType, project, dataVersion, settledChapterKey])
+
+  /** 正在提取记忆的章节路径。按路径匹配，理由见 store 里 activeChapterPaths 的注释。 */
+  const runningChapterPaths = useMemo(() => {
+    const running = new Set<string>()
+    if (!project) return running
+    const pp = normalizePath(project.path)
+    for (const task of outlineImportTasks) {
+      if (task.projectPath !== pp || task.kind !== "chapter" || task.status !== "running") continue
+      for (const path of task.activeChapterPaths ?? []) running.add(normalizePath(path))
+    }
+    return running
+  }, [outlineImportTasks, project])
+
   const isOutlinePathIngesting = useCallback((outlinePath: string) => {
     if (!project) return false
     const normalizedPath = normalizePath(outlinePath)
@@ -514,11 +564,6 @@ export function KnowledgeTree({
     ))
   }, [outlineImportTasks, outlineTasks, project])
 
-  const handleOutlineIngest = useCallback((outlinePath: string) => {
-    if (!project || !novelMode || isOutlinePathIngesting(outlinePath)) return
-    startOutlineIngestTask(project.path, outlinePath)
-  }, [isOutlinePathIngesting, novelMode, project])
-
   const sortedChapterPages = useMemo(() => {
     return effectivePages
       .filter((page): page is WikiPageInfo & { type: "chapter" } => page.type === "chapter")
@@ -533,6 +578,15 @@ export function KnowledgeTree({
   }, [effectivePages])
 
   const selectableChapterPaths = useMemo(() => sortedChapterPages.map((page) => page.path), [sortedChapterPages])
+  const totalChapterWords = useMemo(
+    () => sortedChapterPages.reduce((sum, page) => sum + (page.wordCount ?? 0), 0),
+    [sortedChapterPages],
+  )
+
+  useEffect(() => {
+    if (filterType !== "chapter") return
+    onChapterTotalWordsChange?.(totalChapterWords)
+  }, [filterType, onChapterTotalWordsChange, totalChapterWords])
   const selectedChapterCount = selectedChapterPaths.size
   const allChaptersSelected = selectableChapterPaths.length > 0
     && selectableChapterPaths.every((path) => selectedChapterPaths.has(path))
@@ -564,6 +618,28 @@ export function KnowledgeTree({
     const sectionNode = findNodeByPath(fileTree, sectionRootPath)
     return sectionNode?.children ?? []
   }, [fileTree, sectionRootPath])
+
+  useEffect(() => {
+    if (filterType !== "chapter" || !project || sectionNodes.length === 0) return
+
+    const projectPath = normalizePath(project.path)
+    const selectedChapterPath = selectedFile && isChapterPathInProject(selectedFile, projectPath)
+      ? normalizePath(selectedFile)
+      : null
+    const previousScroll = initialChapterScrollRef.current
+    if (
+      previousScroll?.projectPath === projectPath
+      && (previousScroll.selectedChapterPath !== null || selectedChapterPath === null)
+    ) return
+
+    const container = containerRef.current
+    if (!container) return
+
+    const result = scrollChapterDirectory(container, selectedChapterPath)
+    if (result) {
+      initialChapterScrollRef.current = { projectPath, selectedChapterPath }
+    }
+  }, [filterType, project, sectionNodes, selectedFile])
 
   const volumeFolders = useMemo(() => {
     return sectionNodes.filter((node) => node.is_dir).map((node) => ({
@@ -698,85 +774,37 @@ export function KnowledgeTree({
       return
     }
 
+    /*
+     * 进度任务、取消、逐章点亮「提取中」灰点全部由 lib 里的共享实现负责 ——
+     * 与侧边栏那枚「一键提取」图标是同一条代码路径。以前这里自己抄了一份
+     * 循环，两份实现的分歧正是「一键提取没反应」那类问题的温床。
+     *
+     * 这里传 mode: "all"：右键菜单的语义一直是「重新提取所有章节」，
+     * 与侧边栏默认的「只补未提取」不同，不能悄悄改掉。
+     */
     const projectPath = normalizePath(project.path)
-    const abortController = new AbortController()
-    const taskId = useImportProgressStore.getState().startTask({
-      projectPath,
-      kind: "chapter",
-      total: chapterPaths.length,
-      currentTitle: sortedChapterPages[0]?.title ?? "",
-      message: "正在一键提取所有章节记忆",
-      abortController,
-    })
-
-    let completed = 0
-    let failed = 0
-    const titleByPath = new Map(sortedChapterPages.map((page) => [page.path, page.title]))
-
     try {
-      const { ingestChapter } = await import("@/lib/novel/chapter-ingest")
-      for (const chapterPath of chapterPaths) {
-        if (abortController.signal.aborted) {
-          useImportProgressStore.getState().finishTask(taskId, "cancelled", {
-            completed,
-            total: chapterPaths.length,
-            currentTitle: "",
-            message: `已取消章节记忆提取，已完成 ${completed}/${chapterPaths.length} 个章节。`,
-          })
-          return
-        }
-
-        useImportProgressStore.getState().updateTask(taskId, {
-          completed,
-          total: chapterPaths.length,
-          currentTitle: titleByPath.get(chapterPath) ?? chapterPath,
-        })
-
-        const page = sortedChapterPages.find((item) => item.path === chapterPath)
-        const result = await ingestChapter(
-          projectPath,
-          chapterPath,
-          undefined,
-          abortController.signal,
-          page?.chapterNumber,
-          { allowDraft: true },
-        )
-        if (result.snapshot) {
-          completed += 1
-        } else {
-          failed += 1
-        }
-      }
-
-      useImportProgressStore.getState().finishTask(taskId, failed > 0 ? "error" : "done", {
-        completed,
-        total: chapterPaths.length,
-        currentTitle: "",
-        message: failed > 0
-          ? `章节记忆提取完成：成功 ${completed} 个，失败 ${failed} 个。`
-          : `章节记忆提取完成：成功 ${completed} 个章节。`,
+      // 动态 import：与原来一致，不在模块顶层把 chapter-ingest 的整个模块图
+      // 拖进这棵树（见上面 listSnapshots 那段注释）。
+      const { runBulkChapterIngest } = await import("@/lib/novel/chapter-bulk-ingest")
+      await runBulkChapterIngest(projectPath, {
+        mode: "all",
+        chapters: sortedChapterPages.map((page) => ({
+          path: page.path,
+          title: page.title,
+          chapterNumber: page.chapterNumber,
+          // 树算不出 chapterNumber 时靠文件名数字兜底，与绿点同源；
+          // 不传的话这类章节会被「算不出章号」整章跳过。
+          fileChapterNumber: page.fileChapterNumber,
+        })),
       })
       await loadPages()
       const tree = await listDirectory(projectPath)
       setFileTree(tree)
       bumpDataVersion()
     } catch (error) {
-      if (abortController.signal.aborted) {
-        useImportProgressStore.getState().finishTask(taskId, "cancelled", {
-          completed,
-          total: chapterPaths.length,
-          currentTitle: "",
-          message: `已取消章节记忆提取，已完成 ${completed}/${chapterPaths.length} 个章节。`,
-        })
-        return
-      }
+      // 取消不算异常；这里只剩真正的意外，共享实现已经把状态写进进度任务了。
       console.error("[KnowledgeTree] extract all chapter memories failed:", error)
-      useImportProgressStore.getState().finishTask(taskId, "error", {
-        completed,
-        total: chapterPaths.length,
-        currentTitle: "",
-        message: `章节记忆提取失败：已完成 ${completed}/${chapterPaths.length} 个章节。`,
-      })
     } finally {
       setPageMenu(null)
     }
@@ -1017,32 +1045,6 @@ export function KnowledgeTree({
     setRenameFolderValue("")
   }, [renamingFolderBusy])
 
-  const updatePageTitleContent = useCallback((content: string, newTitle: string, newChapterNumber?: number | null) => {
-    const escapedTitle = newTitle.replace(/"/g, '\\"')
-    let next = content
-    const frontmatterMatch = next.match(/^---\n([\s\S]*?)\n---/)
-    if (frontmatterMatch) {
-      let frontmatterBody = frontmatterMatch[1]
-      if (/^title:\s*.*$/m.test(frontmatterBody)) {
-        frontmatterBody = frontmatterBody.replace(/^title:\s*.*$/m, `title: "${escapedTitle}"`)
-      } else {
-        frontmatterBody = `${frontmatterBody}\ntitle: "${escapedTitle}"`
-      }
-      if (typeof newChapterNumber === "number" && newChapterNumber > 0) {
-        if (/^chapter_number:\s*.*$/m.test(frontmatterBody)) {
-          frontmatterBody = frontmatterBody.replace(/^chapter_number:\s*.*$/m, `chapter_number: ${newChapterNumber}`)
-        } else {
-          frontmatterBody = `${frontmatterBody}\nchapter_number: ${newChapterNumber}`
-        }
-      }
-      next = next.replace(/^---\n[\s\S]*?\n---/, `---\n${frontmatterBody}\n---`)
-    }
-    if (/^#\s+.+$/m.test(next)) {
-      next = next.replace(/^#\s+.+$/m, `# ${newTitle}`)
-    }
-    return next
-  }, [])
-
   const updateChapterNumberContent = useCallback((content: string, newChapterNumber: number) => {
     if (!Number.isFinite(newChapterNumber) || newChapterNumber <= 0) return content
 
@@ -1098,32 +1100,28 @@ export function KnowledgeTree({
 
     setRenamingBusy(true)
     try {
-      const duplicate = effectivePages.some((page) => page.path !== renamingPath && page.type === current.type && page.title.trim() === newTitle)
-      if (duplicate) return
-
       const content = await readFile(renamingPath)
-      const oldChapterNumber = extractChapterNumberFromContent(content) ?? extractPageOrderFromTitle(current.title)
-      const userChapterNumber = extractPageOrderFromTitle(newTitle)
-      const chapterNumber = (current.type === "chapter" && userChapterNumber !== null) ? userChapterNumber : oldChapterNumber
-      const chapterNumberConflict = current.type === "chapter"
-        && typeof chapterNumber === "number"
-        && effectivePages.some((page) => (
-          page.path !== renamingPath
-          && page.type === "chapter"
-          && page.chapterNumber === chapterNumber
-        ))
-      if (chapterNumberConflict) return
-      const normalizedTitle = current.type === "chapter" && chapterNumber
-        ? makeDefaultChapterTitle(chapterNumber, newTitle)
-        : newTitle
-      const nextContent = updatePageTitleContent(content, normalizedTitle, current.type === "chapter" ? chapterNumber : null)
-      const targetFileName = current.type === "chapter"
-        ? makeChapterFileName(normalizedTitle, chapterNumber)
-        : `${makeSafeFileSlug(newTitle)}.md`
-      const targetPath = await getUniquePagePath(getDirName(renamingPath), targetFileName, renamingPath)
+      const plan = planPageRename({
+        path: renamingPath,
+        nextTitle: newTitle,
+        content,
+        type: current.type,
+        currentTitle: current.title,
+        siblings: effectivePages.map((page) => ({
+          path: page.path,
+          title: page.title,
+          type: page.type,
+          chapterNumber: page.chapterNumber,
+        })),
+      })
+      if (plan.status !== "ready" || !plan.content || !plan.fileName) return
+      const targetPath = await allocateUniqueSiblingPath(getDirName(renamingPath), plan.fileName, renamingPath)
 
-      await writeFile(targetPath, nextContent)
+      await writeFile(targetPath, plan.content)
       if (targetPath !== renamingPath) {
+        // 章节改名/换目录：把写作归属账本一起搬到新路径，
+        // 否则新路径会从零打基线，用户此前手写的归属会凭空消失。
+        useWritingStatsStore.getState().transferChapter(renamingPath, targetPath)
         await deleteFile(renamingPath)
         if (selectedFile === renamingPath) setSelectedFile(targetPath)
         onRemovePendingPage?.(renamingPath)
@@ -1142,7 +1140,7 @@ export function KnowledgeTree({
       setRenamingPath(null)
       setRenameValue("")
     }
-  }, [renamingPath, renamingBusy, renameValue, effectivePages, updatePageTitleContent, selectedFile, setSelectedFile, onRemovePendingPage, loadPages, project, setFileTree, bumpDataVersion])
+  }, [renamingPath, renamingBusy, renameValue, effectivePages, selectedFile, setSelectedFile, onRemovePendingPage, loadPages, project, setFileTree, bumpDataVersion])
 
   const cancelRenamePage = useCallback(() => {
     if (renamingBusy) return
@@ -1346,13 +1344,12 @@ export function KnowledgeTree({
   const openCreateMenu = useCallback((event: React.MouseEvent, parentDir?: string, targetFolderName?: string) => {
     event.preventDefault()
     event.stopPropagation()
-    const rect = containerRef.current?.getBoundingClientRect()
     setCreateMenu({
       parentDir,
       targetFolderName,
       targetFolderPath: parentDir,
-      x: rect ? event.clientX - rect.left : event.clientX,
-      y: rect ? event.clientY - rect.top : event.clientY,
+      x: Math.max(12, Math.min(window.innerWidth - 228, event.clientX || event.currentTarget.getBoundingClientRect().left)),
+      y: Math.max(12, Math.min(window.innerHeight - 380, event.clientY || event.currentTarget.getBoundingClientRect().bottom)),
     })
     setPageMenu(null)
   }, [])
@@ -1360,11 +1357,10 @@ export function KnowledgeTree({
   const openPageMenu = useCallback((event: React.MouseEvent, pagePath: string) => {
     event.preventDefault()
     event.stopPropagation()
-    const rect = containerRef.current?.getBoundingClientRect()
     setPageMenu({
       path: pagePath,
-      x: rect ? event.clientX - rect.left : event.clientX,
-      y: rect ? event.clientY - rect.top : event.clientY,
+      x: Math.max(12, Math.min(window.innerWidth - 228, event.clientX || event.currentTarget.getBoundingClientRect().left)),
+      y: Math.max(12, Math.min(window.innerHeight - 380, event.clientY || event.currentTarget.getBoundingClientRect().bottom)),
     })
     setCreateMenu(null)
   }, [])
@@ -1415,10 +1411,17 @@ export function KnowledgeTree({
     }
   }, [])
 
+  const visibleSectionNodes = useMemo(() => filterUiTestDirectory(sectionNodes, searchQuery, new Map(Array.from(pageInfoByPath, ([path, page]) => [path, page.title]))), [sectionNodes, searchQuery, pageInfoByPath])
+
   const rootLabel = filterType === "chapter" ? t("sidebar.knowledge") : t("sidebar.files")
   const emptyLabel = filterType === "chapter"
     ? t("knowledgeTree.emptyFiltered", { label: t("trash.kindChapter") })
     : t("knowledgeTree.emptyFiltered", { label: t("trash.kindOutline") })
+  const findLabel = t("knowledgeTree.find", { defaultValue: filterType === "chapter" ? "查找章节" : "查找大纲" })
+  const applyFind = (query: string) => {
+    onSearchQueryChange?.(query)
+    setFindOpen(false)
+  }
 
   const renderNodes = useCallback((nodes: FileNode[], depth = 0) => {
     const chapterIndexMap = new Map<string, number>()
@@ -1427,16 +1430,17 @@ export function KnowledgeTree({
     return sortFileNodes(nodes, pageInfoByPath, filterType).flatMap((node) => {
       const normalizedPath = normalizePath(node.path)
       if (node.is_dir) {
-        const isCollapsed = collapsedFolders[normalizedPath] ?? false
+        const isCollapsed = searchQuery ? false : collapsedFolders[normalizedPath] ?? false
         const isRenamingFolder = renamingFolderPath === normalizedPath
         const isOutlineDropTarget = outlineDropFolderPath === normalizedPath
         const folderRow = (
           <div key={normalizedPath}>
             <div
               data-knowledge-interactive="true"
+              data-ui-tree-row="folder"
               data-folder-path={normalizedPath}
               className={`group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm text-muted-foreground qm-hover ${isOutlineDropTarget ? "ring-2 ring-primary/50" : ""}`}
-              style={{ paddingLeft: `${depth * 16 + 8}px` }}
+              style={{ paddingLeft: `${2 + depth * 16}px` }}
               onContextMenu={(event) => openCreateMenu(event, normalizedPath, node.name)}
             >
               <button
@@ -1482,7 +1486,7 @@ export function KnowledgeTree({
                 ) : (
                   <span className="truncate font-medium">{node.name}</span>
                 )}
-                <span className="ml-auto text-[10px] text-muted-foreground/60">{countMarkdownDescendants(node)}</span>
+                <span data-ui-tree-meta="true" className="ml-auto text-[0.625rem] text-muted-foreground/60">{countMarkdownDescendants(node)}</span>
               </button>
             </div>
             {!isCollapsed && node.children && renderNodes(node.children, depth + 1)}
@@ -1508,10 +1512,26 @@ export function KnowledgeTree({
       const isInsertTarget = isDragging && dragInsertIndex !== null && chapterIndex !== undefined && chapterIndex === dragInsertIndex && !isDragSource
       const isOutlineExtracted = filterType === "outline" && extractedOutlinePaths.has(normalizedPath)
       const isOutlineIngesting = filterType === "outline" && isOutlinePathIngesting(normalizedPath)
+      /*
+       * 大纲和章节共用同一枚「已提取记忆」小绿点：
+       *   已提取 → 实心绿点；提取中 → 灰点脉冲（压过绿点，理由同章节）。
+       * 大纲这一侧不再单独画对号/提取按钮，状态一律由这枚点表达。
+       */
+      const memoryDotState: ChapterMemoryDotState = filterType === "chapter"
+        ? resolveChapterMemoryDotState({
+            snapshotChapterNumbers: chapterSnapshotNumbers,
+            chapterNumber: page.chapterNumber,
+            fileChapterNumber: page.fileChapterNumber,
+            running: runningChapterPaths.has(normalizedPath),
+          })
+        : filterType === "outline"
+          ? (isOutlineIngesting ? "running" : isOutlineExtracted ? "done" : "none")
+          : "none"
       return [
         <div
           key={normalizedPath}
           data-knowledge-interactive="true"
+          data-ui-tree-row="file"
           data-page-path={normalizedPath}
           className={`group flex items-center gap-1 rounded-md ${isSelected ? "qm-selected" : "qm-hover"} ${isChapterChecked ? "ring-1 ring-primary/35" : ""} ${isDragSource ? "ring-2 ring-primary/50" : ""} ${isInsertTarget ? "border-t-[3px] border-primary/70" : ""}`}
           onContextMenu={(event) => handlePageContextMenu(event, normalizedPath)}
@@ -1544,9 +1564,52 @@ export function KnowledgeTree({
             className={`flex min-w-0 flex-1 items-center justify-between gap-2 px-2 py-1 text-left text-sm ${
               isSelected ? "qm-selected-muted" : "text-muted-foreground group-hover:text-foreground"
             }`}
-            title={normalizedPath}
+            title={page.title}
           >
-            {page.origin === "web-clip" ? <Globe className="h-3 w-3 shrink-0 text-blue-400" /> : <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+            {/*
+              * 「已提取记忆」绿点：标题左侧**唯一**的起始槽位，章节与大纲完全一致。
+              * 已提取=实心绿点，提取中=灰点脉冲，判定见上面的 memoryDotState。
+              *
+              * 大纲行原先在这一点之前还挂了个文件类型图标（普通 .md 是 FileText、
+              * 网页剪藏是 Globe）。那枚图标把大纲行的点与标题整体推右，是"排列不齐"的来源：
+              * ui-test.css 有一条 `.ui-test-root [data-ui-tree-row] > button:first-of-type > svg`
+              * 把所有行内图标统一成 15px，所以两种图标其实一样宽，问题不在图标之间，
+              * 而在于**图标本身 + 后面那个 8px 的 gap = 23px**：
+              * 实测（201px 栏宽）大纲标题左边界 47px，章节标题 24px，两个列表对不齐。
+              * 用户明确要求"不要前面的那个图标了，统一替换为小绿点"，故整枚图标删除：
+              * 大纲行结构从此是 [点槽][标题]，章节行是 [点槽][标题][字数]，
+              * 前缀逐字相同，实测两边标题左边界都落在 24px。
+              *
+              * 注意字号是**另一件事**，删图标并不能解决：删掉图标后大纲行的标题恰好变成
+              * 行内最后一个 span，会被 ui-test.css 里那条按"最后一个 span"选中的 0.75rem
+              * 规则命中，标题比章节小一号。所以那边改成用 data-ui-tree-meta 显式标记
+              * （见 ui-test.css 的注释），两处改动缺一不可。
+              *
+              * 没提取过时**仍然占位**（一个 aria-hidden 的空 span，尺寸 class 与真点完全相同）。
+              * 最初这里是什么都不渲染，理由是"怕标题整体右移"——那个理由搞反了：
+              * 什么都不渲染才是让标题左右不一的原因（有点的行被圆点+gap 推右 14px，
+              * 没点的行贴在左边），用户看到的就是这种错乱。占位后所有行的标题左边界一致。
+              * 占位必须与真点同 class，否则宽度不同、留位就白留了。
+              * 章节的判定与取号规则都在 chapter-memory-dot.ts 里。
+              */}
+            {memoryDotState === "none" ? (
+              <span
+                aria-hidden="true"
+                data-ui-tree-memory-dot-spacer="true"
+                className={MEMORY_DOT_SLOT_CLASS}
+              />
+            ) : (
+              <span
+                role="img"
+                data-state={memoryDotState}
+                data-ui-tree-memory-dot="true"
+                aria-label={memoryDotState === "done" ? "已提取记忆" : "正在提取记忆"}
+                title={memoryDotState === "done" ? "已提取记忆" : "正在提取记忆"}
+                className={`${MEMORY_DOT_SLOT_CLASS} ${
+                  memoryDotState === "done" ? "bg-emerald-500" : "animate-pulse bg-muted-foreground/60"
+                }`}
+              />
+            )}
             {renamingPath === normalizedPath ? (
               <input
                 type="text"
@@ -1572,40 +1635,26 @@ export function KnowledgeTree({
               />
             ) : (
               <>
-                <span className="min-w-0 flex-1 truncate">{page.title}</span>
+                <span className="min-w-0 flex-1 truncate">{page.title.replace(/^第(\d+)章\s*/, "$1 ")}</span>
                 {page.type === "chapter" && page.wordCountLabel && (
-                  <span className={`shrink-0 text-right text-[11px] ${isSelected ? "qm-selected-muted" : "text-muted-foreground"}`}>
+                  <span data-ui-tree-meta="true" className={`shrink-0 text-right text-[0.6875rem] ${isSelected ? "qm-selected-muted" : "text-muted-foreground"}`}>
                     {page.wordCountLabel}
                   </span>
                 )}
               </>
             )}
           </button>
-          {filterType === "outline" && novelMode ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              className={`mr-0 h-7 w-7 shrink-0 ${isOutlineExtracted ? "text-emerald-600 hover:text-emerald-700" : ""}`}
-              title={isOutlineExtracted ? t("novel.outlineGenerator.reingestTitle") : t("novel.outlineGenerator.ingest")}
-              disabled={isOutlineIngesting}
-              onClick={(event) => {
-                event.stopPropagation()
-                handleOutlineIngest(normalizedPath)
-              }}
-            >
-              {isOutlineIngesting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : isOutlineExtracted ? (
-                <Check className="h-4 w-4" />
-              ) : (
-                <Sparkles className="h-4 w-4" />
-              )}
-            </Button>
-          ) : null}
+          {/*
+           * 大纲行右侧原本挂着一个「提取记忆」按钮（已提取时显示绿色对号）。
+           * 它和章节列表的规则不一致，且状态有两个来源（对号 + 绿点），
+           * 用户明确要求删掉对号和这个右侧图标，统一由标题左侧那枚绿点表达。
+           * 单条大纲的提取入口仍保留在编辑器工具栏（preview-panel 的「提取记忆」）。
+           */}
+          {renamingPath !== normalizedPath ? <button type="button" className="ui-test-tree-more" aria-label={`${page.title}的更多操作`} title="更多操作" onClick={(event) => { event.stopPropagation(); openPageMenu(event, normalizedPath) }}><MoreHorizontal /></button> : null}
           <DeleteButton
             armed={isArmed}
             deleting={showDeleteLoading}
-            className={`mr-1 transition-opacity ${isArmed || showDeleteLoading ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+            className={`mr-1 transition-opacity ui-test-tree-delete${isArmed ? " is-armed" : ""} ${isArmed || showDeleteLoading ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
             onClick={() => void handleDeleteClick(normalizedPath)}
             name={page.title}
           />
@@ -1642,11 +1691,24 @@ export function KnowledgeTree({
     dragSource,
     dragInsertIndex,
     isDragging,
+    searchQuery,
     sortedChapterPages,
     novelMode,
     extractedOutlinePaths,
     isOutlinePathIngesting,
-    handleOutlineIngest,
+    /*
+     * 这两项是「已提取记忆」绿点的唯一数据源，必须进依赖数组。
+     *
+     * 它们曾经缺席，症状是用户报的那种"切走再切回来绿点就没了"：
+     * 大纲页签下快照集合被清空、缓存用空集合重算了一次；切回章节后
+     * 异步读盘把集合填回来的那次 setState 触发的是**重渲染**，
+     * renderNodes 的依赖一个都没变，于是 useCallback 原样返回上一次
+     * 那份「全是占位点」的旧树 —— 直到用户点一下某个章节改了
+     * selectedFile，依赖才终于变化，绿点才冒出来。
+     * 所以这里不是"顺手补全依赖"，而是修掉那个具体症状。
+     */
+    chapterSnapshotNumbers,
+    runningChapterPaths,
     t,
   ])
 
@@ -1662,7 +1724,7 @@ export function KnowledgeTree({
     <ScrollArea className="h-full">
       <div
         ref={containerRef}
-        className="relative flex min-h-full flex-col p-2 select-none"
+        className={`relative flex min-h-full flex-col p-2 select-none ui-test-knowledge-tree`}
         style={{
           userSelect: filterType === "chapter" ? "none" : undefined,
           WebkitUserSelect: filterType === "chapter" ? "none" : undefined,
@@ -1675,7 +1737,7 @@ export function KnowledgeTree({
         onContextMenu={handleBlankContextMenu}
         onPointerMove={handleContainerPointerMove}
       >
-        <div className="mb-2 flex items-center justify-between gap-2 px-2 text-xs font-semibold uppercase text-muted-foreground">
+        <div className={`mb-2 flex items-center justify-between gap-2 px-2 text-xs font-semibold uppercase text-muted-foreground ui-test-tree-root-label`}>
           <span>{rootLabel}</span>
         </div>
         {filterType === "chapter" && chapterBatchMode && selectableChapterPaths.length > 0 && (
@@ -1726,16 +1788,16 @@ export function KnowledgeTree({
             </button>
           </div>
         )}
-        {sectionNodes.length === 0 && pendingPages.length === 0 ? (
-          <div className="px-2 py-4 text-center text-xs text-muted-foreground">{emptyLabel}</div>
+        {visibleSectionNodes.length === 0 && pendingPages.length === 0 ? (
+          <div className="px-2 py-4 text-center text-xs text-muted-foreground">{searchQuery ? "没有找到匹配的文档" : emptyLabel}</div>
         ) : (
-          renderNodes(sectionNodes)
+          renderNodes(visibleSectionNodes)
         )}
 
         {createMenu && (
           <div
             className="absolute z-20 w-40 rounded-md border bg-background py-1 text-xs shadow-lg"
-            style={{ left: createMenu.x, top: createMenu.y }}
+            style={{ left: createMenu.x, top: createMenu.y, ...({ position: "fixed", maxHeight: "min(70dvh, 360px)", maxWidth: "calc(100vw - 24px)", overflowY: "auto", zIndex: 40 } as const) }}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
@@ -1760,6 +1822,18 @@ export function KnowledgeTree({
             >
               <Folder className="h-3.5 w-3.5" />
               {filterType === "chapter" ? t("sidebar.newVolume") : t("sidebar.newFolder")}
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-accent"
+              onClick={() => {
+                setCreateMenu(null)
+                setFindDraft(searchQuery)
+                setFindOpen(true)
+              }}
+            >
+              <Search className="h-3.5 w-3.5" />
+              {findLabel}
             </button>
             {createMenu.targetFolderPath ? (
               <>
@@ -1799,8 +1873,19 @@ export function KnowledgeTree({
 
         {pageMenu && (
           <div
+            role="menu"
+            aria-label="文档更多操作"
             className="absolute z-20 w-48 rounded-md border bg-background py-1 text-xs shadow-lg"
-            style={{ left: pageMenu.x, top: pageMenu.y }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPageMenu(null); containerRef.current?.querySelector<HTMLButtonElement>(`[data-page-path="${pageMenu.path}"] > button`)?.focus(); return }
+              if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return
+              event.preventDefault(); event.stopPropagation()
+              const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"))
+              const index = items.indexOf(document.activeElement as HTMLButtonElement)
+              const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length
+              items[next]?.focus()
+            }}
+            style={{ left: pageMenu.x, top: pageMenu.y, ...({ position: "fixed", maxHeight: "min(70dvh, 360px)", maxWidth: "calc(100vw - 24px)", overflowY: "auto", zIndex: 40 } as const) }}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
@@ -1887,7 +1972,7 @@ export function KnowledgeTree({
                         >
                           <Folder className="h-3 w-3 shrink-0 text-amber-500" />
                           <span className="truncate">{vol.name}</span>
-                          {isCurrentVolume && <span className="ml-auto text-[10px] text-muted-foreground">当前</span>}
+                          {isCurrentVolume && <span className="ml-auto text-[0.625rem] text-muted-foreground">当前</span>}
                         </button>
                       )
                     })}
@@ -1924,7 +2009,7 @@ export function KnowledgeTree({
                         >
                           <Folder className="h-3 w-3 shrink-0 text-amber-500" />
                           <span className="truncate">{folder.name}</span>
-                          {isCurrentFolder && <span className="ml-auto text-[10px] text-muted-foreground">当前</span>}
+                          {isCurrentFolder && <span className="ml-auto text-[0.625rem] text-muted-foreground">当前</span>}
                         </button>
                       )
                     })}
@@ -2000,16 +2085,49 @@ export function KnowledgeTree({
             )}
           </div>
         )}
+
+        <Dialog open={findOpen} onOpenChange={setFindOpen}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader><DialogTitle>{findLabel}</DialogTitle></DialogHeader>
+            <input
+              type="text"
+              autoFocus
+              aria-label={findLabel}
+              placeholder={t("knowledgeTree.findPlaceholder", { defaultValue: "输入关键词" })}
+              value={findDraft}
+              onChange={(event) => setFindDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.nativeEvent.isComposing) return
+                event.preventDefault()
+                applyFind(findDraft.trim())
+              }}
+              className="w-full rounded-md border bg-background px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+            />
+            <DialogFooter>
+              {searchQuery ? (
+                <Button type="button" variant="secondary" onClick={() => { setFindDraft(""); applyFind("") }}>
+                  {t("knowledgeTree.findClear", { defaultValue: "清除筛选" })}
+                </Button>
+              ) : null}
+              <Button type="button" variant="outline" onClick={() => setFindOpen(false)}>
+                {t("knowledgeTree.findCancel", { defaultValue: "取消" })}
+              </Button>
+              <Button type="button" onClick={() => applyFind(findDraft.trim())}>
+                {t("knowledgeTree.findConfirm", { defaultValue: "查找" })}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </ScrollArea>
   )
 }
 
-export function RawSourcesSection({ onCancelExtraction }: { onCancelExtraction?: () => void }) {
+export function RawSourcesSection({ onCancelExtraction, uiTestActivityView = false }: { onCancelExtraction?: () => void; uiTestActivityView?: boolean }) {
   const project = useWikiStore((s) => s.project)
   const tasks = useImportProgressStore((s) => s.tasks)
   const deAiTasks = useDeAiTaskStore((s) => s.tasks)
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(uiTestActivityView)
 
   const projectTasks = useMemo(() => {
     if (!project) return []
@@ -2020,23 +2138,28 @@ export function RawSourcesSection({ onCancelExtraction }: { onCancelExtraction?:
   }, [project, tasks])
 
   const projectDeAiTasks = useMemo(() => {
-    if (!project) return []
-    const projectPath = normalizePath(project.path)
-    return deAiTasks
-      .filter((t) =>
-        t.projectPath === projectPath
-        && (t.status === "processing" || t.status === "ready" || t.status === "failed")
-      )
+    return selectProjectDeAiTasks(deAiTasks, project?.path)
+      .filter((t) => t.status === "processing" || t.status === "ready" || t.status === "failed")
       .sort((a, b) => b.createdAt - a.createdAt)
   }, [project, deAiTasks])
 
   const runningTasks = projectTasks.filter((t) => t.status === "running")
-  const hasRunning = runningTasks.length > 0 || projectDeAiTasks.length > 0
+  const settledImportTasks = projectTasks.filter((t) => t.status !== "running")
+  const processingDeAiTasks = projectDeAiTasks.filter((t) => t.status === "processing")
+  const settledDeAiTasks = projectDeAiTasks.filter((t) => t.status !== "processing")
+  const runningCount = runningTasks.length + processingDeAiTasks.length
+  const hasRunning = runningCount > 0
   const hasAnyTask = projectTasks.length > 0 || projectDeAiTasks.length > 0
+
+  useEffect(() => {
+    useImportProgressStore.getState().pruneSettledTasks()
+  }, [])
 
   useEffect(() => {
     if (hasRunning) setExpanded(true)
   }, [hasRunning])
+
+  if (uiTestActivityView && !hasAnyTask) return null
 
   return (
     <div className="shrink-0 border-t bg-background/95 p-2 backdrop-blur">
@@ -2051,16 +2174,29 @@ export function RawSourcesSection({ onCancelExtraction }: { onCancelExtraction?:
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         )}
         <BookOpen className="h-3.5 w-3.5 shrink-0 text-amber-600" />
-        <span className="flex-1 text-left font-medium text-muted-foreground">提取中</span>
+        <span className="flex-1 text-left font-medium text-muted-foreground">{uiTestActivityView ? "导入、提取与去AI味任务" : "提取中"}</span>
         {hasRunning ? (
-          <span className="text-xs text-primary">{runningTasks.length} 个任务运行中</span>
+          <span className="text-xs text-primary">{runningCount} 个任务运行中</span>
         ) : null}
       </button>
       {expanded && (
         <div className="ml-3 max-h-64 space-y-2 overflow-y-auto pr-1 text-xs text-muted-foreground">
           {hasAnyTask ? (
             <>
-            {projectTasks.slice(0, 20).map((task) => {
+            {processingDeAiTasks.map((task) => (
+              <div key={task.id} className="space-y-1 rounded-md bg-muted/30 px-2 py-1.5">
+                <div className="flex items-center gap-1">
+                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                  <span className="truncate text-foreground font-medium">
+                    去AI味：{task.chapterTitle}
+                  </span>
+                </div>
+                <div className="text-muted-foreground">
+                  Skill：{task.skillName} · 模型：{task.modelName}
+                </div>
+              </div>
+            ))}
+            {[...runningTasks, ...settledImportTasks].map((task) => {
               const kindLabel = task.kind === "outline" ? "AI 大纲" : "章节"
               const progressPercent = task.total > 0
                 ? Math.round((task.completed / task.total) * 100)
@@ -2128,27 +2264,20 @@ export function RawSourcesSection({ onCancelExtraction }: { onCancelExtraction?:
                 </div>
               )
             })}
-            {projectDeAiTasks.map((task) => (
+            {settledDeAiTasks.map((task) => (
               <div key={task.id} className="space-y-1 rounded-md bg-muted/30 px-2 py-1.5">
                 <div className="flex items-center gap-1">
-                  {task.status === "processing" ? (
-                    <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
-                  ) : task.status === "ready" ? (
+                  {task.status === "ready" ? (
                     <Check className="h-3 w-3 shrink-0 text-emerald-500" />
                   ) : (
                     <X className="h-3 w-3 shrink-0 text-destructive" />
                   )}
-                  <span className={`truncate ${task.status === "processing" ? "text-foreground font-medium" : ""}`}>
+                  <span className="truncate">
                     去AI味：{task.chapterTitle}
                     {task.status === "ready" ? " · 待确认" : ""}
                     {task.status === "failed" ? ` · 失败：${task.error ?? ""}` : ""}
                   </span>
                 </div>
-                {task.status === "processing" && (
-                  <div className="text-muted-foreground">
-                    Skill：{task.skillName} · 模型：{task.modelName}
-                  </div>
-                )}
               </div>
             ))}
             </>
@@ -2195,7 +2324,7 @@ function DeleteButton({
       <Button
         variant="destructive"
         size="sm"
-        className={`h-6 shrink-0 px-1.5 text-[10px] font-semibold animate-pulse ${className}`}
+        className={`h-6 shrink-0 px-1.5 text-[0.625rem] font-semibold animate-pulse ${className}`}
         onClick={(event) => {
           event.stopPropagation()
           onClick()

@@ -4,6 +4,7 @@ import type { ChatMessage, StreamCallbacks } from "@/lib/llm-client"
 import type { ContextPack } from "./context-engine"
 import {
   buildLocalWritingCorpus,
+  buildWritingEntityExtractionSource,
   collectWritingEntityWebSearch,
   displayWritingEntitySearchWorkflowContent,
   formatWritingEntitySearchMarkdown,
@@ -12,6 +13,7 @@ import {
   isWebSearchConfigured,
   parseExtractedEntityNames,
   parseNeedExternalNames,
+  parseNeedExternalQueries,
   parseWritingEntitySearchWorkflowResult,
   selectUnresolvedEntities,
   serializeWritingEntitySearchWorkflowResult,
@@ -61,6 +63,13 @@ const pack: ContextPack = {
   revisionDirectives: "",
 }
 
+/** ChatMessage.content 是 string | ContentBlock[]；取纯文本，供断言提示词内容 */
+function chatMessageText(content: ChatMessage["content"]): string {
+  return typeof content === "string"
+    ? content
+    : content.map((block) => (block.type === "text" ? block.text : "")).join("")
+}
+
 function streamChatReturning(responses: string[]) {
   let index = 0
   return vi.fn(async (_config: LlmConfig, _messages: ChatMessage[], callbacks: StreamCallbacks) => {
@@ -79,12 +88,18 @@ describe("writing entity local lookup", () => {
     expect(isLocallyResolvedEntity("降龙十八掌", corpus, ["黄蓉"])).toBe(false)
   })
 
+  it("does not let a short local name short-circuit a longer compound candidate", () => {
+    expect(isLocallyResolvedEntity("洛云宗", "无关正文", ["洛云"])).toBe(false)
+    expect(isLocallyResolvedEntity("洛云", "无关正文", ["洛云宗掌门"])).toBe(true)
+  })
+
   it("does not treat names that only appear in the chapter outline as resolved", () => {
-    const corpus = buildLocalWritingCorpus({
+    const packWithOutlineOnlyNames: ContextPack = {
       ...pack,
       outline: "第3章：李鸿章在总理衙门与赫德会面。",
       chapterGoal: "李鸿章与赫德谈判",
-    })
+    }
+    const corpus = buildLocalWritingCorpus(packWithOutlineOnlyNames)
     expect(corpus).not.toContain("李鸿章")
     expect(corpus).not.toContain("赫德")
     expect(isLocallyResolvedEntity("李鸿章", corpus, [])).toBe(false)
@@ -98,6 +113,58 @@ describe("writing entity local lookup", () => {
       "降龙十八掌",
     ])
   })
+
+  it("把同人原作正典计入本地语料，避免原作人物被当成待查实体联网补搜", () => {
+    const fanficPack: ContextPack = {
+      ...pack,
+      sourceCanon: "- 萧炎，斗气大陆主角，曾是天才后跌为废物。\n- 药老寄居在萧炎戒指中。",
+    }
+    const corpus = buildLocalWritingCorpus(fanficPack)
+
+    expect(corpus).toContain("萧炎")
+    expect(corpus).toContain("药老")
+    // 原作既有实体不应被判定为「未解析」，否则会去联网搜，搜回的资料可能与正典冲突
+    expect(selectUnresolvedEntities(["萧炎", "药老"], corpus, [])).toEqual([])
+    // 对照：不带正典时它们会被当成待查实体
+    expect(selectUnresolvedEntities(["萧炎", "药老"], buildLocalWritingCorpus(pack), [])).toEqual([
+      "萧炎",
+      "药老",
+    ])
+  })
+})
+
+describe("writing entity extraction source", () => {
+  it("orders user request and selected outline before plan blueprint, then caps at 8000 chars", () => {
+    const source = buildWritingEntityExtractionSource({
+      userRequest: "生成第277章",
+      outline: `第277章章纲：猎户座侦察系统。${"章".repeat(9000)}`,
+      planBlueprint: "任务蓝图：不应挤占章纲窗口。",
+      contextPack: {
+        ...pack,
+        outline: "总纲：877型基洛级潜艇。",
+      },
+    })
+
+    expect(source).toHaveLength(8000)
+    expect(source).toMatch(/^生成第277章\n\n第277章章纲：猎户座侦察系统。/)
+    expect(source).not.toContain("877型基洛级潜艇")
+    expect(source).not.toContain("任务蓝图")
+  })
+
+  it("uses the search-only outline instead of the merged outline fallback", () => {
+    const source = buildWritingEntityExtractionSource({
+      userRequest: "生成第276章",
+      planBlueprint: "",
+      contextPack: {
+        ...pack,
+        outline: "总纲：971型阿库拉级攻击核潜艇。",
+        entitySearchOutline: "第276章章纲：武装走廊完成清场。",
+      },
+    })
+
+    expect(source).toContain("武装走廊")
+    expect(source).not.toContain("阿库拉级")
+  })
 })
 
 describe("writing entity parse helpers", () => {
@@ -109,6 +176,27 @@ describe("writing entity parse helpers", () => {
   it("parses needExternal names against candidates", () => {
     expect(parseNeedExternalNames('{"needExternal":["黄蓉","原创甲"]}', ["黄蓉", "降龙十八掌"])).toEqual(["黄蓉"])
     expect(parseNeedExternalNames('{"entities":[{"name":"黄蓉","needExternal":true},{"name":"林烬","needExternal":false}]}', ["黄蓉", "林烬"])).toEqual(["黄蓉"])
+  })
+
+  it("parses structured needExternal queries with optional englishQuery", () => {
+    expect(parseNeedExternalQueries('{"needExternal":["李鸿章"]}', ["李鸿章"])).toEqual([
+      { name: "李鸿章" },
+    ])
+    expect(parseNeedExternalQueries(
+      '{"needExternal":[{"name":"鲁茨科伊","englishQuery":"Alexander Rutskoy"},{"name":"林烬"}]}',
+      ["鲁茨科伊", "林烬"],
+    )).toEqual([
+      { name: "鲁茨科伊", englishQuery: "Alexander Rutskoy" },
+      { name: "林烬" },
+    ])
+    expect(parseNeedExternalQueries(
+      '{"needExternal":[{"name":"李鸿章","englishQuery":"李鸿章"}]}',
+      ["李鸿章"],
+    )).toEqual([{ name: "李鸿章" }])
+    expect(parseNeedExternalQueries(
+      '[{"name":"鲁茨科伊","englishQuery":"Alexander Rutskoy"}]',
+      ["鲁茨科伊"],
+    )).toEqual([{ name: "鲁茨科伊", englishQuery: "Alexander Rutskoy" }])
   })
 })
 
@@ -126,6 +214,38 @@ describe("isWebSearchConfigured", () => {
 })
 
 describe("collectWritingEntityWebSearch", () => {
+  it("keeps summary-only search responses in writing context and workflow records", async () => {
+    const searchDetailed = vi.fn(async (term: string) => ({
+      results: [],
+      queries: [term],
+      summary: `已检索到 ${term} 的公开资料摘要。`,
+    }))
+    const result = await collectWritingEntityWebSearch({
+      projectPath: "/project",
+      userRequest: "核对心灵终结与卡特彼勒",
+      contextPack: pack,
+      streamChat: streamChatReturning([
+        '{"entities":["心灵终结","卡特彼勒"]}',
+        '{"needExternal":[{"name":"心灵终结","englishQuery":"Mental Omega"},{"name":"卡特彼勒","englishQuery":"Caterpillar Inc"}]}',
+      ]),
+      llmConfig,
+      searchApiConfig: { ...configuredSearch, provider: "antigravity", apiKey: "" },
+      listEntityNames: async () => [],
+      readPreviousBodies: async () => [],
+      searchDetailed,
+    })
+
+    expect(result.searchedNames).toEqual(["心灵终结", "Mental Omega", "卡特彼勒", "Caterpillar Inc"])
+    expect(result.notes).toEqual([])
+    const persisted = serializeWritingEntitySearchWorkflowResult(result)
+    const display = displayWritingEntitySearchWorkflowContent(persisted)
+    for (const term of result.searchedNames) {
+      expect(result.markdown).toContain(`已检索到 ${term} 的公开资料摘要。`)
+      expect(display).toContain(`已检索到 ${term} 的公开资料摘要。`)
+    }
+    expect(display).not.toContain("无可用结果")
+  })
+
   it("skips search when the provider is not configured", async () => {
     const search = vi.fn()
     const result = await collectWritingEntityWebSearch({
@@ -139,7 +259,9 @@ describe("collectWritingEntityWebSearch", () => {
     })
     expect(search).not.toHaveBeenCalled()
     expect(result.markdown).toBe("")
-    expect(result.notes).toContain("未配置外部搜索")
+    expect(result.skipped).toBe(true)
+    expect(result.notes.join("\n")).toContain("未配置外部搜索")
+    expect(result.notes.join("\n")).toContain("设置 → 网页搜索")
   })
 
   it("does not search names found in previous text or the entity table", async () => {
@@ -189,7 +311,7 @@ describe("collectWritingEntityWebSearch", () => {
       readPreviousBodies: async () => [],
       search,
     })
-    expect(search).toHaveBeenCalledWith("李鸿章", configuredSearch, 4)
+    expect(search).toHaveBeenCalledWith("李鸿章", configuredSearch, 8)
     expect(result.searchedNames).toEqual(["李鸿章"])
   })
 
@@ -214,7 +336,7 @@ describe("collectWritingEntityWebSearch", () => {
       readPreviousBodies: async () => [],
       search,
     })
-    expect(search).toHaveBeenCalledWith("降龙十八掌", configuredSearch, 4)
+    expect(search).toHaveBeenCalledWith("降龙十八掌", configuredSearch, 8)
     expect(result.searchedNames).toEqual(["降龙十八掌"])
     expect(result.items?.[0]?.name).toBe("降龙十八掌")
     expect(result.markdown).toContain(WRITING_ENTITY_SEARCH_HEADING)
@@ -248,6 +370,33 @@ describe("collectWritingEntityWebSearch", () => {
     expect(onSearchStart).toHaveBeenCalledWith(["李鸿章"])
   })
 
+  it("searches more than three needExternal names", async () => {
+    const names = ["李鸿章", "赫德", "总理衙门", "北洋水师"]
+    const search = vi.fn(async (query: string) => [{
+      title: `${query} 资料`,
+      url: `https://example.test/${encodeURIComponent(query)}`,
+      snippet: "公开资料摘要",
+      source: "example.test",
+    }])
+    const result = await collectWritingEntityWebSearch({
+      projectPath: "/project",
+      userRequest: "写一章李鸿章与赫德在总理衙门谈北洋水师",
+      contextPack: pack,
+      streamChat: streamChatReturning([
+        JSON.stringify({ entities: names }),
+        JSON.stringify({ needExternal: names }),
+      ]),
+      llmConfig,
+      searchApiConfig: configuredSearch,
+      listEntityNames: async () => ["黄蓉"],
+      readPreviousBodies: async () => [],
+      search,
+    })
+    expect(search).toHaveBeenCalledTimes(4)
+    expect(search).toHaveBeenCalledWith("北洋水师", configuredSearch, 8)
+    expect(result.searchedNames).toEqual(names)
+  })
+
   it("does not search original names the model can invent", async () => {
     const search = vi.fn()
     const result = await collectWritingEntityWebSearch({
@@ -266,6 +415,143 @@ describe("collectWritingEntityWebSearch", () => {
     })
     expect(search).not.toHaveBeenCalled()
     expect(result.searchedNames).toEqual([])
+    expect(result.skipped).toBe(true)
+    expect(result.notes.join("\n")).toContain("林烬")
+  })
+
+  it("reports why it skipped when every candidate is already local", async () => {
+    const result = await collectWritingEntityWebSearch({
+      projectPath: "/project",
+      userRequest: "写一章郭靖出场",
+      contextPack: pack,
+      streamChat: streamChatReturning(['{"entities":["郭靖"]}']),
+      llmConfig,
+      searchApiConfig: configuredSearch,
+      listEntityNames: async () => ["黄蓉"],
+      readPreviousBodies: async () => [],
+      search: vi.fn(),
+    })
+    expect(result.skipped).toBe(true)
+    expect(result.notes.join("\n")).toContain("跳过联网补搜")
+  })
+
+  it("surfaces an llm failure instead of silently reporting nothing to search", async () => {
+    const search = vi.fn()
+    const result = await collectWritingEntityWebSearch({
+      projectPath: "/project",
+      userRequest: "写一章李鸿章出场",
+      contextPack: pack,
+      streamChat: vi.fn(async (
+        _config: LlmConfig,
+        _messages: ChatMessage[],
+        callbacks: StreamCallbacks,
+      ) => {
+        callbacks.onError(new Error("工作流模型不可用"))
+      }),
+      llmConfig,
+      searchApiConfig: configuredSearch,
+      listEntityNames: async () => ["黄蓉"],
+      readPreviousBodies: async () => [],
+      search,
+    })
+    expect(search).not.toHaveBeenCalled()
+    expect(result.skipped).toBeUndefined()
+    expect(result.notes.join("\n")).toContain("工作流模型不可用")
+  })
+
+  it("asks the judge to fall back to searching when a name's nature is uncertain", async () => {
+    let judgePrompt = ""
+    const streamChat = vi.fn(async (
+      _config: LlmConfig,
+      messages: ChatMessage[],
+      callbacks: StreamCallbacks,
+    ) => {
+      const user = messages.find((message) => message.role === "user")
+      const userText = user ? chatMessageText(user.content) : ""
+      if (userText.includes("下列名称")) {
+        judgePrompt = messages.map((message) => chatMessageText(message.content)).join("\n")
+        callbacks.onToken('{"needExternal":[]}')
+      } else {
+        callbacks.onToken('{"entities":["李鸿章"]}')
+      }
+      callbacks.onDone()
+    })
+    await collectWritingEntityWebSearch({
+      projectPath: "/project",
+      userRequest: "写一章李鸿章出场",
+      contextPack: pack,
+      streamChat,
+      llmConfig,
+      searchApiConfig: configuredSearch,
+      listEntityNames: async () => ["黄蓉"],
+      readPreviousBodies: async () => [],
+      search: vi.fn(),
+    })
+    expect(judgePrompt).toContain("无法确定是真实还是自造时放入 needExternal")
+    expect(judgePrompt).toContain("判断的是名称性质，不是你的知识量")
+    expect(judgePrompt).toContain("不要用「我已经知道它是什么」当排除理由")
+    // 这两条曾让判定的通过条件变成空集：自造名走「不确定则不搜」，真实名走「已知则不搜」。
+    expect(judgePrompt).not.toContain("已知则不搜")
+    expect(judgePrompt).not.toContain("不确定则不搜")
+  })
+
+  it("searches englishQuery alongside the Chinese name and dedupes by url", async () => {
+    const onSearchStart = vi.fn()
+    const search = vi.fn(async (query: string) => {
+      const shared = {
+        title: "鲁茨科伊",
+        url: "https://example.test/rutskoy",
+        snippet: "公开资料摘要",
+        source: "example.test",
+      }
+      if (query === "Alexander Rutskoy") {
+        return [
+          shared,
+          {
+            title: "Alexander Rutskoy",
+            url: "https://example.test/rutskoy-en",
+            snippet: "English-only snippet",
+            source: "example.test",
+          },
+        ]
+      }
+      return [shared]
+    })
+    const result = await collectWritingEntityWebSearch({
+      projectPath: "/project",
+      userRequest: "写一章鲁茨科伊出场",
+      contextPack: pack,
+      streamChat: streamChatReturning([
+        '{"entities":["鲁茨科伊"]}',
+        '{"needExternal":[{"name":"鲁茨科伊","englishQuery":"Alexander Rutskoy"}]}',
+      ]),
+      llmConfig,
+      searchApiConfig: configuredSearch,
+      listEntityNames: async () => ["黄蓉"],
+      readPreviousBodies: async () => [],
+      search,
+      onSearchStart,
+    })
+    expect(onSearchStart).toHaveBeenCalledWith(["鲁茨科伊", "Alexander Rutskoy"])
+    expect(search).toHaveBeenCalledTimes(2)
+    expect(search).toHaveBeenCalledWith("鲁茨科伊", configuredSearch, 8)
+    expect(search).toHaveBeenCalledWith("Alexander Rutskoy", configuredSearch, 8)
+    expect(result.searchedNames).toEqual(["鲁茨科伊", "Alexander Rutskoy"])
+    expect(result.items?.[0]?.name).toBe("鲁茨科伊")
+    expect(result.items?.[0]?.results).toEqual([
+      {
+        title: "鲁茨科伊",
+        url: "https://example.test/rutskoy",
+        snippet: "公开资料摘要",
+        source: "example.test",
+      },
+      {
+        title: "Alexander Rutskoy",
+        url: "https://example.test/rutskoy-en",
+        snippet: "English-only snippet",
+        source: "example.test",
+      },
+    ])
   })
 })
 
@@ -364,5 +650,32 @@ describe("writing entity search workflow display and persistence", () => {
     expect(parseWritingEntitySearchWorkflowResult(legacy)).toBeNull()
     expect(displayWritingEntitySearchWorkflowContent(legacy)).toBe(legacy)
     expect(displayWritingEntitySearchWorkflowContent(legacy)).toContain("https://m.baike.com/wikiid/123")
+  })
+
+  it("filters malformed persisted names without trusting unknown array entries", () => {
+    const persisted = JSON.stringify({
+      content: "",
+      searchedNames: ["鲁茨科伊", null, 42, "", "哈斯布拉托夫"],
+      notes: ["有效备注", false],
+      items: [],
+    })
+
+    expect(parseWritingEntitySearchWorkflowResult(persisted)).toEqual({
+      content: "",
+      searchedNames: ["鲁茨科伊", "哈斯布拉托夫"],
+      notes: ["有效备注"],
+      items: [],
+    })
+  })
+
+  it("rebuilds display content when persisted content is empty", () => {
+    const persisted = JSON.stringify({
+      content: "",
+      searchedNames: ["鲁茨科伊"],
+      notes: [],
+      items: [],
+    })
+
+    expect(displayWritingEntitySearchWorkflowContent(persisted)).toBe("已搜索：鲁茨科伊")
   })
 })

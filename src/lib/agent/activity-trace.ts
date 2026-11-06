@@ -11,7 +11,7 @@ const EMPTY_CONTENT = "本阶段未返回可展示内容。"
 const AGGREGATE_STAGE_IDS = new Set(["chapter_workflow", "react_tools"])
 
 /** 细粒度章节流水线阶段；存在任一此类阶段时隐藏冗余的 chapter_workflow 聚合阶段。 */
-export const DETAILED_CHAPTER_STAGE_IDS = new Set([
+const DETAILED_CHAPTER_STAGE_IDS = new Set([
   "read_context",
   "plot_analysis",
   "generate_draft",
@@ -25,7 +25,10 @@ export const DETAILED_CHAPTER_STAGE_IDS = new Set([
   "final_output",
 ])
 
-export const AGENT_STAGE_DISPLAY_ORDER = [
+/** 常规状态阶段：agentStages 数据仍完整生成/保存（内部跟踪），但默认不在界面展示。 */
+const HIDDEN_STATUS_STAGE_IDS = new Set(["task_understanding"])
+
+const AGENT_STAGE_DISPLAY_ORDER = [
   "task_understanding",
   "capability_selection",
   "read_context",
@@ -49,7 +52,7 @@ const STAGE_DISPLAY_ORDER_INDEX = new Map<string, number>(
   AGENT_STAGE_DISPLAY_ORDER.map((id, index) => [id, index]),
 )
 
-export interface CreateAgentActivityEventInput {
+interface CreateAgentActivityEventInput {
   id: string
   stageId: string
   kind: AgentActivityKind
@@ -60,7 +63,7 @@ export interface CreateAgentActivityEventInput {
   timestamp?: number
 }
 
-export interface CreateStageStartedEventInput {
+interface CreateStageStartedEventInput {
   stageId: string
   title: string
   summary: string
@@ -129,13 +132,24 @@ export function getDefaultOpenAgentStageId(stages: AgentStageTrace[]): string | 
     ?? null
 }
 
-export function filterAgentStagesForDisplay(stages: AgentStageTrace[]): AgentStageTrace[] {
-  const hasDetailedChapterStage = stages.some((stage) => DETAILED_CHAPTER_STAGE_IDS.has(stage.id))
-  if (!hasDetailedChapterStage) return stages
-  return stages.filter((stage) => stage.id !== "chapter_workflow")
+/** 能力选择阶段是否实际启用了技能；内容为「本次未启用」空状态时视为无价值信息，隐藏。 */
+function capabilitySelectionHasEnabledSkills(stage: AgentStageTrace): boolean {
+  return stage.events.some((event) => event.content && !event.content.includes("本次未启用"))
 }
 
-export function sortAgentStagesForDisplay(stages: AgentStageTrace[]): AgentStageTrace[] {
+function filterAgentStagesForDisplay(stages: AgentStageTrace[]): AgentStageTrace[] {
+  const hasDetailedChapterStage = stages.some((stage) => DETAILED_CHAPTER_STAGE_IDS.has(stage.id))
+  const filtered = hasDetailedChapterStage
+    ? stages.filter((stage) => stage.id !== "chapter_workflow")
+    : stages
+  return filtered.filter((stage) => {
+    if (HIDDEN_STATUS_STAGE_IDS.has(stage.id)) return false
+    if (stage.id === "capability_selection") return capabilitySelectionHasEnabledSkills(stage)
+    return true
+  })
+}
+
+function sortAgentStagesForDisplay(stages: AgentStageTrace[]): AgentStageTrace[] {
   const unknownBase = AGENT_STAGE_DISPLAY_ORDER.length
   return stages
     .map((stage, originalIndex) => ({ stage, originalIndex }))
@@ -383,7 +397,7 @@ export function resolveAgentStageTitle(stageId: string, fallbackTitle?: string):
     chapter_workflow: "多任务写作循环",
     generate_draft: "生成章节草稿",
     validate_revision: "校验与修正",
-    final_polish: "去AI味",
+    final_polish: "简单审查与修改",
     execution_report: "执行报告",
     execution_recheck: "执行复检",
     plan_compliance: "计划履约",
@@ -403,7 +417,6 @@ function inferStageTitle(event: AgentActivityEvent): string {
 
 function inferActivityKindFromToolName(name: string): AgentActivityKind {
   if (/skill/.test(name)) return "skill_used"
-  if (/mcp/.test(name)) return "mcp_call"
   if (name === "web_search" || name === "read_web_page" || name === "summarize_search_results" || /web|search/.test(name)) {
     return "web_search"
   }

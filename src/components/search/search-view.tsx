@@ -1,4 +1,5 @@
-﻿import { useState, useCallback, useMemo, useEffect, memo } from "react"
+import "@/components/uitest/ui-test-tools.css"
+import { useState, useCallback, useMemo, useEffect, memo } from "react"
 import { Search, FileText, ImageIcon, X, ArrowUpRight } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { readFile } from "@/commands/fs"
@@ -374,13 +375,20 @@ export function SearchView({ onClose, onOpenFile }: SearchViewProps) {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <div className="shrink-0 border-b px-4 py-3">
+    <div data-ui-page="search" data-ui-state={(searching ? "loading" : !hasSearched ? "idle" : results.length ? "results" : "empty")} className="flex h-full flex-col overflow-hidden">
+      {(
+        <header data-ui="tool-heading"><div>
+          <nav aria-label="面包屑" className="ui-test-breadcrumb"><span>{project?.name ?? "未选择项目"}</span><span aria-hidden="true">/</span><span aria-current="page">搜索</span></nav>
+          <h1 className="ui-test-page-title">找到故事的线索。</h1>
+        </div></header>
+      )}
+      <div data-ui="search-query" className="shrink-0 border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="text"
+              aria-label="搜索书内内容"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -417,7 +425,7 @@ export function SearchView({ onClose, onOpenFile }: SearchViewProps) {
                   key={optKey}
                   type="button"
                   onClick={() => toggleSearchOpt(optKey)}
-                  className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+                  className={`rounded-full px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors ${
                     active
                       ? "bg-primary/10 text-primary ring-1 ring-primary/30"
                       : "bg-muted text-muted-foreground hover:bg-muted/80"
@@ -477,7 +485,7 @@ export function SearchView({ onClose, onOpenFile }: SearchViewProps) {
                       <button
                         type="button"
                         onClick={() => setShowSupportingImages((s) => !s)}
-                        className="text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                        className="text-[0.6875rem] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
                       >
                         {showSupportingImages
                           ? t("search.hideSupporting")
@@ -602,7 +610,7 @@ function Lightbox({
             ) : (
               <div className="text-sm italic text-muted-foreground">{t("search.noCaption")}</div>
             )}
-            <div className="mt-1 truncate text-[11px] text-muted-foreground">
+            <div className="mt-1 truncate text-[0.6875rem] text-muted-foreground">
               {t("search.fromSource")}{hit.sourceTitle}
             </div>
           </div>
@@ -656,7 +664,7 @@ function SectionHeader({
 }) {
   return (
     <div className="flex items-center justify-between border-b pb-1">
-      <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
         {icon}
         {label}
         <span className="text-muted-foreground/60">({count})</span>
@@ -701,13 +709,13 @@ const ImageHitCard = memo(
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-0.5 p-2">
           {hit.alt ? (
-            <div className="line-clamp-2 text-[11px] leading-snug">
+            <div className="line-clamp-2 text-[0.6875rem] leading-snug">
               <HighlightedText text={hit.alt} query={query} />
             </div>
           ) : (
-            <div className="text-[11px] italic text-muted-foreground">{t("search.noCaption")}</div>
+            <div className="text-[0.6875rem] italic text-muted-foreground">{t("search.noCaption")}</div>
           )}
-          <div className="mt-auto truncate text-[10px] text-muted-foreground">
+          <div className="mt-auto truncate text-[0.625rem] text-muted-foreground">
             {hit.sourceTitle}
           </div>
         </div>
@@ -742,7 +750,7 @@ const SearchResultCard = memo(function SearchResultCard({
           <div className="font-medium truncate">
             <HighlightedText text={result.title} query={query} />
           </div>
-          <div className="text-[11px] text-muted-foreground truncate">{shortPath}</div>
+          <div className="text-[0.6875rem] text-muted-foreground truncate">{shortPath}</div>
         </div>
       </div>
       <p className="text-xs text-muted-foreground line-clamp-2">

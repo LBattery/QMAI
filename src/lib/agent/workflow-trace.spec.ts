@@ -136,9 +136,10 @@ describe("getWorkflowToolDescription", () => {
 
   it("describes synthetic chapter workflow calls as user-visible writing steps", () => {
     expect(getWorkflowToolDescription(call({ id: "brief", name: "chapter_task_brief" }))).toBe("生成写作任务书")
+    expect(getWorkflowToolDescription(call({ id: "brief-retry", name: "chapter_task_brief_retry" }))).toBe("重新生成写作任务书")
     expect(getWorkflowToolDescription(call({ id: "draft", name: "chapter_draft", params: { chars: 3200 } }))).toBe("生成章节正文初稿")
     expect(getWorkflowToolDescription(call({ id: "review", name: "chapter_review" }))).toBe("执行 AI 审稿")
-    expect(getWorkflowToolDescription(call({ id: "polish", name: "chapter_final_polish" }))).toBe("简单审查与去AI味")
+    expect(getWorkflowToolDescription(call({ id: "polish", name: "chapter_final_polish" }))).toBe("简单审查与修改")
     expect(getWorkflowToolDescription(call({ id: "report", name: "chapter_execution_report" }))).toBe("检查章节执行清单")
     expect(getWorkflowToolDescription(call({ id: "repair", name: "chapter_execution_repair" }))).toBe("返修执行清单失败项")
     expect(getWorkflowToolDescription(call({ id: "recheck", name: "chapter_execution_recheck" }))).toBe("复检章节执行清单")
@@ -161,6 +162,13 @@ describe("getWorkflowToolDescription", () => {
       params: { query: "黄蓉" },
       result: JSON.stringify({ status: "ok", query: "黄蓉", resultCount: 2, results: [] }),
     }))).toBe("联网搜索「黄蓉」（2 条来源）")
+
+    expect(getWorkflowToolDescription(call({
+      id: "search-summary-only",
+      name: "web_search",
+      params: { query: "T-80BVM" },
+      result: JSON.stringify({ status: "ok", query: "T-80BVM", resultCount: 0, results: [], summary: "摘要", queries: ["T-80BVM"] }),
+    }))).toBe("联网搜索「T-80BVM」")
 
     expect(getWorkflowToolDescription(call({
       id: "search-grouped",
@@ -210,6 +218,25 @@ describe("getWorkflowToolDescription", () => {
 })
 
 describe("getWorkflowToolResultDisplay", () => {
+  it("restores saved search summaries instead of stale no-result text", () => {
+    const persisted = JSON.stringify({
+      content: "已搜索：心灵终结\n\n心灵终结\n- 无可用结果",
+      searchedNames: ["心灵终结", "Mental Omega"],
+      notes: [],
+      items: [{
+        name: "心灵终结",
+        results: [],
+        searchQueries: ["心灵终结", "Mental Omega"],
+        summary: "已检索到心灵终结的公开资料摘要。",
+      }],
+    })
+
+    const display = getWorkflowToolResultDisplay(persisted)
+    expect(display).toContain("已搜索：心灵终结、Mental Omega")
+    expect(display).toContain("已检索到心灵终结的公开资料摘要。")
+    expect(display).not.toContain("无可用结果")
+  })
+
   it("extracts the grouped summary from persisted writing search JSON", () => {
     const summary = [
       "已搜索：鲁茨科伊",

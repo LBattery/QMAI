@@ -23,6 +23,7 @@ export type Provider =
   | "claude-code"
   | "codex-cli"
   | "cursor-cli"
+  | "antigravity-cli"
 
 export interface LlmPreset {
   /** Stable id used as the dropdown value. */
@@ -128,21 +129,34 @@ const RAW_LLM_PRESETS: LlmPreset[] = [
   {
     id: "cursor-cli",
     label: "Cursor CLI (local)",
-    hint: "Local `agent` via cursor-api-proxy — no official API key needed",
+    hint: "Local `cursor-agent` via cursor-api-proxy — no official API key needed",
     provider: "cursor-cli",
     baseUrl: "http://127.0.0.1:8765/v1",
-    defaultModel: "composer-2-fast",
+    defaultModel: "composer-2.5-fast",
     apiMode: "chat_completions",
-    // Picks aligned with cursor-api-proxy docs/cursor-models-picks.md.
+    // Only ids that survive ACP-catalog filtering of `cursor-agent --list-models`.
     suggestedModels: [
       "auto",
-      "composer-2-fast",
-      "claude-opus-4-7-medium-fast",
-      "claude-opus-4-7-high",
-      "gpt-5.3-codex-high",
-      "gpt-5.3-codex-xhigh",
-      "gpt-5.5-medium",
-      "claude-opus-4-7-thinking-max",
+      "composer-2.5-fast",
+    ],
+    suggestedContextSize: MIN_USER_LLM_CONTEXT_SIZE,
+  },
+  {
+    id: "antigravity-cli",
+    label: "Antigravity CLI (local)",
+    hint: "使用 local agy 命令及其登录状态，无需 API Key",
+    provider: "antigravity-cli",
+    suggestedModels: [
+      "gemini-3.8-flash-high",
+      "gemini-3.8-flash-medium",
+      "gemini-3.8-flash-low",
+      "claude-opus-5-5-high",
+      "claude-opus-5-5-medium",
+      "claude-opus-5-5-low",
+      "claude-sonnet-5-5-high",
+      "claude-sonnet-5-5-medium",
+      "claude-sonnet-5-5-low",
+      "gpt-oss-120b-medium",
     ],
     suggestedContextSize: MIN_USER_LLM_CONTEXT_SIZE,
   },
@@ -574,36 +588,4 @@ export const LLM_PRESETS: LlmPreset[] = ALL_LLM_PRESETS
 /** Resolve provider configurations by their stable preset id. */
 export function findLlmPresetById(id: string): LlmPreset | undefined {
   return ALL_LLM_PRESETS.find((preset) => preset.id === id)
-}
-
-/**
- * Best-effort reverse lookup: given the current LlmConfig fields, which
- * preset does it most likely correspond to? Used so the dropdown can
- * show the user what they're effectively on.
- */
-export function matchPreset(params: {
-  provider: Provider
-  customEndpoint: string
-  ollamaUrl: string
-  apiMode?: CustomApiMode
-}): LlmPreset | null {
-  const norm = (u: string) => u.replace(/\/+$/, "").toLowerCase()
-  const { provider, customEndpoint, ollamaUrl, apiMode } = params
-
-  for (const preset of LLM_PRESETS) {
-    if (preset.provider !== provider) continue
-    if (provider === "custom") {
-      if (!preset.baseUrl) continue // skip the generic Custom catch-alls
-      if (norm(preset.baseUrl) !== norm(customEndpoint)) continue
-      if ((preset.apiMode ?? "chat_completions") !== (apiMode ?? "chat_completions"))
-        continue
-      return preset
-    }
-    if (provider === "ollama") {
-      if (preset.baseUrl && norm(preset.baseUrl) !== norm(ollamaUrl)) continue
-      return preset
-    }
-    return preset
-  }
-  return null
 }

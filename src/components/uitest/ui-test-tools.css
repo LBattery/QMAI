@@ -1,0 +1,2181 @@
+/* 灵魂 / 工具 / 设置：只重排测试版布局，原业务组件、表单及低频操作全部保留。 */
+.ui-test-root [data-ui-page] {
+  min-width: 0;
+  min-height: 0;
+  color: var(--ui-ink);
+  background: var(--ui-paper);
+  font-family: var(--ui);
+}
+
+.ui-test-root .ui-test-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 14px;
+  color: var(--ui-muted);
+  font: 0.75rem/1.6 var(--ui);
+  overflow-wrap: anywhere;
+}
+
+.ui-test-root .ui-test-page-title,
+.ui-test-root [data-ui="tool-title"] {
+  margin: 0;
+  color: var(--ui-ink);
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  font-weight: 500;
+  line-height: var(--ui-heading-line);
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.ui-test-root [data-ui="tool-heading"] {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: var(--ui-heading-top) clamp(20px, 3vw, 38px) 22px;
+  border: 0;
+  background: var(--ui-paper);
+}
+
+.ui-test-root [data-ui="tool-heading"] > .min-w-0,
+.ui-test-root [data-ui="tool-heading"] > div {
+  min-width: 0;
+}
+
+.ui-test-root [data-ui="tool-heading"] > div:first-child {
+  display: flex;
+  flex-direction: column;
+}
+.ui-test-root [data-ui="tool-heading"] .ui-test-page-title,
+.ui-test-root [data-ui="tool-heading"] [data-ui="tool-title"] { order: -1; }
+.ui-test-root [data-ui="tool-heading"] .ui-test-breadcrumb { margin: 8px 0 0; }
+
+.ui-test-root [data-ui="tool-heading"] p {
+  margin-top: 8px;
+  color: var(--ui-muted);
+  font: 0.8125rem/1.8 var(--ui);
+}
+
+.ui-test-root [data-ui-page] :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([aria-invalid="true"]), select:not([aria-invalid="true"]), textarea:not([aria-invalid="true"])) {
+  min-width: 0;
+  max-width: 100%;
+  border-color: transparent;
+  background-color: var(--ui-panel);
+  color: var(--ui-ink);
+  box-shadow: none;
+}
+
+.ui-test-root [data-ui-page] :is(button, input, select, textarea, a):focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 3px;
+}
+
+.ui-test-root [data-ui-page] :is(input[type="checkbox"], input[type="radio"], input[type="range"]) {
+  accent-color: var(--ui-accent);
+}
+
+.ui-test-root [data-ui-page] textarea {
+  font: 1rem/1.8 var(--ui);
+  overflow-y: auto;
+}
+
+.ui-test-root .ui-test-empty-state {
+  padding: 48px 20px;
+  color: var(--ui-muted);
+  font: 0.875rem/1.8 var(--ui);
+  text-align: center;
+}
+
+/* 设置自己拥有分类栏；Shell 不应再给设置叠加一份目录。 */
+.ui-test-root [data-ui-page="settings"] {
+  container-type: inline-size;
+  width: 100%;
+}
+
+/*
+ * 维护工具已从设置搬到顶栏「创作工具」，自成一个视图（用户要求）。
+ *
+ * 它在设置里时，内边距由 [data-ui="settings-scroll"] 的 `px-8 py-6` 提供；
+ * 独立成页后这份内边距得自己带上 —— 否则内容会紧贴窗口边缘，
+ * 而且长列表（拆书/去重队列很长）需要自己滚动。
+ * 32px / 24px 就是上面那两个 Tailwind 值，保持与在设置里时同一观感。
+ */
+.ui-test-root [data-ui-page="maintenance"] {
+  height: 100%;
+  overflow-y: auto;
+  padding: 24px 32px 28px;
+  scrollbar-gutter: stable;
+}
+
+.ui-test-root [data-ui="settings-sidebar"] {
+  width: 205px;
+  border: 0;
+  background: var(--ui-panel);
+  color: var(--ui-ink);
+}
+
+.ui-test-root [data-ui="settings-sidebar"] > div {
+  padding: var(--ui-heading-top) 20px 10px;
+  min-height: 60px;
+  line-height: var(--ui-heading-line);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.ui-test-root [data-ui="settings-navigation"] {
+  padding: 0 14px 20px;
+  scrollbar-gutter: stable;
+}
+
+.ui-test-root [data-ui="settings-navigation"] button {
+  min-height: 36px;
+  margin: 2px 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: var(--ui-muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.ui-test-root [data-ui="settings-navigation"] button[aria-current="page"] {
+  background: var(--ui-soft);
+  color: var(--ui-accent);
+}
+
+.ui-test-root [data-ui="settings-navigation"] button:hover {
+  background: var(--ui-soft);
+}
+
+.ui-test-root [data-ui="settings-navigation"] button svg {
+  width: 15px;
+  height: 15px;
+  color: currentColor;
+}
+
+.ui-test-root [data-ui="settings-content"] {
+  min-width: 0;
+}
+
+.ui-test-root [data-ui="settings-scroll"] {
+  padding: var(--ui-heading-top) clamp(20px, 3.4vw, 48px) 30px;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.ui-test-root [data-ui="settings-section"] {
+  width: 100%;
+  max-width: 930px;
+  margin-inline: auto;
+}
+
+.ui-test-root [data-ui="settings-section"] > div {
+  min-width: 0;
+}
+
+.ui-test-root [data-ui="settings-section"] :is(h1, h2) {
+  display: none;
+}
+
+.ui-test-root [data-ui="settings-section"] h2 + p {
+  display: none;
+}
+
+.ui-test-root [data-ui="settings-section"] :is(h3, label) {
+  color: var(--ui-ink);
+}
+
+.ui-test-root [data-ui="settings-section"] :is(.space-y-6, .space-y-5) > :is(.rounded-lg.border, .rounded-md.border),
+.ui-test-root [data-ui="settings-section"] .space-y-3.rounded-lg.border {
+  border: 0;
+  border-radius: 10px;
+  background: var(--ui-panel);
+  padding: 20px;
+}
+
+/* 只展平表单分组与提供方卡片，不动错误提示、开关、危险按钮和模型测试状态。 */
+.ui-test-root [data-ui="settings-section"] .space-y-3.rounded-lg.border > .grid > label,
+.ui-test-root [data-ui="settings-section"] .rounded-lg.border > .border-t,
+.ui-test-root [data-ui="settings-model-panel"] .space-y-2 > .rounded-lg.border,
+.ui-test-root [data-ui="settings-model-panel"] .space-y-3 > .rounded-lg.border {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.ui-test-root [data-ui="settings-model-panel"] .rounded-lg.border > .border-t {
+  background: transparent;
+}
+
+.ui-test-root [data-ui="settings-model"] > .ui-test-page-title {
+  margin-bottom: 18px;
+}
+
+/* 模型页签已在专用标题下提供；仅收起子组件中重复的同名标题，说明文字仍展示。 */
+.ui-test-root [data-ui="settings-model-panel"] > div > div > h2 {
+  display: none;
+}
+
+.ui-test-root [data-ui="settings-model-panel"] > div > div > p {
+  margin-top: 0;
+  font-size: 0.8125rem;
+  line-height: 1.8;
+}
+
+.ui-test-root .ui-test-tool-tabs,
+.ui-test-root [data-ui="skills-tabs"] > .flex,
+.ui-test-root [data-ui-page="analysis"] [role="tablist"] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  margin: 0 0 22px;
+  border: 0;
+  background: transparent;
+}
+
+.ui-test-root .ui-test-tool-tabs > button,
+.ui-test-root [data-ui="skills-tabs"] > .flex > button,
+.ui-test-root [data-ui-page="analysis"] [role="tablist"] > button {
+  min-height: 32px;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ui-muted);
+  font: 0.8125rem/1.4 var(--ui);
+  white-space: normal;
+}
+
+.ui-test-root .ui-test-tool-tabs > button[aria-selected="true"],
+.ui-test-root [data-ui="skills-tabs"] > .flex > button[aria-pressed="true"],
+.ui-test-root [data-ui-page="analysis"] [role="tablist"] > button[aria-selected="true"] {
+  background: var(--ui-soft);
+  color: var(--ui-accent);
+}
+
+/* 页签行 + 右侧「模型设置教程」入口：窄屏时链接换到下一行，不挤压页签。 */
+.ui-test-root [data-ui="settings-model"] > .ui-test-model-tabbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 0 0 22px;
+}
+
+/* 行间距交给 .ui-test-model-tabbar，页签自身不再留底边距 */
+.ui-test-root [data-ui="settings-model"] .ui-test-tool-tabs {
+  margin-bottom: 0;
+}
+
+.ui-test-root [data-ui="settings-footer"] {
+  border: 0;
+  background: var(--ui-paper);
+  padding: 16px clamp(20px, 3.4vw, 48px) 22px;
+}
+
+.ui-test-root [data-ui="settings-footer"] > div {
+  max-width: 930px;
+  flex-wrap: wrap;
+}
+
+.ui-test-root [data-ui="settings-mobile-navigation"] {
+  display: none;
+}
+
+/* 项目灵魂：风格选项在上，长规则编辑在下，不再额外开一列。 */
+.ui-test-root [data-ui="soul-heading"],
+.ui-test-root [data-ui="soul-project-editor"],
+.ui-test-root [data-ui="soul-role-content"] {
+  width: 100%;
+  max-width: 1040px;
+  margin-inline: auto;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] > div {
+  height: auto;
+  min-height: 0;
+  gap: 24px;
+  padding: 0;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] > div > .space-y-1 > label {
+  display: none;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] > div > .space-y-1 > p {
+  max-width: none;
+  font: 0.8125rem/1.8 var(--ui);
+}
+
+.ui-test-root [data-ui="soul-project-editor"] > div > .grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  flex: none;
+  gap: 24px;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] > div > .grid > div {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] > div > .grid > div > .border-b {
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 0 0 10px;
+  border: 0;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] > div > .grid > div > .overflow-y-auto {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-height: 216px;
+  padding: 0 4px 4px;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] > div > .grid > div > .overflow-y-auto > button {
+  width: min(240px, 100%);
+  min-height: 68px;
+  margin: 0;
+  border: 1px solid transparent;
+  background: var(--ui-panel);
+  border-radius: 9px;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] > div > .grid > div > .overflow-y-auto > button:has(input:checked) {
+  border-color: var(--ui-accent);
+  background: var(--ui-soft);
+  color: var(--ui-accent);
+}
+
+.ui-test-root [data-ui="soul-project-editor"] .mb-3.flex {
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] .mb-3.flex > .min-w-0 {
+  flex-basis: 260px;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] textarea {
+  flex: none;
+  min-height: 320px;
+  height: clamp(320px, 40dvh, 560px);
+  padding: 18px 20px;
+  border: 0;
+  resize: vertical;
+}
+
+.ui-test-root [data-ui="soul-project-editor"] > div > .flex.items-center {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+/* 角色 / 自定义灵魂：原详情放在绑定及注入预览前；仍是单个纵向阅读流。 */
+.ui-test-root [data-ui="soul-role-content"] > div,
+.ui-test-root [data-ui="soul-role-content"] > div > div,
+.ui-test-root [data-ui="soul-role-content"] main {
+  height: auto;
+  overflow: visible;
+  min-height: 0;
+}
+
+.ui-test-root [data-ui="soul-role-content"] main {
+  padding: 0;
+}
+
+.ui-test-root [data-ui="soul-role-content"] main > div {
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  gap: 24px;
+}
+
+.ui-test-root [data-ui="soul-role-content"] main > div > .rounded-lg {
+  min-width: 0;
+  margin: 0;
+  padding: 22px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--ui-panel);
+}
+
+.ui-test-root [data-ui="soul-role-content"] main > div > .rounded-lg:not([data-ui="soul-custom-form"]):has(> .mb-4 > h2) {
+  order: -1;
+  padding: 0 0 8px;
+  background: transparent;
+}
+
+.ui-test-root [data-ui="soul-role-content"] .mb-4:has(> h2) {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 26px;
+}
+
+.ui-test-root [data-ui="soul-role-content"] .mb-4 > h2 {
+  color: var(--ui-ink);
+  font: 500 1.25rem/1.75rem var(--serif);
+  overflow-wrap: anywhere;
+}
+
+.ui-test-root [data-ui="soul-role-content"] .rounded-md.border {
+  border-color: transparent;
+  background: var(--ui-panel);
+}
+
+.ui-test-root [data-ui="soul-role-content"] .rounded-lg:not([data-ui="soul-custom-form"]) > .mb-4 ~ .mt-4,
+.ui-test-root [data-ui="soul-role-content"] .rounded-lg:not([data-ui="soul-custom-form"]) > .mb-4 ~ .mt-3 {
+  margin-top: 24px;
+}
+
+.ui-test-root [data-ui="soul-role-content"] .whitespace-pre-wrap {
+  overflow-wrap: anywhere;
+  font: 1rem/1.9 var(--ui);
+}
+
+.ui-test-root [data-ui="soul-role-content"] pre.whitespace-pre-wrap {
+  font-size: 0.875rem;
+  line-height: 1.8;
+}
+
+.ui-test-root [data-ui="soul-role-content"] main > div > .rounded-lg > .flex:has(> select) {
+  flex-wrap: wrap;
+}
+
+.ui-test-root [data-ui="soul-role-content"] select {
+  min-width: min(260px, 100%);
+  text-overflow: ellipsis;
+}
+
+/* 灵魂：整窗单列画廊 → 详情/编辑，不再占用目录栏，也不再开左右两栏。 */
+.ui-test-root [data-ui-page="soul"].ui-test-soul-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ui-test-root [data-ui="soul-tabs"] {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--ui-line);
+  background: var(--ui-paper);
+}
+
+.ui-test-root .ui-test-soul-heading-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+}
+
+.ui-test-root .ui-test-soul-heading-row h1 {
+  margin: 0;
+  color: var(--ui-ink);
+  font: 500 1.125rem/1.75rem var(--serif);
+}
+
+.ui-test-root .ui-test-soul-tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.ui-test-root .ui-test-soul-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-muted);
+  font: 0.8125rem/1.4 var(--ui);
+}
+
+.ui-test-root .ui-test-soul-tab svg { width: 15px; height: 15px; }
+
+.ui-test-root .ui-test-soul-tab:hover {
+  background: var(--ui-soft);
+  color: var(--ui-ink);
+}
+
+.ui-test-root .ui-test-soul-tab.is-active {
+  background: var(--ui-soft);
+  color: var(--ui-accent);
+  font-weight: 500;
+}
+
+.ui-test-root .ui-test-soul-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  background: var(--ui-paper);
+  color: var(--ui-ink);
+  font-size: 0.8125rem;
+  margin-left: auto;
+}
+
+.ui-test-root .ui-test-soul-action:hover { background: var(--ui-soft); }
+.ui-test-root .ui-test-soul-action svg { width: 15px; height: 15px; }
+
+.ui-test-root [data-ui="soul-content"] {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px 24px 0;
+}
+
+.ui-test-root [data-ui="soul-content"] > [data-ui="soul-project-editor"] {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 28px;
+  scrollbar-gutter: stable;
+}
+
+.ui-test-root .ui-test-soul-gallery {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 20px;
+  scrollbar-gutter: stable;
+}
+
+.ui-test-root .ui-test-soul-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ui-test-root .ui-test-soul-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.ui-test-root .ui-test-soul-chip {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-muted);
+  font-size: 0.78125rem;
+}
+
+.ui-test-root .ui-test-soul-chip:hover {
+  background: var(--ui-soft);
+  color: var(--ui-ink);
+}
+
+.ui-test-root .ui-test-soul-chip.is-active {
+  border-color: transparent;
+  background: var(--ui-accent);
+  color: var(--ui-on-accent);
+}
+
+/* 内置灵魂分类标签：更轻量，作为胶囊分组下的二级筛选。 */
+.ui-test-root .ui-test-soul-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
+.ui-test-root .ui-test-soul-tag {
+  min-height: 28px;
+  padding: 4px 11px;
+  border: 1px solid var(--ui-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ui-muted);
+  font-size: 0.75rem;
+}
+
+.ui-test-root .ui-test-soul-tag:hover {
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+}
+
+.ui-test-root .ui-test-soul-tag.is-active {
+  border-color: transparent;
+  background: var(--ui-soft);
+  color: var(--ui-accent);
+  font-weight: 500;
+}
+
+.ui-test-root .ui-test-soul-foot-tag {
+  padding: 2px 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 999px;
+  color: var(--ui-muted);
+  font-size: 0.6875rem;
+}
+
+.ui-test-root .ui-test-soul-foot-tag.is-bound {
+  border-color: transparent;
+  background: var(--ui-soft);
+  color: var(--ui-accent);
+}
+
+.ui-test-root .ui-test-soul-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
+}
+
+.ui-test-root .ui-test-soul-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--ui-panel);
+  cursor: pointer;
+  transition: border-color .15s, background .15s, box-shadow .15s, transform .15s;
+}
+
+.ui-test-root .ui-test-soul-card:hover {
+  border-color: color-mix(in srgb, var(--ui-accent) 40%, transparent);
+  background: var(--ui-paper);
+  box-shadow: 0 6px 18px rgba(23, 35, 29, .06);
+  transform: translateY(-2px);
+}
+
+.ui-test-root .ui-test-soul-card-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  color: var(--ui-ink);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.ui-test-root .ui-test-soul-card-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ui-test-root .ui-test-soul-badge {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  color: var(--ui-accent);
+  background: var(--ui-soft);
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-weight: 500;
+}
+
+.ui-test-root .ui-test-soul-card-misc {
+  font-size: 0.75rem;
+  color: var(--ui-muted);
+}
+
+.ui-test-root .ui-test-soul-card-desc {
+  display: -webkit-box;
+  min-height: 44px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ui-muted);
+  font-size: 0.78125rem;
+  line-height: 1.75;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.ui-test-root .ui-test-soul-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--ui-ink) 8%, transparent);
+}
+
+.ui-test-root .ui-test-soul-card-open {
+  color: var(--ui-accent);
+  font-size: 0.75rem;
+  opacity: 0;
+  transition: opacity .15s;
+}
+
+.ui-test-root .ui-test-soul-card:hover .ui-test-soul-card-open,
+.ui-test-root .ui-test-soul-card:focus-visible .ui-test-soul-card-open {
+  opacity: 1;
+}
+
+.ui-test-root .ui-test-soul-empty {
+  padding: 48px 20px;
+  border: 1px dashed var(--ui-line);
+  border-radius: 12px;
+  color: var(--ui-muted);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+.ui-test-root .ui-test-soul-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 0;
+}
+
+.ui-test-root .ui-test-soul-editor > [data-ui="soul-role-content"] {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+.ui-test-root [data-ui="soul-role-content"] .flex.flex-col.h-full {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ui-test-root [data-ui="soul-role-content"] main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 表单仅保留字段区滚动，标题和提交操作不随长资料滚走。 */
+.ui-test-root [data-ui="soul-role-content"]:has([data-ui="soul-custom-form"]) {
+  max-width: 1040px;
+  overflow: hidden;
+}
+
+.ui-test-root [data-ui="soul-role-content"]:has([data-ui="soul-custom-form"]) > div {
+  overflow: hidden;
+}
+
+.ui-test-root [data-ui="soul-role-content"] main:has([data-ui="soul-custom-form"]),
+.ui-test-root [data-ui="soul-role-content"] main:has([data-ui="soul-custom-form"]) > div {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ui-test-root [data-ui="soul-role-content"] main:has([data-ui="soul-custom-form"]) > div {
+  gap: 8px;
+}
+
+.ui-test-root [data-ui="soul-role-content"] main > div > [data-ui="soul-custom-form"] {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.ui-test-root [data-ui="soul-custom-form"] > .mb-4:has(> h2) {
+  flex: 0 0 auto;
+  align-items: center;
+  margin: 0;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--ui-line);
+}
+
+.ui-test-root [data-ui="soul-custom-form"] > .mb-4 > h2 {
+  font: 500 1.125rem/1.625rem var(--serif);
+}
+
+.ui-test-root [data-ui="soul-form-body"] {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 0 12px 12px 2px;
+}
+
+.ui-test-root [data-ui="soul-form-body"] > section {
+  margin: 0;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--ui-line);
+}
+
+.ui-test-root [data-ui="soul-form-body"] > section:last-child {
+  border-bottom: 0;
+  padding-bottom: 4px;
+}
+
+.ui-test-root [data-ui="soul-form-body"] h3 {
+  margin: 0 0 12px;
+  color: var(--ui-ink);
+  font: 600 0.875rem/1.25rem var(--ui);
+}
+
+.ui-test-root [data-ui="soul-form-basics"],
+.ui-test-root [data-ui="soul-form-sources"] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.ui-test-root [data-ui="soul-form-body"] .grid > div {
+  min-width: 0;
+}
+
+.ui-test-root [data-ui="soul-form-search"] {
+  align-items: center;
+  gap: 10px;
+}
+
+.ui-test-root [data-ui="soul-form-search"] input {
+  flex: 0 0 16px;
+  margin: 0;
+}
+
+/* 优先级覆盖页面通用透明边框，且不改其他页面的输入控件。 */
+.ui-test-root [data-ui-page="soul"] [data-ui="soul-custom-form"] :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea):not([aria-invalid="true"]) {
+  display: block;
+  width: 100%;
+  min-height: var(--soul-field-height, 2.5rem);
+  height: auto;
+  margin-top: 6px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--ui-muted) 65%, var(--ui-paper));
+  border-radius: 6px;
+  background: var(--ui-paper);
+  color: var(--ui-ink);
+  font: 0.875rem/1.6 var(--ui);
+  box-shadow: none;
+}
+
+.ui-test-root [data-ui-page="soul"] [data-ui="soul-custom-form"] textarea:not([aria-invalid="true"]) {
+  --soul-field-height: 6rem;
+  resize: vertical;
+}
+
+.ui-test-root [data-ui-page="soul"] [data-ui="soul-custom-form"] :is(input, textarea):focus-visible {
+  border-color: var(--ui-accent);
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 1px;
+}
+
+.ui-test-root [data-ui="soul-role-content"] [data-ui="soul-custom-form"] > [data-ui="soul-form-actions"] {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--ui-line);
+  background: var(--ui-paper);
+}
+
+.ui-test-root [data-ui="soul-form-actions"] button {
+  min-height: 36px;
+  height: auto;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .ui-test-root [data-ui="soul-tabs"] { padding: 10px 16px; }
+  .ui-test-root [data-ui="soul-content"] { padding: 12px 16px 0; }
+  .ui-test-root .ui-test-soul-heading-row { gap: 8px 12px; }
+  .ui-test-root .ui-test-soul-tab { padding-inline: 10px; }
+  .ui-test-root [data-ui="soul-form-basics"],
+  .ui-test-root [data-ui="soul-form-sources"] { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ui-test-root .ui-test-soul-back {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  background: var(--ui-paper);
+  color: var(--ui-muted);
+  font-size: 0.8125rem;
+}
+
+.ui-test-root .ui-test-soul-back:hover {
+  background: var(--ui-soft);
+  color: var(--ui-ink);
+}
+
+.ui-test-root .ui-test-soul-back svg { width: 15px; height: 15px; }
+
+/*
+ * 记忆中心：整窗单页。
+ *
+ * 这里曾经有 memory-snapshots / memory-chapter-filter 两组规则，它们是
+ * **内层双栏**（左章节列表 + 右快照详情）的样式。两条竖栏拆掉后，
+ * 那些选择器在源码里已经不存在，留着只会误导下一个来改样式的人，所以一并删除。
+ * 新的结构是：统计条 + 标签条 + 全宽滚动内容区。
+ */
+.ui-test-root [data-ui-page="memory"] {
+  overflow: hidden;
+}
+
+.ui-test-root [data-ui="memory-body"] {
+  padding: 0 clamp(20px, 3vw, 38px) 28px;
+  scrollbar-gutter: stable;
+}
+
+/*
+ * 标签条：单排横向滚动，**绝不换行**。
+ *
+ * `flex-wrap: nowrap` 与 `overflow-x: auto` 在这里成对出现：
+ * 只给 overflow-x 而不锁 nowrap，窄屏下 flex 仍会折成两排，
+ * 而两排会被读成"排错了"（本项目刚修过同类缺陷）。
+ * 横向滚动至少是用户能预期的行为。
+ */
+.ui-test-root [data-ui="memory-tabs"] {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.ui-test-root [data-ui="memory-tabs"]::-webkit-scrollbar {
+  display: none;
+}
+
+.ui-test-root [data-ui="memory-tab"] {
+  flex: 0 0 auto;
+}
+
+/* 统计条同理：一排 chip，窄了横向滚动，不折行。 */
+.ui-test-root [data-ui="memory-stats"] {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ui-test-root [data-ui="memory-stats"]::-webkit-scrollbar {
+  display: none;
+}
+
+/* 快照集合：全宽纵向堆叠，取代原来的左右分栏。 */
+.ui-test-root [data-ui="memory-snapshot-collection"] {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.ui-test-root [data-ui="memory-snapshot"],
+.ui-test-root [data-ui="memory-detail"] {
+  border: 0;
+  border-radius: 10px;
+  padding: 22px;
+  background: var(--ui-panel);
+}
+
+.ui-test-root [data-ui="memory-snapshot"] > .flex {
+  flex-wrap: wrap;
+}
+
+.ui-test-root [data-ui="memory-snapshot"] p,
+.ui-test-root [data-ui="memory-snapshot"] li {
+  font-size: 0.875rem;
+  line-height: 1.9;
+}
+
+/* 拆书：作品模块保持原任务/结果状态；会话约束移到底部，不固定第四列。 */
+.ui-test-root [data-ui-page="analysis"],
+.ui-test-root [data-ui-page="review"] {
+  display: flex;
+  height: 100%;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ui-test-root [data-ui="analysis-content"] {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 clamp(20px, 3vw, 38px) 28px;
+}
+
+.ui-test-root [data-ui="analysis-content"] > .flex.h-full:has(> main) {
+  height: auto;
+  min-height: 100%;
+  flex-direction: column;
+  gap: 24px;
+  background: transparent;
+}
+
+.ui-test-root [data-ui="analysis-content"] > .flex.h-full > main > header {
+  padding: 0 0 20px;
+  border: 0;
+  background: transparent;
+}
+
+.ui-test-root [data-ui="analysis-content"] > .flex.h-full > main > .flex > .overflow-y-auto {
+  padding: 0;
+  overflow: visible;
+}
+
+.ui-test-root [data-ui="analysis-content"] > .flex.h-full > aside {
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: var(--ui-panel);
+}
+
+.ui-test-root [data-ui="analysis-content"] > .flex.h-full > aside > .border-b {
+  border: 0;
+  padding: 18px 20px 0;
+}
+
+.ui-test-root [data-ui="analysis-content"] > .flex.h-full > aside > .overflow-y-auto {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 18px;
+  overflow: visible;
+  padding: 18px 20px;
+}
+
+.ui-test-root [data-ui="analysis-content"] > .flex.h-full > aside section {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+/* 推演：配置留白、结果与时间线占满剩余空间，不打断原阶段切换。 */
+.ui-test-root [data-ui-page="simulation"] {
+  overflow: hidden;
+}
+
+.ui-test-root [data-ui="simulation-config"] {
+  padding: 0 clamp(20px, 3vw, 38px) 28px;
+}
+
+.ui-test-root [data-ui="simulation-config"] > div {
+  max-width: 930px;
+  gap: 26px;
+  padding: 0;
+}
+
+.ui-test-root [data-ui="simulation-config"] section > .grid > button {
+  border-color: transparent;
+  background: var(--ui-panel);
+  border-radius: 10px;
+  padding: 18px;
+}
+
+.ui-test-root [data-ui="simulation-config"] section > .grid > button.border-primary {
+  border-color: var(--ui-accent);
+  background: var(--ui-soft);
+}
+
+.ui-test-root [data-ui="simulation-config"] section > .rounded-lg.border {
+  border: 0;
+  background: var(--ui-panel);
+}
+
+.ui-test-root [data-ui="simulation-config"] textarea {
+  min-height: 140px;
+  padding: 16px;
+}
+
+.ui-test-root [data-ui="simulation-content"] > .flex > .flex > .shrink-0 > .inline-flex,
+.ui-test-root [data-ui="simulation-content"] > .flex > .shrink-0 > .inline-flex {
+  border: 0;
+  background: var(--ui-panel);
+}
+
+/* 审稿保留汇总、六维结果、历史及全部确认动作。 */
+.ui-test-root [data-ui="review-content"] {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding-inline: clamp(20px, 3vw, 38px);
+}
+
+.ui-test-root [data-ui="review-content"] > .flex > .border-b {
+  padding: 0 0 20px;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 0;
+}
+
+.ui-test-root [data-ui="review-content"] > .flex > .overflow-y-auto {
+  scrollbar-gutter: stable;
+}
+
+.ui-test-root [data-ui="review-content"] .rounded-md.border:not([class*="border-destructive"]):not([role="alert"]),
+.ui-test-root [data-ui="review-content"] .rounded-lg.border:not([role="dialog"]):not([class*="border-destructive"]):not([role="alert"]) {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* 技能：一条页签行、一份详情编辑区，长规则仍可编辑、导出和保存。 */
+.ui-test-root [data-ui-page="skills"] {
+  min-width: 0;
+}
+
+.ui-test-root [data-ui="skills-tabs"] {
+  padding: var(--ui-heading-top) clamp(20px, 3vw, 38px) 18px;
+  border: 0;
+  gap: 12px;
+}
+
+.ui-test-root [data-ui="skills-tabs"] > .flex > button,
+.ui-test-root [data-ui="skills-tabs"] [data-testid="skill-library-header-actions"] > button,
+.ui-test-root [data-ui="settings-model"] .ui-test-tool-tabs > button {
+  min-height: var(--ui-heading-line);
+  padding-block: 4px;
+  line-height: 1.25rem;
+}
+.ui-test-root [data-ui="soul-project-editor"] > div > .grid > div > .border-b > .text-sm { line-height: var(--ui-heading-line); }
+
+.ui-test-root [data-ui="skills-tabs"] > .flex {
+  margin: 0;
+}
+
+.ui-test-root [data-ui="skills-content"] {
+  padding: 0 clamp(20px, 3vw, 38px) 24px;
+}
+
+/* 只隐藏重复的“技能库 / 写作 Skill”通用标题；选中技能名、说明与错误不隐藏。 */
+.ui-test-root [data-ui="skills-content"] [data-testid="skill-library-view"] > .shrink-0 > h1,
+.ui-test-root [data-ui="skills-content"] [data-testid="writing-skill-library-view"] > .shrink-0 > h1 {
+  display: none;
+}
+
+.ui-test-root [data-ui="skills-content"] [data-testid="skill-library-view"] > .shrink-0,
+.ui-test-root [data-ui="skills-content"] [data-testid="writing-skill-library-view"] > .shrink-0 {
+  border: 0;
+  padding: 0 0 20px;
+}
+
+.ui-test-root [data-ui="skills-content"] main {
+  padding: 0 4px 4px 0;
+}
+
+.ui-test-root [data-ui="skills-content"] main > div {
+  max-width: 1040px;
+  margin-inline: auto;
+}
+
+.ui-test-root [data-ui="skills-content"] :is([data-testid="skill-content-input"], [data-testid="writing-skill-content-input"]) {
+  min-height: 300px;
+  padding: 18px;
+  resize: vertical;
+}
+
+/* 技能库：整窗卡片画廊；点开卡片在同一片区域进入编辑，不再开左右两栏。 */
+.ui-test-root [data-ui-page="skills"].ui-test-skills-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ui-test-root [data-ui="skills-tabs"] {
+  flex: 0 0 auto;
+  margin: 0;
+  background: var(--ui-paper);
+}
+
+.ui-test-root .ui-test-skills-heading-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ui-test-root .ui-test-skills-heading-copy h1 {
+  margin: 0;
+  color: var(--ui-ink);
+  font: 500 1.25rem/1.75rem var(--serif);
+}
+
+.ui-test-root .ui-test-skills-heading-copy p {
+  margin: 6px 0 0;
+  color: var(--ui-muted);
+  font: 0.8125rem/1.8 var(--ui);
+}
+
+.ui-test-root .ui-test-skills-tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.ui-test-root .ui-test-skills-tab {
+  min-height: 32px;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-muted);
+  font: 0.8125rem/1.4 var(--ui);
+}
+
+.ui-test-root .ui-test-skills-tab:hover {
+  background: var(--ui-soft);
+  color: var(--ui-ink);
+}
+
+.ui-test-root .ui-test-skills-tab.is-active {
+  background: var(--ui-soft);
+  color: var(--ui-accent);
+  font-weight: 500;
+}
+
+.ui-test-root .ui-test-skills-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ui-test-root .ui-test-skills-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  background: var(--ui-paper);
+  color: var(--ui-ink);
+  font-size: 0.8125rem;
+}
+
+.ui-test-root .ui-test-skills-action:hover {
+  background: var(--ui-soft);
+}
+
+.ui-test-root .ui-test-skills-action svg {
+  width: 15px;
+  height: 15px;
+}
+
+/*
+  建档与退回都要调模型，期间整页按钮一起禁用。原先没有任何禁用态样式，
+  点击静默无效 —— 用户报的「点了没反应」有一部分就出在这里。
+*/
+.ui-test-root .ui-test-skills-action:disabled,
+.ui-test-root .ui-test-persona-pin:disabled {
+  opacity: 0.45;
+  cursor: progress;
+}
+
+.ui-test-root .ui-test-skills-action:disabled:hover {
+  background: var(--ui-paper);
+}
+
+.ui-test-root .ui-test-skills-message {
+  color: var(--ui-muted);
+  font-size: 0.75rem;
+}
+
+.ui-test-root [data-ui="skills-content"] {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ui-test-root .ui-test-skills-gallery {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 4px;
+  scrollbar-gutter: stable;
+}
+
+.ui-test-root .ui-test-skills-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ui-test-root .ui-test-skills-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 260px;
+  max-width: 420px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 9px;
+  background: var(--ui-panel);
+}
+
+.ui-test-root .ui-test-skills-search svg {
+  width: 15px;
+  height: 15px;
+  color: var(--ui-muted);
+  flex-shrink: 0;
+}
+
+.ui-test-root .ui-test-skills-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ui-ink);
+  font-size: 0.8125rem;
+  outline: none;
+}
+
+.ui-test-root .ui-test-skills-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ui-test-root .ui-test-skills-chip {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-muted);
+  font-size: 0.78125rem;
+}
+
+.ui-test-root .ui-test-skills-chip:hover {
+  background: var(--ui-soft);
+  color: var(--ui-ink);
+}
+
+.ui-test-root .ui-test-skills-chip.is-active {
+  border-color: transparent;
+  background: var(--ui-accent);
+  color: var(--ui-on-accent);
+}
+
+.ui-test-root .ui-test-skills-chip.is-add {
+  border-style: dashed;
+}
+
+.ui-test-root .ui-test-skills-chip.is-ghost {
+  border-color: transparent;
+  background: transparent;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ui-test-root .ui-test-skills-chip.is-ghost:hover {
+  background: var(--ui-soft);
+}
+
+.ui-test-root .ui-test-skills-chip.is-danger {
+  color: var(--ui-danger);
+}
+
+.ui-test-root .ui-test-skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+  gap: 14px;
+}
+
+.ui-test-root .ui-test-skill-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--ui-panel);
+  cursor: pointer;
+  transition: border-color .15s, background .15s, box-shadow .15s, transform .15s;
+}
+
+.ui-test-root .ui-test-skill-card:hover {
+  border-color: color-mix(in srgb, var(--ui-accent) 40%, transparent);
+  background: var(--ui-paper);
+  box-shadow: 0 6px 18px rgba(23, 35, 29, .06);
+  transform: translateY(-2px);
+}
+
+.ui-test-root .ui-test-skill-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ui-test-root .ui-test-skill-card-name {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ui-ink);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ui-test-root .ui-test-skill-card-star {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ui-muted);
+}
+
+.ui-test-root .ui-test-skill-card-star svg {
+  width: 15px;
+  height: 15px;
+}
+
+.ui-test-root .ui-test-skill-card-star:hover {
+  background: var(--ui-soft);
+  color: var(--ui-ink);
+}
+
+.ui-test-root .ui-test-skill-card-star.is-on {
+  color: #d9a441;
+}
+
+.ui-test-root .ui-test-skill-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ui-test-root .ui-test-skill-badge {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ui-ink) 7%, transparent);
+  color: var(--ui-muted);
+  font-size: 0.6875rem;
+  line-height: 1.7;
+}
+
+.ui-test-root .ui-test-skill-badge.is-type {
+  background: var(--ui-soft);
+  color: var(--ui-accent);
+}
+
+.ui-test-root .ui-test-skill-card-desc {
+  display: -webkit-box;
+  min-height: 44px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ui-muted);
+  font-size: 0.78125rem;
+  line-height: 1.75;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.ui-test-root .ui-test-skill-card-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ui-test-root .ui-test-skill-kind {
+  padding: 2px 7px;
+  border: 1px solid var(--ui-line);
+  border-radius: 999px;
+  color: var(--ui-muted);
+  font-size: 0.6875rem;
+}
+
+.ui-test-root .ui-test-skill-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--ui-ink) 8%, transparent);
+}
+
+.ui-test-root .ui-test-skill-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ui-muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.ui-test-root .ui-test-skill-toggle input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--ui-accent);
+}
+
+.ui-test-root .ui-test-skill-card-open {
+  color: var(--ui-accent);
+  font-size: 0.75rem;
+  opacity: 0;
+  transition: opacity .15s;
+}
+
+.ui-test-root .ui-test-skill-card:hover .ui-test-skill-card-open,
+.ui-test-root .ui-test-skill-card:focus-visible .ui-test-skill-card-open {
+  opacity: 1;
+}
+
+.ui-test-root .ui-test-skills-empty {
+  padding: 48px 20px;
+  border: 1px dashed var(--ui-line);
+  border-radius: 12px;
+  color: var(--ui-muted);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+.ui-test-root .ui-test-skills-error {
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--ui-danger) 10%, transparent);
+  color: var(--ui-danger);
+  font-size: 0.8125rem;
+}
+
+.ui-test-root .ui-test-skills-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ui-test-root .ui-test-skills-editor > :is([data-testid="skill-library-view"], [data-testid="writing-skill-library-view"]) {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+.ui-test-root .ui-test-skills-back {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  background: var(--ui-paper);
+  color: var(--ui-muted);
+  font-size: 0.8125rem;
+}
+
+.ui-test-root .ui-test-skills-back:hover {
+  background: var(--ui-soft);
+  color: var(--ui-ink);
+}
+
+.ui-test-root .ui-test-skills-back svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 文风 skill 编辑器：整块铺满窗口的表单。
+   注意别复用 .ui-test-skills-search —— 那条规则带 max-width:420px，会把整列压成窄条。 */
+.ui-test-root .ui-test-style-hint {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-radius: 9px;
+  background: var(--ui-soft);
+  color: var(--ui-muted);
+  font-size: 0.8125rem;
+}
+
+.ui-test-root .ui-test-style-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+
+.ui-test-root .ui-test-style-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.ui-test-root .ui-test-style-field > span {
+  color: var(--ui-muted);
+  font-size: 0.8125rem;
+}
+
+.ui-test-root .ui-test-style-field input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1.5px solid var(--ui-line);
+  border-radius: 9px;
+  background: var(--ui-paper);
+  color: var(--ui-ink);
+  font-size: 0.8125rem;
+}
+
+/* 表单里只留一个「文风内容」多行框，比人物档案（380px）略矮。 */
+.ui-test-root .ui-test-style-field .ui-test-persona-editor {
+  min-height: 240px;
+}
+
+/* 图谱：整块画布；筛选 / 洞察是画布内浮层，不再挤出固定第四列。 */
+.ui-test-root [data-ui-page="graph"] {
+  overflow: hidden;
+}
+
+.ui-test-root [data-ui="graph-workspace"] {
+  position: relative;
+  min-width: 0;
+  isolation: isolate;
+}
+
+.ui-test-root [data-ui="graph-canvas"] {
+  min-width: 0;
+  background: var(--ui-paper);
+}
+
+.ui-test-root [data-ui="graph-filters"],
+.ui-test-root [data-ui="graph-insights"] {
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  border: 1px solid var(--ui-soft);
+  border-radius: 10px;
+  background: var(--ui-panel);
+  box-shadow: none;
+  overscroll-behavior: contain;
+}
+
+.ui-test-root [data-ui="graph-insights"] {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  right: 12px;
+  width: 320px;
+}
+
+/* 搜索：查询与筛选为一组；结果仍使用原有文本 / 图片各自的滚动容器。 */
+.ui-test-root [data-ui-page="search"] {
+  padding-bottom: 20px;
+}
+
+.ui-test-root [data-ui="search-query"] {
+  padding: 0 clamp(20px, 3vw, 38px) 20px;
+  border: 0;
+}
+
+.ui-test-root [data-ui="search-query"] input[type="text"] {
+  min-height: 48px;
+  border: 0;
+  border-radius: 9px;
+  font-size: 1rem;
+}
+
+.ui-test-root [data-ui-page="search"][data-ui-state="results"] > .min-h-0.flex-1 {
+  margin-inline: clamp(20px, 3vw, 38px);
+}
+
+@container (max-width: 760px) {
+  .ui-test-root [data-ui="settings-sidebar"] { display: none; }
+  .ui-test-root [data-ui="settings-mobile-navigation"] {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px 0;
+    color: var(--ui-muted);
+    font-size: 0.8125rem;
+  }
+  .ui-test-root [data-ui="settings-mobile-navigation"] select {
+    min-width: 0;
+    flex: 1;
+    min-height: 36px;
+    padding: 6px 10px;
+    border-radius: 7px;
+  }
+}
+
+@media (max-width: 760px) {
+  .ui-test-root [data-ui="tool-heading"] { padding-top: var(--ui-heading-top); }
+  .ui-test-root [data-ui="settings-scroll"] { padding: var(--ui-heading-top) 20px 22px; }
+  .ui-test-root [data-ui="soul-project-editor"] > div > .grid > div > .overflow-y-auto > button { width: 100%; }
+  .ui-test-root [data-ui="soul-role-content"] main > div > .rounded-lg { padding: 16px; }
+  .ui-test-root [data-ui="soul-role-content"] main > div > .rounded-lg:has(> .mb-4 > h2) { padding: 0; }
+  .ui-test-root [data-ui="memory-snapshot"] { padding: 16px; }
+  .ui-test-root [data-ui="simulation-config"] section > .grid { grid-template-columns: minmax(0, 1fr); }
+  .ui-test-root [data-ui="graph-insights"] { width: min(320px, calc(100% - 24px)); }
+}
+
+/* 选中编辑与启用是两个不同状态；不覆盖 checkbox 对启用状态的表达。 */
+.ui-test-root [data-ui="soul-project-editor"] > div > .grid > div > .overflow-y-auto > button[class*="border-primary/70"] {
+  border-color: var(--ui-accent);
+}
+
+/* 正式版直角风格在 components 层使用 important；护栏只落在这些测试页。 */
+@layer components {
+  .ui-test-root .ui-test-tool-tabs > button,
+  .ui-test-root [data-ui="settings-navigation"] button,
+  .ui-test-root [data-ui="skills-tabs"] button,
+  .ui-test-root [data-ui-page] [role="tab"],
+  .ui-test-root [data-ui-page] [data-slot="button"],
+  .ui-test-root [data-ui-page] .rounded-lg,
+  .ui-test-root [data-ui-page] .rounded-md,
+  .ui-test-root [data-ui-page] :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea) {
+    border-radius: 8px !important;
+  }
+  .ui-test-root [data-ui-page] .rounded-full {
+    border-radius: 999px !important;
+  }
+}
+
+/* 分组底色与输入底色分离，空值也能发现输入位置；错误字段保留原危险状态。 */
+.ui-test-root [data-ui="soul-role-content"] .rounded-md :is(input:not([type="checkbox"]), select, textarea):not([aria-invalid="true"]),
+.ui-test-root [data-ui="soul-role-content"] main > div > .rounded-lg :is(input:not([type="checkbox"]), select, textarea):not([aria-invalid="true"]),
+.ui-test-root [data-ui="settings-section"] .space-y-3.rounded-lg :is(input:not([type="checkbox"]):not([type="range"]), select, textarea):not([aria-invalid="true"]) {
+  background-color: var(--ui-paper);
+  border: 1px solid var(--ui-soft);
+}
+
+/* 模型列表：自定义 / 内置配置分组，原面板仅按显式状态显隐，切换不销毁草稿。 */
+.ui-test-root [data-ui="llm-sources"] > [role="tabpanel"][hidden] {
+  display: none;
+}
+
+.ui-test-root [data-ui="llm-sources"] > .ui-test-tool-tabs {
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.ui-test-root [data-ui="llm-context-notice"] {
+  margin-bottom: 22px;
+  color: var(--ui-muted);
+  font: 0.8125rem/1.8 var(--ui);
+}
+
+.ui-test-root [data-ui="llm-context-notice"] > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  list-style: none;
+  cursor: pointer;
+  color: var(--ui-accent);
+}
+
+.ui-test-root [data-ui="llm-context-notice"] > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ui-test-root [data-ui="llm-context-notice"] > summary > svg {
+  flex-shrink: 0;
+}
+
+.ui-test-root [data-ui="llm-context-notice"] > summary:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 3px;
+}
+
+.ui-test-root [data-ui="llm-context-notice"] .ui-test-notice-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--ui-muted);
+  font-size: 0.75rem;
+}
+
+.ui-test-root [data-ui="llm-context-notice"] > div {
+  padding: 16px 18px;
+  border-radius: 8px;
+  background: var(--ui-panel);
+}
+
+.ui-test-root [data-ui="llm-context-notice"] p {
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
+
+.ui-test-root [data-ui="llm-custom"] > div > .flex {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.ui-test-root [data-ui="llm-custom"] .space-y-2 > .rounded-lg.border,
+.ui-test-root [data-ui="llm-presets"] .space-y-2 > .rounded-lg.border {
+  border-color: transparent;
+  background: var(--ui-panel);
+}
+
+.ui-test-root [data-ui="llm-presets"] .ui-test-provider-note {
+  margin: 0 0 18px;
+  color: var(--ui-muted);
+  font: 0.8125rem/1.8 var(--ui);
+}
+
+/* 外观页：三皮肤始终置顶；旧布局选项只在显式展开的兼容区展示。 */
+.ui-test-root [data-ui="interface-settings"] > section {
+  margin-top: 26px;
+}
+
+.ui-test-root [data-ui="interface-settings"] .ui-test-interface-description,
+.ui-test-root [data-ui="interface-compatibility"] > p:not(.ui-test-interface-label) {
+  margin: 8px 0 0;
+  color: var(--ui-muted);
+  font: 0.8125rem/1.8 var(--ui);
+}
+
+.ui-test-root [data-ui="interface-settings"] .ui-test-interface-label {
+  margin: 0 0 12px;
+  color: var(--ui-ink);
+  font: 500 0.875rem/1.6 var(--ui);
+}
+
+.ui-test-root [data-ui="interface-skins"] {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.ui-test-root [data-ui="interface-skins"] > button {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--ui-panel);
+  color: var(--ui-muted);
+  text-align: left;
+}
+
+.ui-test-root [data-ui="interface-skins"] > button[aria-pressed="true"] {
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+}
+
+.ui-test-root [data-ui="interface-skins"] .ui-test-interface-swatch {
+  display: block;
+  width: 100%;
+  height: 68px;
+  border-radius: 7px;
+}
+
+.ui-test-root [data-ui="interface-skins"] .ui-test-interface-skin-label {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+  font: 0.875rem/1.5 var(--ui);
+}
+
+.ui-test-root [data-ui="interface-skins"] .ui-test-interface-selected {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.75rem;
+}
+
+.ui-test-root [data-ui="interface-skins"] .ui-test-interface-selected svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ui-test-root [data-ui="interface-fields"] {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  margin-top: 28px;
+}
+
+/*
+ * 嵌套时不要再叠一次外边距。
+ *
+ * 为什么会有嵌套：设置页把它自己的字段容器标成 data-ui="interface-fields"，
+ * 而任务 9 引入的共享控件（body-typography-fields）根节点**也必须**带这个属性 ——
+ * 它的 label / p / select / range 样式全靠上面那组后代选择器
+ * （本文件 1858 / 1862 / 1868 / 1886 行），去掉属性那些样式会整块失效。
+ *
+ * 于是同一条规则命中两层。在 flex 容器里，**gap 与子项 margin 是相加的**，
+ * 所以正文那一组上方会变成 26 + 28 = 54px，而同层其它行之间是 26px ——
+ * 大约两倍，看起来像"这里多空了一块"。
+ *
+ * 上面那条 margin-top: 28px 是在"这个块只会出现一次"的前提下写的
+ * （它负责跟皮肤区拉开距离），嵌套出现是任务 9 才有的新情况，
+ * 不是当初的有意设计。所以这里把**内层**的 margin-top 归零：
+ * 内外层之间的间距交回给外层的 gap（26px），与其它行保持一致。
+ */
+.ui-test-root [data-ui="interface-fields"] [data-ui="interface-fields"] {
+  margin-top: 0;
+}
+
+.ui-test-root [data-ui="interface-fields"] .ui-test-interface-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 250px);
+  align-items: start;
+  gap: 24px;
+}
+
+.ui-test-root [data-ui="interface-fields"] label {
+  font: 500 0.875rem/1.6 var(--ui);
+}
+
+.ui-test-root [data-ui="interface-fields"] p {
+  margin: 4px 0 0;
+  color: var(--ui-muted);
+  font: 0.75rem/1.8 var(--ui);
+}
+
+.ui-test-root [data-ui="interface-fields"] select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--ui-panel);
+  color: var(--ui-ink);
+  font: 0.8125rem/1.5 var(--ui);
+}
+
+.ui-test-root [data-ui="interface-fields"] .ui-test-interface-size {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ui-test-root [data-ui="interface-fields"] input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--ui-accent);
+}
+
+/*
+ * 「第三方字体许可」的版权清单默认收起（用户要求：这些不需要显示出来）。
+ *
+ * ⚠ 显著声明那一句（data-ui="prominent-font-notice"）**不在**这个 <details> 里：
+ * 它只在随包字体里**存在非 OFL 字体**时才渲染，而那种字体的许可要求该声明
+ * 出现在软件界面上（`make a prominent notice in the software`）——
+ * 折进默认收起的 <details> 就等于"用户看不到"，那条义务不再满足。
+ * 当前随包字体全部为 OFL-1.1，故该句不渲染；机制保留，等日后引入非 OFL 字体时生效。
+ * 理由与数据来源见 interface-section.tsx 的 BundledFontLicenses 注释。
+ */
+.ui-test-root [data-ui="bundled-font-license-details"] > summary {
+  display: list-item;
+  cursor: pointer;
+  color: var(--ui-muted);
+  font: 500 0.875rem/1.6 var(--ui);
+}
+
+.ui-test-root [data-ui="bundled-font-license-details"] > summary:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 3px;
+}
+
+/* 展开后的清单缩进一级，读起来才像"挂在标题下面"而不是又一段正文 */
+.ui-test-root [data-ui="bundled-font-license-details"] > *:not(summary) {
+  margin-left: 14px;
+}
+
+.ui-test-root [data-ui="interface-compatibility"] {
+  margin-top: 32px;
+  border-top: 1px solid var(--ui-soft);
+  padding-top: 20px;
+}
+
+.ui-test-root [data-ui="interface-compatibility"] > summary {
+  display: list-item;
+  cursor: pointer;
+  color: var(--ui-ink);
+  font: 500 0.875rem/1.6 var(--ui);
+}
+
+.ui-test-root [data-ui="interface-compatibility"] > summary:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 3px;
+}
+
+.ui-test-root [data-ui="interface-compatibility"] .ui-test-interface-compatibility-hint {
+  margin-left: 12px;
+  color: var(--ui-muted);
+  font: 0.75rem/1.6 var(--ui);
+}
+
+.ui-test-root [data-ui="interface-compatibility"] .ui-test-interface-legacy-styles,
+.ui-test-root [data-ui="interface-compatibility"] .ui-test-interface-legacy-nav {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 12px;
+  margin: 18px 0 24px;
+}
+
+.ui-test-root [data-ui="interface-compatibility"] [data-ui-legacy-style] {
+  padding: 12px;
+  border: 1px solid var(--ui-soft);
+  border-radius: 8px;
+  background: var(--ui-panel);
+  color: var(--ui-ink);
+  text-align: left;
+  font: 0.8125rem/1.6 var(--ui);
+}
+
+.ui-test-root [data-ui="interface-compatibility"] [data-ui-legacy-style][aria-pressed="true"] {
+  border-color: var(--ui-accent);
+  background: var(--ui-soft);
+}
+
+.ui-test-root [data-ui="interface-compatibility"] small {
+  display: block;
+  margin-top: 5px;
+  color: var(--ui-muted);
+  font: 0.75rem/1.7 var(--ui);
+}
+
+.ui-test-root [data-ui="interface-compatibility"] .ui-test-interface-legacy-colors {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.ui-test-root [data-ui="interface-compatibility"] .ui-test-interface-legacy-colors > span {
+  flex: 1;
+  height: 18px;
+  border-radius: 4px;
+}
+
+.ui-test-root [data-ui="interface-compatibility"] .ui-test-interface-legacy-nav > label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  background: var(--ui-panel);
+  border-radius: 7px;
+  font: 0.8125rem/1.5 var(--ui);
+}
+
+@media (max-width: 640px) {
+  .ui-test-root [data-ui="interface-skins"] { gap: 8px; }
+  .ui-test-root [data-ui="interface-skins"] > button { padding: 8px; }
+  .ui-test-root [data-ui="interface-skins"] .ui-test-interface-swatch { height: 48px; }
+  .ui-test-root [data-ui="interface-fields"] .ui-test-interface-row { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .ui-test-root [data-ui="interface-compatibility"] .ui-test-interface-compatibility-hint { display: block; margin-left: 0; }
+}
+
+/* 人物 Skill：绿勾 = 重要人物（D6）；勾选状态必须是「绿 + 对号」两重编码，不只靠颜色。 */
+.ui-test-root .ui-test-persona-pin {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1.5px solid color-mix(in srgb, var(--ui-ink) 22%, transparent);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ui-test-root .ui-test-persona-pin:hover {
+  border-color: #3f8f5a;
+}
+
+.ui-test-root .ui-test-persona-pin::after {
+  content: "";
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+  transform: rotate(-45deg);
+}
+
+.ui-test-root .ui-test-persona-pin.is-on {
+  border-color: #3f8f5a;
+  background: #3f8f5a;
+}
+
+.ui-test-root .ui-test-persona-pin.is-on::after {
+  border-left-color: #fff;
+  border-bottom-color: #fff;
+}
+
+.ui-test-root .ui-test-persona-editor {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 380px;
+  margin-top: 14px;
+  padding: 16px;
+  resize: vertical;
+  border: 1.5px solid var(--ui-line);
+  border-radius: 10px;
+  background: var(--ui-paper);
+  color: var(--ui-ink);
+  font: 0.875rem/1.85 var(--ui);
+}
+
+.ui-test-root .ui-test-persona-research {
+  width: 100%;
+  margin-top: 16px;
+  color: var(--ui-ink);
+}
+
+.ui-test-root .ui-test-persona-research pre {
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ui-ink) 5%, transparent);
+  white-space: pre-wrap;
+}

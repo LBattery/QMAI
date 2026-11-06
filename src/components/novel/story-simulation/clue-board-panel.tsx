@@ -199,7 +199,7 @@ export function ClueBoardPanel({ agents, rumors }: ClueBoardPanelProps) {
                 }`}
               >
                 <span>{agent.name}</span>
-                <span className={`ml-1.5 rounded px-1.5 py-0.5 text-[10px] ${
+                <span className={`ml-1.5 rounded px-1.5 py-0.5 text-[0.625rem] ${
                   isActive
                     ? "bg-primary-foreground/20 text-primary-foreground"
                     : "bg-muted text-muted-foreground"
@@ -211,7 +211,7 @@ export function ClueBoardPanel({ agents, rumors }: ClueBoardPanelProps) {
           })}
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-3 text-[0.6875rem] text-muted-foreground">
           <span className="flex items-center gap-1">
             <span className="text-sm">🟢</span>
             <span>亲眼所见</span>
@@ -253,10 +253,10 @@ export function ClueBoardPanel({ agents, rumors }: ClueBoardPanelProps) {
                 } ${getTypeColor(clue.type)}`}
               >
                 <div className="mb-1 flex items-center justify-between gap-1">
-                  <span className="text-[10px] font-medium">
+                  <span className="text-[0.625rem] font-medium">
                     {getTypeIcon(clue.type)} {getTypeLabel(clue.type)}
                   </span>
-                  <span className="text-[10px] text-muted-foreground">
+                  <span className="text-[0.625rem] text-muted-foreground">
                     R{clue.round + 1}
                   </span>
                 </div>
@@ -277,14 +277,14 @@ export function ClueBoardPanel({ agents, rumors }: ClueBoardPanelProps) {
               <span className="text-sm font-medium">
                 {getTypeLabel(selectedClue.type)}
               </span>
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-[0.6875rem] text-muted-foreground">
                 · {selectedClue.source}
               </span>
             </div>
             <button
               type="button"
               onClick={() => setSelectedClueId(null)}
-              className="text-[11px] text-muted-foreground hover:text-foreground"
+              className="text-[0.6875rem] text-muted-foreground hover:text-foreground"
             >
               收起
             </button>
@@ -295,7 +295,7 @@ export function ClueBoardPanel({ agents, rumors }: ClueBoardPanelProps) {
 
           {relatedClues.length > 0 && (
             <div>
-              <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium">
+              <div className="mb-1.5 flex items-center gap-1 text-[0.6875rem] font-medium">
                 <Link2 className="h-3 w-3" />
                 <span>关联线索</span>
               </div>
@@ -311,7 +311,7 @@ export function ClueBoardPanel({ agents, rumors }: ClueBoardPanelProps) {
                   >
                     <span className="text-sm">{getTypeIcon(clue.type)}</span>
                     <span className="line-clamp-2 flex-1">{clue.content}</span>
-                    <span className="shrink-0 text-[10px] font-medium text-muted-foreground">
+                    <span className="shrink-0 text-[0.625rem] font-medium text-muted-foreground">
                       {(similarity * 100).toFixed(0)}%
                     </span>
                   </button>

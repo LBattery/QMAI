@@ -1,6 +1,6 @@
 import { normalizePath } from "@/lib/path-utils"
 
-export interface DefaultOutlineFolder {
+interface DefaultOutlineFolder {
   id: string
   name: string
 }
@@ -9,6 +9,12 @@ export const DEFAULT_OUTLINE_FOLDERS: DefaultOutlineFolder[] = [
   { id: "story", name: "大纲" },
   { id: "volume", name: "卷纲" },
   { id: "chapter", name: "章纲" },
+  // 与 outline-save-classifier 的 FILE_TYPE_FOLDERS 对齐，供 list_outlines 等
+  // 「AI 面向清单」标注用。注意丙-1 之后事件细纲**不再落盘**，所以它既不是可写目标
+  // （计划模式的规则串在 buildOutlinePlanPhaseSystemRules 里单独把它滤掉），
+  // 也不是章纲上下文的一部分 —— 隔离保证靠 outline-context-index 的
+  // STANDARD_FOLDER_KINDS，那是另一个独立常量，本数组不参与推导。
+  { id: "event-outline", name: "事件细纲" },
   { id: "characters", name: "人物小传" },
   { id: "settings", name: "设定" },
   { id: "foreshadowing", name: "伏笔" },
@@ -24,14 +30,6 @@ export const DEFAULT_OUTLINE_FOLDER_PATHS = [
   "设定/状态",
 ] as const
 
-export const DEFAULT_SETTING_FOLDER_NAMES = [
-  "角色",
-  "世界观",
-  "势力",
-  "地图",
-  "状态",
-] as const
-
 export const LEGACY_OUTLINE_FOLDER_MIGRATIONS = [
   { from: "大纲文件夹", to: "大纲" },
   { from: "卷纲文件夹", to: "卷纲" },
@@ -42,7 +40,7 @@ export const LEGACY_OUTLINE_FOLDER_MIGRATIONS = [
   { from: "组织文件夹", to: "组织" },
 ] as const
 
-export type OutlineSaveType =
+type OutlineSaveType =
   | "story-outline"
   | "volume-outline"
   | "chapter-outline"
@@ -51,30 +49,22 @@ export type OutlineSaveType =
   | "foreshadowing-plan"
   | "organization-outline"
 
-export interface OutlineSaveTarget {
+interface OutlineSaveTarget {
   folderName: string
   fileName: string
   outlineType: OutlineSaveType
 }
 
-export interface OutlineFileMoveInput {
+interface OutlineFileMoveInput {
   outlineRoot: string
   sourcePath: string
   targetFolderPath: string
   targetExists: boolean
 }
 
-export type OutlineFileMovePlan =
+type OutlineFileMovePlan =
   | { ok: true; targetPath: string }
   | { ok: false; error: string }
-
-export function getOutlineRoot(projectPath: string): string {
-  return `${normalizePath(projectPath)}/wiki/outlines`
-}
-
-export function getDefaultOutlineFolderPath(projectPath: string, folderName: string): string {
-  return `${getOutlineRoot(projectPath)}/${folderName}`
-}
 
 function normalizeComparablePath(path: string): string {
   return normalizePath(path).replace(/\/+$/, "")

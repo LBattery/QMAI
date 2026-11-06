@@ -1,5 +1,7 @@
 # === 构建产物 ===
 dist/
+dist-uitest/
+dist-default/
 release-portable/
 release-portable-*/
 release-portable-backup/
@@ -24,46 +26,18 @@ yarn-error.log*
 # === 更新日志（仅本地）===
 /GenxinLOG/
 
-# === 测试文件 ===
-tests/
-src/test-helpers/*
-!src/test-helpers/
-!src/test-helpers/load-test-env.ts
-!src/test-helpers/fs-temp.ts
-**/*.test.ts
-**/*.test.tsx
-!src/lib/chat-copy-content.test.ts
-!src/lib/chapter-formatting.test.ts
-!src/lib/dashboard-issue-actions.test.ts
-!src/lib/tauri-fetch.test.ts
-!src/lib/novel/start-review-run.test.ts
-!src/lib/web-fs.spec.ts
-!src/lib/graph-relevance.spec.ts
-!src/lib/chat-request-budget.test.ts
-!src/lib/context-budget.test.ts
-!src/lib/ingest.prompt.test.ts
-!src/components/layout/chat-layout.test.ts
-!src/i18n/i18n-parity.test.ts
-!src/lib/hardcoded-ui-chinese-i18n.test.ts
-!src/lib/project-store.integration.test.ts
+# === 测试源码 ===
+# 测试与 test helpers 必须纳入版本控制，不在此忽略。
 
 # === 根目录文档（仅本地保留）===
-/docs/
-/AGENTS.md
 /PDD.MD
 /QM-QUAI.md
 /soul.md
 /ter
 /_fix_encoding.py
-CLAUDE.md
 de-ai-skill.md
 
 # === 中文命名文档/临时文件 ===
-提示词.md
-项目完成度分析报告.md
-soul文档软件更新分析.md
-jueseyizhixing分支说明.md
-xinjiangongzuohuihua.md
 diff_chapter.txt
 qmai-backup-*.zip
 QMaiWrite_*.zip
@@ -73,10 +47,13 @@ QMaiWrite_*.zip
 reasonix.toml
 QMdelete/
 tokenyouhua/
-De-AI-Prompt-Enhancer-Writer-Booster-SKILL-main/
-De-AI-Prompt-Enhancer-Writer-Booster-SKILL-main.zip
-.claude/
 .codegraph/
+
+# === 字体调研原始素材（仅本地保留，勿提交）===
+# 148 个文件 / 约 222MB：抓取到的许可全文、PDF 抽取文本、各字体发行包。
+# 调研**结论**已落在 docs/font-license-due-diligence.md（阶段 3/4 的输入），
+# 原始素材体积过大不适合进版本库，但阶段 3/4 还要用，故只忽略、不删除。
+.font-research/
 
 # === IDE / 工具临时文件 ===
 .worktrees/
@@ -88,13 +65,17 @@ De-AI-Prompt-Enhancer-Writer-Booster-SKILL-main.zip
 .trae/
 .vscode/
 /.zed/
+# Agent 工具的工作目录（会反复自动重建，不进版本库）
+.claude/worktrees/
+.workbuddy/
 
-# === 杂项 ===
-/1.txt
-/nul
-/xiufuzonghebug-分支说明.md
-/zed-design-standard.html
 
 # === 开发调试产物（勿提交根目录）===
 /test-mocks-*-report.json
 typecheck-output.txt
+.dsh-vision-router/
+.tmp-outline-*.tsx
+/1.txt
+
+# Web 验证与上游同步临时产物
+/cache-temp/

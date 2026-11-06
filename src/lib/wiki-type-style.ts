@@ -11,7 +11,7 @@ import {
   Hash,
 } from "lucide-react"
 
-export interface WikiTypeStyle {
+interface WikiTypeStyle {
   /** Display label for chips and tooltips. Capitalized. */
   label: string
   /** Lucide icon component for the type. */
@@ -28,6 +28,7 @@ export interface WikiTypeStyle {
   dotClass: string
 }
 
+// 供测试直接钉住表内容与 fallback（2026-08-24 的 `01aab5f` 误摘过这两个 export）。
 export const WIKI_TYPE_STYLES: Record<string, WikiTypeStyle> = {
   entity: {
     label: "Entity",

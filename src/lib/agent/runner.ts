@@ -1,7 +1,7 @@
-import { isOutputTruncatedError, streamChat } from "../llm-client"
+import { streamChat } from "../llm-client"
 import type { StreamCallbacks } from "../llm-client"
-import { isFunctionCallingEnabled, providerUsesTextToolCalls } from "./config"
-import { accumulateToolCalls, parseTextToolCalls } from "./tool-call-parser"
+import { isFunctionCallingEnabled } from "./config"
+import { accumulateToolCalls } from "./tool-call-parser"
 import { toOpenAITools } from "./tools-schema"
 import type { ToolRegistry } from "./registry"
 import type { AgentConfig, AgentMessage, AgentRunCallbacks, AgentRunRecord, ToolCall, ToolCallDelta } from "./types"
@@ -26,9 +26,14 @@ import {
   buildRequiredToolNudgeMessage,
   missingRequiredToolsOnce,
 } from "./required-tools-gate"
-import { executeAgentTool } from "./tool-executor"
+import { executeAgentTool, rejectAgentToolCall } from "./tool-executor"
+import {
+  executeRequiredToolFallback,
+  isRequiredToolExecutionFulfilled,
+} from "./required-tool-fallback"
 import { CodexAppServerRunner } from "./codex-app-server-runner"
 import { withWritingWakeLock } from "../writing-wake-lock"
+import { buildAgentRequestMessages } from "./cache-aware-messages"
 
 export class ModelDoesNotSupportToolsError extends Error {
   constructor() {
@@ -71,6 +76,7 @@ export class AgentRunner {
       requestTraceCollector.record(trace)
       const snapshot = requestTraceCollector.snapshot()
       record.requestTraces = snapshot.requests
+      record.requestUsageTotals = snapshot.usageTotals
       record.omittedRequestTraceCount = snapshot.omittedRequestCount
       callbacks.onRequestTrace?.(trace)
     }
@@ -83,6 +89,23 @@ export class AgentRunner {
       messageContentText([...messages].reverse().find((m) => m.role === "user")?.content ?? "") ||
       "未命名任务"
     const taskContract = `## 任务契约\n初始任务目标：${taskGoal.slice(0, 1800)}\n执行过程中不得因历史裁剪丢失该目标；当前用户新要求优先。`
+    const requiredTools = [...new Set((config.requiredToolsOnce ?? []).filter((name) => name.trim()))]
+    const satisfiedRequiredTools = new Set<string>()
+    let fallbackConvergenceChecked = false
+    if (requiredTools.length > 0) {
+      record.requiredToolDiagnostics = {
+        requiredTools,
+        satisfiedTools: [],
+        missingTools: [...requiredTools],
+        fallbackAttempted: false,
+        provider: config.llmConfig.provider,
+        model: config.modelId?.trim() || config.llmConfig.model,
+        reasoningMode: config.requestOverrides?.reasoning?.mode ?? config.llmConfig.reasoning?.mode ?? "auto",
+        roundsUsed: 0,
+        finishReasons: [],
+        observedToolCalls: [],
+      }
+    }
     const contractInsertIndex = workingMessages.findIndex((message) => message.role !== "system")
     workingMessages.splice(contractInsertIndex < 0 ? workingMessages.length : contractInsertIndex, 0, {
       role: "system",
@@ -114,12 +137,82 @@ export class AgentRunner {
       }
     }
 
+    const refreshRequiredToolDiagnostics = () => {
+      const diagnostics = record.requiredToolDiagnostics
+      if (!diagnostics) return
+      diagnostics.satisfiedTools = [...satisfiedRequiredTools]
+      diagnostics.missingTools = requiredTools.filter((name) => !satisfiedRequiredTools.has(name))
+    }
+
+    const missingRequiredTools = () => missingRequiredToolsOnce({
+      requiredToolsOnce: requiredTools,
+      availableToolNames: config.tools.map((tool) => tool.name),
+      calledToolNames: satisfiedRequiredTools,
+      toolsEnabled: config.tools.length > 0,
+    })
+
+    const attemptRequiredToolFallback = async (): Promise<"success" | "error" | "unavailable"> => {
+      if (fallbackConvergenceChecked) return "unavailable"
+      fallbackConvergenceChecked = true
+      const missing = missingRequiredTools()
+      refreshRequiredToolDiagnostics()
+      if (missing.length === 0) return "success"
+
+      const fallback = await executeRequiredToolFallback({
+        missingTools: missing,
+        taskGoal,
+        registry,
+        callbacks: { ...callbacks, onRequestTrace },
+        record,
+        signal,
+      })
+      const diagnostics = record.requiredToolDiagnostics
+      if (!fallback.attempted) {
+        if (diagnostics) diagnostics.fallbackStatus = "unavailable"
+        return "unavailable"
+      }
+      if (diagnostics) {
+        diagnostics.fallbackAttempted = true
+        diagnostics.fallbackTool = fallback.toolName
+      }
+      if (fallback.error) {
+        if (diagnostics) {
+          diagnostics.fallbackStatus = "error"
+          diagnostics.fallbackError = fallback.error.message
+        }
+        refreshRequiredToolDiagnostics()
+        await clearPersistedBreakpoint()
+        callbacks.onError(fallback.error)
+        return "error"
+      }
+
+      fallback.satisfiedTools.forEach((name) => satisfiedRequiredTools.add(name))
+      refreshRequiredToolDiagnostics()
+      if (diagnostics) diagnostics.fallbackStatus = "success"
+      if (fallback.finalContent) {
+        finalText = fallback.finalContent
+        record.finalText = finalText
+        await clearPersistedBreakpoint()
+        callbacks.onDone()
+        return "success"
+      }
+      return missingRequiredTools().length === 0 ? "success" : "unavailable"
+    }
+
     if (taskBreakpoint) {
       await persistTaskBreakpoint()
     }
 
+    if (config.forceRequiredToolsImmediately && requiredTools.length > 0) {
+      const outcome = await attemptRequiredToolFallback()
+      if (outcome === "success" || outcome === "error") return record
+    }
+
     for (let round = 0; round < maxRounds; round++) {
       record.roundsUsed = round + 1
+      if (record.requiredToolDiagnostics) {
+        record.requiredToolDiagnostics.roundsUsed = record.roundsUsed
+      }
 
       if (signal?.aborted) {
         for (const tc of record.toolCalls) {
@@ -155,6 +248,27 @@ export class AgentRunner {
         },
         onToolCallDelta: (delta: ToolCallDelta) => {
           toolCallDeltas.push(delta)
+          const diagnostics = record.requiredToolDiagnostics
+          if (diagnostics) {
+            const existing = diagnostics.observedToolCalls.find(
+              (item) => item.round === round + 1 && item.index === delta.index,
+            )
+            if (existing) {
+              if (delta.name) existing.name = delta.name
+            } else {
+              diagnostics.observedToolCalls.push({
+                round: round + 1,
+                index: delta.index,
+                ...(delta.name ? { name: delta.name } : {}),
+              })
+            }
+          }
+        },
+        onFinishReason: (reason: string) => {
+          const finishReasons = record.requiredToolDiagnostics?.finishReasons
+          if (finishReasons && finishReasons[finishReasons.length - 1] !== reason) {
+            finishReasons.push(reason)
+          }
         },
         onUsage: (usage) => {
           roundUsage = mergeLlmUsageSnapshot(roundUsage, usage)
@@ -212,7 +326,7 @@ export class AgentRunner {
         workingMessages.splice(0, workingMessages.length, ...compacted)
         await streamChat(
           config.llmConfig,
-          workingMessages as ChatMessage[],
+          buildAgentRequestMessages(workingMessages as ChatMessage[], taskContract),
           streamCallbacks,
           signal,
           requestOverrides,
@@ -232,31 +346,33 @@ export class AgentRunner {
       try {
         await streamRound()
       } catch (err) {
-        if (openaiTools && isToolUnsupportedError(err)) {
+        if (!signal?.aborted && openaiTools && isToolUnsupportedError(err)) {
           try {
             await retryWithoutTools()
-          } catch {
-            return failToolsUnsupported()
+          } catch (retryError) {
+            streamError = retryError instanceof Error ? retryError : new Error(String(retryError))
           }
         } else {
-          callbacks.onError(err instanceof Error ? err : new Error(String(err)))
-          return record
+          // 与 onError 回调统一收尾，直接抛出的读取错误也不能丢掉 roundText。
+          streamError = err instanceof Error ? err : new Error(String(err))
         }
       }
 
       if (
+        !signal?.aborted &&
         streamError &&
         openaiTools &&
         isToolUnsupportedError(streamError)
       ) {
         try {
           await retryWithoutTools()
-        } catch {
-          return failToolsUnsupported()
+        } catch (retryError) {
+          streamError = retryError instanceof Error ? retryError : new Error(String(retryError))
         }
       }
 
       if (
+        !signal?.aborted &&
         streamError &&
         isReasoningOnlyResponseError(streamError) &&
         !isReasoningDisabled(config.llmConfig, requestOverrides)
@@ -270,10 +386,12 @@ export class AgentRunner {
         try {
           await streamRound()
         } catch (err) {
-          callbacks.onError(err instanceof Error ? err : new Error(String(err)))
-          return record
+          streamError = err instanceof Error ? err : new Error(String(err))
         }
       }
+
+      // 部分传输实现将主动取消回调为 onDone，仍必须按取消而非生成成功处理。
+      if (signal?.aborted) streamError = new Error("操作已取消")
 
       if (roundUsage) {
         record.lastRequestUsage = { ...roundUsage }
@@ -281,16 +399,16 @@ export class AgentRunner {
       }
 
       if (streamError) {
-        if (attemptedToolsFallback) {
+        if (attemptedToolsFallback && isToolUnsupportedError(streamError)) {
           return failToolsUnsupported()
         }
-        // Token-limit truncation: keep the partial round text so callers
-        // can show it and offer continuation, instead of dropping the
-        // whole round on the floor.
+        // 正文只在本轮没有工具调用时交给上层；网络断流/抛错/取消与长度截断
+        // 一样需要保留已收到的文本。仍调用 onError，绝不变成成功或执行半截工具。
         if (
-          isOutputTruncatedError(streamError) &&
           toolCallDeltas.length === 0 &&
-          roundText.trim()
+          roundText.trim() &&
+          !isReasoningOnlyResponseError(streamError) &&
+          !isToolUnsupportedError(streamError)
         ) {
           finalText = roundText
           record.finalText = finalText
@@ -300,31 +418,19 @@ export class AgentRunner {
         return record
       }
 
-      // Check for tool calls (native deltas, or text JSON for cursor-cli bridge)
-      let toolCalls = accumulateToolCalls(toolCallDeltas)
-      if (
-        toolCalls.length === 0 &&
-        openaiTools &&
-        providerUsesTextToolCalls(config.llmConfig.provider)
-      ) {
-        const parsed = parseTextToolCalls(
-          roundText,
-          new Set(config.tools.map((tool) => tool.name)),
-        )
-        if (parsed.toolCalls.length > 0) {
-          toolCalls = parsed.toolCalls
-          roundText = parsed.residualText
-        }
-      }
+      const toolCalls = accumulateToolCalls(toolCallDeltas)
 
       if (toolCalls.length === 0) {
         const missingRequired = missingRequiredToolsOnce({
-          requiredToolsOnce: config.requiredToolsOnce,
+          requiredToolsOnce: requiredTools,
           availableToolNames: config.tools.map((tool) => tool.name),
-          calledToolNames: record.toolCalls.map((call) => call.name),
+          calledToolNames: satisfiedRequiredTools,
           toolsEnabled: Boolean(openaiTools),
         })
+        refreshRequiredToolDiagnostics()
         if (missingRequired.length > 0) {
+          const fallbackOutcome = await attemptRequiredToolFallback()
+          if (fallbackOutcome === "success" || fallbackOutcome === "error") return record
           if (roundText.trim() || roundReasoningContent.trim()) {
             workingMessages.push({
               role: "assistant",
@@ -388,22 +494,41 @@ export class AgentRunner {
           await persistTaskBreakpoint()
         }
 
-        const params = (() => {
-          try { return JSON.parse(tc.function.arguments || "{}") }
-          catch { return {} }
-        })()
-        const executed = await executeAgentTool(
-          { id: tc.id, name: toolName, arguments: params } satisfies ToolCall,
-          registry,
-          { ...callbacks, onRequestTrace },
-          signal,
-        )
+        let params: Record<string, unknown> = {}
+        let argumentError = ""
+        try {
+          const parsed = JSON.parse(tc.function.arguments || "{}")
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            argumentError = "工具参数必须是 JSON 对象"
+          } else {
+            params = parsed as Record<string, unknown>
+          }
+        } catch (error) {
+          argumentError = `工具参数不是合法 JSON：${error instanceof Error ? error.message : String(error)}`
+        }
+        const executed = argumentError
+          ? rejectAgentToolCall(
+              { id: tc.id, name: toolName },
+              `错误: ${argumentError}`,
+              callbacks,
+            )
+          : await executeAgentTool(
+              { id: tc.id, name: toolName, arguments: params } satisfies ToolCall,
+              registry,
+              { ...callbacks, onRequestTrace },
+              signal,
+            )
         record.toolCalls.push(executed.record)
         await saveToolProgress()
+        const registeredTool = registry.get(toolName)
+        if (isRequiredToolExecutionFulfilled(registeredTool, executed)) {
+          satisfiedRequiredTools.add(toolName)
+          refreshRequiredToolDiagnostics()
+        }
         if (
-          executed.success &&
+          executed.record.status === "done" &&
           executed.finalContent?.trim() &&
-          registry.get(toolName)?.finalizesRun
+          registeredTool?.finalizesRun
         ) {
           deliveredFinalContent = executed.finalContent.trim()
         }
@@ -445,6 +570,15 @@ export class AgentRunner {
     }
 
     // Exceeded max rounds
+    const missingAtLimit = missingRequiredTools()
+    refreshRequiredToolDiagnostics()
+    if (missingAtLimit.length > 0) {
+      const fallbackOutcome = await attemptRequiredToolFallback()
+      if (fallbackOutcome === "success" || fallbackOutcome === "error") return record
+      await clearPersistedBreakpoint()
+      callbacks.onError(new RequiredToolsNotCalledError(missingAtLimit))
+      return record
+    }
     callbacks.onError(new Error(`Agent 已达到最大调用轮次（${maxRounds}），请尝试减少引用内容或拆分任务`))
     return record
   }

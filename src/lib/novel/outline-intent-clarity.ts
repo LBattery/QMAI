@@ -1,3 +1,11 @@
+import { stripOutlineDiscussMarkers } from "./outline-discuss-protocol"
+import { stripChapterDiscussMarkers } from "./chapter-discuss-protocol"
+import { stripOutlinePlanMarkers } from "./outline-plan-protocol"
+import {
+  scanMarkedJsonPayload,
+  type MarkedJsonInvalidReason,
+} from "./discuss-protocol-shared"
+
 export type IntentClarity = "clear" | "needs_input"
 
 export interface IntentClarityOption {
@@ -22,7 +30,7 @@ export type IntentClarityParseOutcome =
   | { kind: "valid"; result: IntentClarityResult }
   | { kind: "invalid"; error: string }
 
-export interface DirectOutlineGenerationRequest {
+interface DirectOutlineGenerationRequest {
   module: string
 }
 
@@ -42,41 +50,6 @@ const OUTLINE_GENERATION_TARGETS: Array<{ pattern: RegExp; module: string }> = [
   { pattern: /大纲质量/, module: "大纲质量检查" },
   { pattern: /故事大纲|总纲|(?:^|[^章节卷])大纲/, module: "故事大纲" },
 ]
-
-function extractCompleteJsonObject(text: string): { json: string; remainder: string } | null {
-  const start = text.indexOf("{")
-  if (start < 0) return null
-  let depth = 0
-  let inString = false
-  let escaped = false
-  for (let index = start; index < text.length; index += 1) {
-    const character = text[index]
-    if (inString) {
-      if (escaped) {
-        escaped = false
-      } else if (character === "\\") {
-        escaped = true
-      } else if (character === '"') {
-        inString = false
-      }
-      continue
-    }
-    if (character === '"') {
-      inString = true
-    } else if (character === "{") {
-      depth += 1
-    } else if (character === "}") {
-      depth -= 1
-      if (depth === 0) {
-        return {
-          json: text.slice(start, index + 1),
-          remainder: text.slice(index + 1),
-        }
-      }
-    }
-  }
-  return null
-}
 
 function inferModule(raw: Record<string, unknown>): string {
   const explicitModule = String(raw.module ?? "").trim()
@@ -106,37 +79,33 @@ export function parseIntentClarity(text: string): IntentClarityResult | null {
   return outcome.kind === "valid" ? outcome.result : null
 }
 
+function intentScanError(reason: MarkedJsonInvalidReason): string {
+  switch (reason) {
+    case "missing_payload":
+      return "意图分析 JSON 不完整或缺失"
+    case "unparseable":
+      return "意图分析 JSON 无法解析"
+    case "not_object":
+      return "意图分析结果必须是 JSON 对象"
+  }
+}
+
 export function parseIntentClarityProtocol(text: string): IntentClarityParseOutcome {
   const openMatch = INTENT_OPEN_PATTERN.exec(text)
   if (!openMatch) return { kind: "none" }
 
-  const payloadStart = openMatch.index + openMatch[0].length
-  const afterOpen = text.slice(payloadStart)
-  const closeMatch = INTENT_CLOSE_PATTERN.exec(afterOpen)
-  const hasClosingMarker = Boolean(closeMatch)
-  const unclosedPayload = hasClosingMarker ? null : extractCompleteJsonObject(afterOpen)
-  const payloadText = hasClosingMarker
-    ? afterOpen.slice(0, closeMatch!.index).trim()
-    : unclosedPayload?.json
-  if (!payloadText) {
-    return { kind: "invalid", error: "意图分析 JSON 不完整或缺失" }
-  }
-  if (!hasClosingMarker && unclosedPayload?.remainder.trim()) {
-    return { kind: "invalid", error: "意图分析缺少闭合标记且 JSON 后仍有额外内容" }
-  }
+  const afterOpen = text.slice(openMatch.index + openMatch[0].length)
+  const hasClosingMarker = Boolean(INTENT_CLOSE_PATTERN.exec(afterOpen))
+  const scan = scanMarkedJsonPayload(
+    text,
+    INTENT_OPEN_PATTERN,
+    INTENT_CLOSE_PATTERN,
+    ["clarity", "status"],
+  )
+  if (scan.kind === "invalid") return { kind: "invalid", error: intentScanError(scan.reason) }
+  if (scan.kind !== "payload") return { kind: "none" }
 
-  let payload: unknown
-  try {
-    payload = JSON.parse(payloadText)
-  } catch {
-    return { kind: "invalid", error: "意图分析 JSON 无法解析" }
-  }
-
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { kind: "invalid", error: "意图分析结果必须是 JSON 对象" }
-  }
-
-  const raw = payload as Record<string, unknown>
+  const raw = scan.payload
   const usedLegacyStatus = raw.clarity == null && raw.status != null
   const clarity = String(raw.clarity ?? raw.status ?? "")
   if (clarity !== "clear" && clarity !== "needs_input") {
@@ -198,21 +167,24 @@ export function buildIntentAnalysisPrompt(title: string, requestHint: string): s
     "- 若范围明确且缺失项清晰 → clear",
     "- 若卷范围不明确 → needs_input",
     "",
-    "## needs_input 时的推荐选项策略",
-    "必须提供4类选项：",
-    "A. 全部缺失项生成（如「生成前面缺失的细纲」）",
-    "B. 基于已有内容推断（如「根据已有章节内容分析后生成后续细纲」）",
-    "C. 最近范围生成（如「生成最近5-10章的细纲」）",
-    "D. 自定义（由用户描述要生成的内容范围或故事方向）",
+    "## needs_input 时的 options 要求（最容易出错，必须照做）",
+    "options 必须是**具体的、能直接执行的范围对象**，取自你刚刚读到的资料，而不是抽象的生成策略。",
+    "- 例：卷纲模块缺第二至第十卷 → options 直接列出「第二卷 归墟寄魂」「第三卷 记忆深渊」……每个卷次一项。",
+    "- 例：章节细纲缺第 1-35 章 → options 列出「第1-5章」「第6-10章」这类具体区间。",
+    "- label 用用户一眼能选的具体对象名；description 用一句话说明现状与依据（读的是哪份资料、该对象现在是什么状态）。",
+    "- 最多给 6 个，按推荐优先级排序。",
+    "- 不要把候选塞进 missingItems 而把 options 留空：options 为空视为格式错误。",
+    "- 不要把「自定义」放进 options，系统会自动在末尾追加。",
+    "- 严禁输出「全部缺失项生成」「基于已有内容推断」「最近范围生成」这类抽象策略项。",
     "",
     "## 输出格式（必须严格遵守）",
     "<!-- intent_clarity -->",
-    '{"clarity":"clear|needs_input","module":"模块名","analysis":"判断依据","detectedScope":"明确范围","missingItems":[],"options":[],"question":""}',
+    '{"clarity":"clear|needs_input","module":"模块名","analysis":"判断依据","detectedScope":"明确范围","missingItems":[],"options":[{"id":"A","label":"具体范围","description":"现状与依据"}],"question":""}',
     "<!-- /intent_clarity -->",
     "开闭标记必须成对出现；字段名必须使用 clarity，禁止使用 status。JSON 必须完整且可解析。",
     "",
     "clear 时：只输出上述 JSON，不生成正文。",
-    "needs_input 时：只输出上述 JSON，在 question 和 options 中提供澄清问题与推荐选项。",
+    "needs_input 时：只输出上述 JSON，question 问清楚要哪一个，options 列出具体候选。",
   ].join("\n")
 }
 
@@ -224,9 +196,11 @@ export function buildIntentPhaseSystemRules(
       "## 本轮阶段：意图分析",
       "本轮只判断生成范围，不生成大纲正文。最终输出必须包含且只包含一个完整协议块：",
       "<!-- intent_clarity -->",
-      '{"clarity":"clear|needs_input","module":"模块名","analysis":"判断依据","detectedScope":"明确范围","missingItems":[],"options":[],"question":""}',
+      '{"clarity":"clear|needs_input","module":"模块名","analysis":"判断依据","detectedScope":"明确范围","missingItems":[],"options":[{"id":"A","label":"具体范围","description":"现状与依据"}],"question":""}',
       "<!-- /intent_clarity -->",
       "开闭标记必须成对出现；字段名必须使用 clarity，禁止使用 status。JSON 必须完整且可解析。",
+      "needs_input 时 options 必须列出具体的候选范围（如具体卷次、具体章节区间），最多 6 个；",
+      "options 为空视为格式错误；「自定义」由系统自动追加，不要自己输出。",
     ].join("\n")
   }
   if (intentPhase === "generation") {
@@ -240,7 +214,7 @@ export function buildIntentPhaseSystemRules(
 }
 
 export function stripStructuredMarkers(text: string): string {
-  return text
+  return stripChapterDiscussMarkers(stripOutlineDiscussMarkers(stripOutlinePlanMarkers(text)))
     // 1. 移除完整的标记对（现有逻辑）
     .replace(/<!--\s*intent_clarity\s*-->[\s\S]*?<!--\s*\/intent_clarity\s*-->/gi, "")
     .replace(/<!--\s*next_step\s*-->[\s\S]*?<!--\s*\/next_step\s*-->/gi, "")

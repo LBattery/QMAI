@@ -1,3 +1,4 @@
+import type { LlmRequestCacheTrace, LlmRequestUsageTotals } from "@/lib/llm-request-trace"
 import type { RecognizedCharacter } from "./types"
 
 export const ANALYSIS_SKILL_ORDER = ["characters", "story", "style"] as const
@@ -34,7 +35,18 @@ export interface AnalysisChapterRange {
   endOrder: number
 }
 
+/**
+ * 文风 skill 的蒸馏深度（feature/writing-dna）。
+ * full：跑齐 L1-L6，3 次 LLM/分片。
+ * fast：只跑脚本统计 + L1/L6 一次调用，样本与证据由脚本截取，供大部头快速出结果。
+ */
+export type StyleAnalysisDepth = "fast" | "full"
+
+export const DEFAULT_STYLE_ANALYSIS_DEPTH: StyleAnalysisDepth = "full"
+
 export interface AnalysisChunkPlan {
+  batch?: number
+  segments?: import("./workbench-core").SourceSegment[]
   id: string
   chapterIds: string[]
   startOrder: number
@@ -69,11 +81,14 @@ export interface AnalysisModuleState {
 }
 
 export interface BookAnalysisPipelineTask {
+  workbenchVersion?: 2
+  workbenchRequest?: import("./workbench-core").WorkbenchRequest
   version: 1
   id: string
   batchId: string | null
   projectPath: string
   bookId: string
+  bookTitle?: string
   bookPath: string
   selectedSkills: AnalysisSkill[]
   range: AnalysisChapterRange | null
@@ -84,21 +99,27 @@ export interface BookAnalysisPipelineTask {
   recognizedCharacters?: RecognizedCharacter[]
   /** 用户确认后的深挖目标；有值时角色 adapter 只分析这些角色 */
   targetCharacters?: RecognizedCharacter[]
+  /** 用户明确要求重新生成时跳过成功结果复用；创建新任务本身不代表重新生成。 */
+  forceRefresh?: boolean
+  requestTraces?: LlmRequestCacheTrace[]
+  /** 去重ID单独保存，不随32条可视明细截断。 */
+  requestTraceIds?: string[]
+  requestUsageTotals?: LlmRequestUsageTotals
+  omittedRequestTraceCount?: number
+  resultReuse?: { chunkChecks: number; chunkHits: number; aggregateChecks: number; aggregateHits: number }
+  /**
+   * 本任务使用的模型 key（`providerId/modelId` 或裸模型名）。
+   * 留空表示沿用项目默认模型。存在任务上而不是全局，
+   * 是为了让暂停后再继续、以及并行的多个任务各自用回自己当初选的模型。
+   */
+  modelKey?: string
+  /** 文风蒸馏深度；仅 style skill 读取，留空按 DEFAULT_STYLE_ANALYSIS_DEPTH 处理 */
+  styleDepth?: StyleAnalysisDepth
   error: string | null
   createdAt: number
   startedAt: number | null
   completedAt: number | null
   updatedAt: number
-}
-
-export interface AnalysisPipelineBatch {
-  version: 1
-  id: string
-  projectPath: string
-  taskIds: string[]
-  createdAt: number
-  updatedAt: number
-  dismissedAt: number | null
 }
 
 export interface AnalysisEvidenceSnippet {

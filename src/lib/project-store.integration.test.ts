@@ -8,7 +8,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { realFs, createTempProject, writeFileRaw, fileExists, readFileRaw } from "@/test-helpers/fs-temp"
 import type { LlmConfig, NovelConfig, ProviderConfigs, RevisionFeedbackWindowConfig, SourceWatchConfig, RerankConfig } from "@/stores/wiki-store"
-import type { McpConfig } from "@/lib/mcp/config"
 
 vi.mock("@/commands/fs", () => realFs)
 
@@ -24,6 +23,11 @@ vi.mock("@/lib/web-store", () => ({
       inMemoryStore.set(key, value)
     },
     save: async (): Promise<void> => {},
+    delete: async (key: string): Promise<boolean> => {
+      const had = inMemoryStore.has(key)
+      inMemoryStore.delete(key)
+      return had
+    },
   }),
 }))
 
@@ -36,12 +40,14 @@ import {
   loadRevisionFeedbackWindowConfig,
   saveSourceWatchConfig,
   loadSourceWatchConfig,
-  saveMcpConfig,
-  loadMcpConfig,
   loadLlmConfig,
   loadProviderConfigs,
   saveProviderConfigs,
   saveDefaultLlmModel,
+  getRecentProjects,
+  getLastProject,
+  loadRegisteredProjects,
+  removeProjectRecords,
 } from "./project-store"
 
 let tmp: { path: string; cleanup: () => Promise<void> }
@@ -228,9 +234,9 @@ function makeNovelConfig(overrides: Partial<NovelConfig> = {}): NovelConfig {
     recentSummaryWindow: 16,
     searchTopK: 20,
     chapterTargetChars: 3000,
-    autoIngestOnSave: true,
     autoExtractOnImport: true,
     deepPreviousChaptersAnalysis: false,
+    writingWebSearchEnabled: true,
     reviewReasoningEffort: "high",
     writingModel: "claude-4-sonnet",
     reviewModel: "claude-4-sonnet",
@@ -240,6 +246,10 @@ function makeNovelConfig(overrides: Partial<NovelConfig> = {}): NovelConfig {
     communitySummaryInterval: 5,
     communitySummaryAsync: false,
     autoGenerateChapterTitle: true,
+    draftMemoryHintEnabled: true,
+    draftMemoryHintSeen: false,
+    inspirationHintEnabled: true,
+    inspirationHintSeen: false,
     ...overrides,
     defaultLlmModel: overrides.defaultLlmModel ?? "",
     deAiModel: overrides.deAiModel ?? "",
@@ -273,7 +283,6 @@ function makeSourceWatchConfig(overrides: Partial<SourceWatchConfig> = {}): Sour
 function makeRerankConfig(overrides: Partial<RerankConfig> = {}): RerankConfig {
   return {
     enabled: true,
-    useMainLlm: false,
     provider: "custom",
     apiKey: "rerank-key",
     model: "rerank-model",
@@ -284,28 +293,6 @@ function makeRerankConfig(overrides: Partial<RerankConfig> = {}): RerankConfig {
     ...overrides,
   }
 }
-function makeMcpConfig(): McpConfig {
-  return {
-    servers: [{
-      id: "graph",
-      name: "Knowledge Graph",
-      enabled: true,
-      tools: [{
-        serverId: "graph",
-        serverName: "Knowledge Graph",
-        name: "query_graph",
-        description: "Query graph",
-        operation: "read",
-        inputSchema: {
-          type: "object",
-          properties: { query: { type: "string", description: "Query" } },
-          required: ["query"],
-        },
-      }],
-    }],
-  }
-}
-
 describe("novelConfig — project-directory persistence", () => {
   it("round-trip save then load returns identical config", async () => {
     const config = makeNovelConfig({ contextTokenBudget: 100000, searchTopK: 15 })
@@ -399,6 +386,12 @@ describe("novelConfig — project-directory persistence", () => {
       contextTokenBudget: 50000,
       recentSummaryWindow: 6,
       searchTopK: 8,
+      /*
+       * 这个键**故意留着**：它已从 NovelConfig 里移除（保存为正式章节不再自动
+       * 提取记忆，用户要求），但老用户的 .qmai/novel-config.json 里还写着它。
+       * 本用例因此顺带钉住「旧配置里存在已删除的键时仍能正常加载」——
+       * 是磁盘上的 JSON，不是 NovelConfig 字面量，所以不参与类型检查。
+       */
       autoIngestOnSave: false,
       writingModel: "writer",
       reviewModel: "reviewer",
@@ -412,6 +405,85 @@ describe("novelConfig — project-directory persistence", () => {
     const loaded = await loadNovelConfig("proj-legacy", tmp.path)
     expect(loaded?.autoExtractOnImport).toBe(true)
     expect(loaded?.contextTokenBudget).toBe(0)
+  })
+
+  /*
+   * 丙-4b：新章节灵感提示开关（`inspirationHintEnabled`）。
+   *
+   * 这两条钉的是**归一化**，不是「字段能不能存」：
+   * - 老配置（写这个字段之前落盘的）必须读成**默认开**，不能是 `undefined`；
+   * - 明确关掉的值必须原样读回来，不能被默认值覆盖。
+   * 两者分开写，是因为把 `?? DEFAULT` 写成 `|| true` 之类的实现
+   * 能过第一条、过不了第二条。
+   */
+  it("fills in inspirationHintEnabled when loading legacy novel config", async () => {
+    const legacy = makeNovelConfig()
+    const { inspirationHintEnabled: _omitted, ...withoutField } = legacy
+    await writeFileRaw(
+      `${tmp.path}/.qmai/novel-config.json`,
+      JSON.stringify(withoutField),
+    )
+
+    const loaded = await loadNovelConfig("proj-legacy-inspiration", tmp.path)
+    expect(loaded?.inspirationHintEnabled).toBe(true)
+  })
+
+  it("round-trips an explicitly disabled inspirationHintEnabled", async () => {
+    await saveNovelConfig(
+      makeNovelConfig({ inspirationHintEnabled: false }),
+      "proj-inspiration-off",
+      tmp.path,
+    )
+
+    const loaded = await loadNovelConfig("proj-inspiration-off", tmp.path)
+    expect(loaded?.inspirationHintEnabled).toBe(false)
+  })
+
+  it("fills in inspirationHintSeen as false when loading legacy novel config", async () => {
+    const legacy = makeNovelConfig()
+    const { inspirationHintSeen: _omitted, ...withoutField } = legacy
+    await writeFileRaw(
+      `${tmp.path}/.qmai/novel-config.json`,
+      JSON.stringify(withoutField),
+    )
+
+    const loaded = await loadNovelConfig("proj-legacy-inspiration-seen", tmp.path)
+    // 默认必须是 false：写成 `?? true` 之类的实现会让「这本书已经提示过」永远为真，
+    // 气泡一次都不会出现 —— 而且界面上看不出来。
+    expect(loaded?.inspirationHintSeen).toBe(false)
+  })
+
+  it("round-trips an already-seen inspiration hint", async () => {
+    await saveNovelConfig(
+      makeNovelConfig({ inspirationHintSeen: true }),
+      "proj-inspiration-seen",
+      tmp.path,
+    )
+
+    const loaded = await loadNovelConfig("proj-inspiration-seen", tmp.path)
+    expect(loaded?.inspirationHintSeen).toBe(true)
+  })
+
+  /*
+   * `usageTutorialSeen` 随分步使用教程一起删掉了，但**用户磁盘上已有的配置文件里
+   * 还留着这个键**（真实数据，改不掉）。`normalizeNovelConfig` 是逐字段重建对象，
+   * 所以未知键必须被静默忽略 —— 如果哪天它改成「原样透传」或者加了严格校验，
+   * 老项目就会读盘失败，而这个回归在开发机（配置都是新写的）上永远看不见。
+   *
+   * 这条同时钉住「删干净了」：读回来不许再有这个键。
+   */
+  it("ignores the removed usageTutorialSeen key left in an existing on-disk config", async () => {
+    const legacy = { ...makeNovelConfig(), usageTutorialSeen: true }
+    await writeFileRaw(`${tmp.path}/.qmai/novel-config.json`, JSON.stringify(legacy))
+
+    const loaded = await loadNovelConfig("proj-legacy-tutorial-key", tmp.path)
+    expect(loaded, "带已删字段的老配置必须仍能正常读盘").not.toBeNull()
+    expect(
+      Object.prototype.hasOwnProperty.call(loaded ?? {}, "usageTutorialSeen"),
+      "已删字段不许再出现在归一化结果里（否则接口上还留着一个没人读的键）",
+    ).toBe(false)
+    // 邻字段不受影响，证明不是「整份配置被丢掉」而通过的。
+    expect(loaded?.inspirationHintEnabled).toBe(true)
   })
 })
 
@@ -521,7 +593,7 @@ describe("sourceWatchConfig — project-directory persistence", () => {
 })
 describe("rerankConfig persistence", () => {
   it("round-trip save then load returns identical config", async () => {
-    const config = makeRerankConfig({ maxCandidates: 9, useMainLlm: true })
+    const config = makeRerankConfig({ maxCandidates: 9 })
     await saveRerankConfig(config, "rerank-1", tmp.path)
     const loaded = await loadRerankConfig("rerank-1", tmp.path)
     expect(loaded).toEqual(config)
@@ -542,24 +614,31 @@ describe("rerankConfig persistence", () => {
     expect(loaded?.model).toBe("local-rerank")
     expect(loaded?.maxCandidates).toBe(18)
   })
-})
 
-describe("mcpConfig persistence", () => {
-  it("round-trip save then load returns normalized MCP config", async () => {
-    const config = makeMcpConfig()
-
-    await saveMcpConfig(config)
-    const loaded = await loadMcpConfig()
-
-    expect(loaded).toEqual(config)
+  /*
+   * 「复用主模型」在 4.3.6 被取消：老用户的配置里仍然有 `useMainLlm: true`。
+   * 那种配置没有自己的重排模型，如果原样读回 enabled: true，设置页会显示「已启用」
+   * 但实际不重排（resolveRerankModel 返回 null）—— 面板是假绿。所以读到这种老配置
+   * 就把总开关关掉，让用户自己决定要不要配一个真重排模型再打开。
+   */
+  it("老配置的「复用主模型」被丢弃：没配独立模型时连同总开关一起关掉", async () => {
+    await writeFileRaw(
+      `${tmp.path}/.qmai/rerank-config.json`,
+      JSON.stringify({ ...makeRerankConfig({ enabled: true, model: "" }), useMainLlm: true }),
+    )
+    const loaded = await loadRerankConfig("rerank-legacy", tmp.path)
+    expect(loaded?.enabled).toBe(false)
+    expect(loaded && "useMainLlm" in loaded).toBe(false)
   })
 
-  it("normalizes invalid stored MCP config to an empty config", async () => {
-    inMemoryStore.set("mcpConfig", { servers: "bad" })
-
-    const loaded = await loadMcpConfig()
-
-    expect(loaded).toEqual({ servers: [] })
+  it("老配置若已经填了独立重排模型，保留启用状态（改用那个模型）", async () => {
+    await writeFileRaw(
+      `${tmp.path}/.qmai/rerank-config.json`,
+      JSON.stringify({ ...makeRerankConfig({ enabled: true, model: "legacy-rank" }), useMainLlm: true }),
+    )
+    const loaded = await loadRerankConfig("rerank-legacy-2", tmp.path)
+    expect(loaded?.enabled).toBe(true)
+    expect(loaded?.model).toBe("legacy-rank")
   })
 })
 
@@ -585,5 +664,28 @@ describe("custom LLM providerConfigs persistence", () => {
     expect(loaded?.["custom-1710000000000"]?.model).toBe("deepseek-v4")
     expect(loaded?.["custom-1710000000000"]?.savedModels?.[0]?.model).toBe("deepseek-v4")
     expect(loaded?.openai?.apiKey).toBe("sk-openai")
+  })
+})
+
+describe("历史小说书库", () => {
+  const historical = { id: "hist", name: "旧书", path: "D:/QM-BOOK/旧书" }
+  const kept = { id: "keep", name: "留下", path: "D:/QM-BOOK/留下" }
+
+  it("按最近打开顺序列出项目登记，删除时从登记里去掉", async () => {
+    inMemoryStore.set("projectRegistry", {
+      hist: { ...historical, lastOpened: 1 },
+      keep: { ...kept, lastOpened: 5 },
+    })
+    inMemoryStore.set("recentProjects", [historical, kept])
+    inMemoryStore.set("lastProject", historical)
+
+    expect(await loadRegisteredProjects()).toEqual([kept, historical])
+    await removeProjectRecords("D:\\QM-BOOK\\旧书")
+
+    expect(await getRecentProjects()).toEqual([kept])
+    expect(await getLastProject()).toBeNull()
+    const registry = inMemoryStore.get("projectRegistry") as Record<string, { id: string }>
+    expect(registry.hist).toBeUndefined()
+    expect(registry.keep.id).toBe("keep")
   })
 })

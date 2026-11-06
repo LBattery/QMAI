@@ -1,9 +1,64 @@
 mod app_state;
 mod atomic_file;
 mod commands;
+mod mcp;
+mod font_install;
+mod fonts;
+#[cfg(target_os = "macos")]
+mod macos_window;
 mod panic_guard;
+mod platform_guard;
 mod proxy;
 mod types;
+
+pub use platform_guard::assert_supported_platform;
+
+/// 阶段 3：列出本机**实际安装**的中文字体。
+///
+/// 为什么必须由 Rust 侧提供而不是前端猜：CSS 无法枚举系统字体，前端只能靠
+/// 「写一个字体名再看宽度变不变」来试探，那种探测既不可靠（度量相近的字体
+/// 测不出差别）又昂贵。DirectWrite 能直接回答"这个族有没有这个字"。
+///
+/// 失败时返回 `Err` 而不是空列表：空列表会被前端当成"本机没有中文字体"，
+/// 那是个会被用户信以为真的假结论（前端据此应回退到内置列表并说明原因）。
+#[tauri::command]
+fn list_system_cjk_fonts() -> Result<Vec<fonts::CjkFont>, String> {
+    fonts::list_cjk_fonts()
+}
+
+/// 阶段 4：把随包字体安装到本用户，并回报每个字体的真实状态。
+///
+/// 启动时会自动跑一次（见 `setup`）；这个命令供界面在用户手动重试时调用。
+#[tauri::command]
+fn ensure_bundled_fonts(app: tauri::AppHandle) -> Result<font_install::InstallReport, String> {
+    use tauri::Manager;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("无法定位资源目录：{e}"))?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法定位应用数据目录：{e}"))?;
+    Ok(font_install::ensure_fonts_installed(
+        &resource_dir.join("fonts"),
+        &app_data_dir,
+    ))
+}
+
+/// 阶段 4：清理本用户已安装的随包字体。
+///
+/// 供便携版（没有 NSIS 卸载器）与"设置里卸载随包字体"使用。
+/// 安装版的正规卸载仍由 NSIS 卸载器处理（它读同一个记录文件）。
+#[tauri::command]
+fn remove_bundled_fonts(app: tauri::AppHandle) -> Result<font_install::RemovalReport, String> {
+    use tauri::Manager;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法定位应用数据目录：{e}"))?;
+    Ok(font_install::remove_installed_fonts(&app_data_dir))
+}
 
 #[tauri::command]
 fn set_proxy_env(config: proxy::ProxyConfig) -> String {
@@ -28,11 +83,36 @@ fn log_diagnostic(message: String) {
     eprintln!("[frontend-diagnostic] message: {}", message);
 }
 
+#[tauri::command]
+fn restore_macos_window_frame(window: tauri::WebviewWindow) {
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+    #[cfg(target_os = "macos")]
+    {
+        let cloned = window.clone();
+        if let Err(error) = window.run_on_main_thread(move || {
+            if let Ok(ptr) = cloned.ns_window() {
+                macos_window::restore_overlay_frame(ptr);
+            }
+        }) {
+            eprintln!("[window] 恢复 macOS 圆角失败：{error}");
+        }
+    }
+}
+
 pub fn run() {
+    if mcp::stdio_requested() {
+        mcp::run_stdio();
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             use tauri::Manager;
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "macos")]
+                if let Ok(ptr) = window.ns_window() {
+                    macos_window::restore_overlay_frame(ptr);
+                }
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -43,12 +123,42 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             use tauri::Manager;
             if let Ok(dir) = app.path().resource_dir() {
                 commands::fs::set_resource_dir_hint(dir);
             }
             app_state::prepare_app_state_store(app.handle());
+            /*
+             * 阶段 4：先装随包字体，再让任何字体枚举发生。
+             *
+             * 顺序是**语义要求**，不只是性能考虑：本进程一旦创建过 DirectWrite
+             * 系统字体集合，新装的字体在本次启动里可能不可见（集合是缓存的），
+             * 于是出现"字体装上了，但下拉里没有它"。放在 setup 最前面保证
+             * 枚举（由前端在 webview 加载后触发）一定晚于安装。
+             */
+            match (app.path().resource_dir(), app.path().app_data_dir()) {
+                (Ok(res), Ok(data)) => {
+                    let report = font_install::ensure_fonts_installed(&res.join("fonts"), &data);
+                    eprintln!("[fonts] {}", report.summary());
+                    for outcome in report.outcomes.iter().filter(|o| o.status == "failed") {
+                        eprintln!(
+                            "[fonts] 安装失败：{}（{}）：{}",
+                            outcome.display,
+                            outcome.id,
+                            outcome.error.as_deref().unwrap_or("未知原因")
+                        );
+                    }
+                }
+                (res, data) => {
+                    eprintln!(
+                        "[fonts] 跳过随包字体安装：resource_dir={:?} app_data_dir={:?}",
+                        res.err().map(|e| e.to_string()),
+                        data.err().map(|e| e.to_string())
+                    );
+                }
+            }
             if let Ok(dir) = app.path().app_data_dir() {
                 let store_path = dir.join("app-state.json");
                 eprintln!("[proxy] reading from {}", store_path.display());
@@ -57,12 +167,19 @@ pub fn run() {
             } else {
                 eprintln!("[proxy] could not resolve app_data_dir");
             }
+            app.manage(commands::antigravity_cli::AntigravityCliState::default());
             app.manage(commands::claude_cli::ClaudeCliState::default());
             app.manage(commands::codex_cli::CodexAppServerState::default());
             app.manage(commands::cursor_cli::CursorProxyState::default());
             app.manage(commands::file_sync::FileSyncState::default());
-            app.manage(commands::mcp_stdio::McpStdioState::default());
             app.manage(commands::writing_wake_lock::WritingWakeLockManager::default());
+            app.manage(mcp::McpState::default());
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(ptr) = window.ns_window() {
+                    macos_window::restore_overlay_frame(ptr);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -88,6 +205,9 @@ pub fn run() {
             commands::project::create_project,
             commands::project::open_project,
             commands::project::open_project_folder,
+            commands::project::rename_project,
+            commands::project::move_project_to_system_trash,
+            commands::project::save_project_cover,
             commands::project::open_file_location,
             commands::vectorstore::vector_upsert,
             commands::vectorstore::vector_search,
@@ -99,6 +219,14 @@ pub fn run() {
             commands::vectorstore::vector_count_chunks,
             commands::vectorstore::vector_legacy_row_count,
             commands::vectorstore::vector_drop_legacy,
+            commands::vectorstore::vector_rebuild_begin,
+            commands::vectorstore::vector_rebuild_append,
+            commands::vectorstore::vector_rebuild_commit,
+            commands::vectorstore::vector_rebuild_abort,
+            commands::antigravity_cli::antigravity_cli_detect,
+            commands::antigravity_cli::antigravity_cli_spawn,
+            commands::antigravity_cli::antigravity_cli_kill,
+            commands::antigravity_search::antigravity_cli_search,
             commands::claude_cli::claude_cli_detect,
             commands::claude_cli::claude_cli_spawn,
             commands::claude_cli::claude_cli_kill,
@@ -107,6 +235,10 @@ pub fn run() {
             commands::codex_cli::codex_app_server_write,
             commands::codex_cli::codex_app_server_stop,
             commands::cursor_cli::cursor_cli_detect,
+            commands::cursor_cli::cursor_cli_about,
+            commands::cursor_cli::cursor_cli_update,
+            commands::cursor_cli::cursor_cli_apply_acp_model,
+            commands::cursor_cli::cursor_cli_acp_models,
             commands::cursor_cli::cursor_proxy_status,
             commands::cursor_cli::cursor_proxy_ensure,
             commands::cursor_cli::cursor_proxy_stop,
@@ -118,10 +250,6 @@ pub fn run() {
             commands::file_sync::get_file_change_queue,
             commands::file_sync::retry_file_change_task,
             commands::file_sync::ignore_file_change_task,
-            commands::mcp_stdio::mcp_stdio_spawn,
-            commands::mcp_stdio::mcp_stdio_write,
-            commands::mcp_stdio::mcp_stdio_read,
-            commands::mcp_stdio::mcp_stdio_kill,
             commands::backup::export_backup,
             commands::backup::import_backup,
             commands::backup::read_backup_manifest,
@@ -131,8 +259,30 @@ pub fn run() {
             set_proxy_env,
             log_error,
             log_diagnostic,
+            restore_macos_window_frame,
+            list_system_cjk_fonts,
+            ensure_bundled_fonts,
+            remove_bundled_fonts,
+            mcp::mcp_set_enabled,
+            mcp::mcp_status,
+            mcp::mcp_respond,
+            mcp::mcp_stdio_executable,
+            mcp::resolve_qmai_mcp_skill_dir,
         ])
         .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if matches!(
+                event,
+                tauri::WindowEvent::Focused(_)
+                    | tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ThemeChanged(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. }
+            ) {
+                if let Ok(ptr) = window.ns_window() {
+                    macos_window::restore_overlay_frame(ptr);
+                }
+            }
+
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 #[cfg(target_os = "macos")]
                 {
@@ -143,23 +293,12 @@ pub fn run() {
                 #[cfg(not(target_os = "macos"))]
                 {
                     use tauri::Manager;
-                    api.prevent_close();
-                    let win = window.clone();
-                    let app = window.app_handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        use tauri_plugin_dialog::DialogExt;
-                        let confirmed = app
-                            .dialog()
-                            .message("确定要退出小说写作助手吗？")
-                            .title("确认退出")
-                            .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
-                            .blocking_show();
-
-                        if confirmed {
-                            app_state::persist_app_state_before_exit(&app);
-                            let _ = win.destroy();
-                        }
-                    });
+                    // 退出确认与保存统一由前端 onCloseRequested 负责：Tauri 检测到前端注册了
+                    // close-requested 监听后会自行 prevent_close，前端确认通过后销毁窗口。
+                    // 这里不能再 prevent_close / 弹原生确认框 / destroy，
+                    // 否则同一次关闭会先后弹出两个确认框（前端手动 close() 会再次触发本回调）。
+                    let _ = api;
+                    app_state::persist_app_state_before_exit(window.app_handle());
                 }
             }
         })

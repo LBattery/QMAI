@@ -1,16 +1,16 @@
 import { streamChat } from "@/lib/llm-client"
 import type { LlmConfig } from "@/stores/wiki-store"
 
-export type ChapterPlanSelfCheckStatus = "pass" | "warning" | "error" | "unknown"
+type ChapterPlanSelfCheckStatus = "pass" | "warning" | "error" | "unknown"
 
-export interface ChapterPlanSelfCheckIssue {
+interface ChapterPlanSelfCheckIssue {
   severity: "warning" | "error" | "info"
   problem: string
   risk: string
   suggestion: string
 }
 
-export interface ParsedChapterPlanSelfCheckResult {
+interface ParsedChapterPlanSelfCheckResult {
   status: ChapterPlanSelfCheckStatus
   summary: string
   issues: ChapterPlanSelfCheckIssue[]
@@ -24,6 +24,8 @@ export interface ChapterPlanSelfCheckContext {
   foreshadowingStates?: string
   timeline?: string
   canonRules?: string
+  /** 同人原作正典（外部原作的既成事实）。 */
+  sourceCanon?: string
   mustAvoid?: string
 }
 
@@ -36,6 +38,7 @@ function buildContextSection(context?: ChapterPlanSelfCheckContext): string {
     ["伏笔状态", context.foreshadowingStates],
     ["时间线", context.timeline],
     ["正史规则", context.canonRules],
+    ["原作正典", context.sourceCanon],
     ["必须避免", context.mustAvoid],
   ].filter(([, value]) => typeof value === "string" && value.trim())
 

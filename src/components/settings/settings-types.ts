@@ -1,7 +1,7 @@
 import type { CustomApiMode } from "./llm-presets"
 import type { AzureModelFamily, ReasoningConfig, RevisionFeedbackWindowConfig, NovelConfig, RerankConfig, OutputLanguage } from "@/stores/wiki-store"
 import type { SidebarNavConfig } from "@/lib/sidebar-nav-preferences"
-import type { UiFontFamily } from "@/lib/font-settings"
+import type { BodyFontFamily, UiFontFamily } from "@/lib/font-settings"
 import type { VisualStyle } from "@/lib/visual-style-settings"
 
 /**
@@ -12,7 +12,7 @@ import type { VisualStyle } from "@/lib/visual-style-settings"
  */
 export interface SettingsDraft {
   // LLM provider
-  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli" | "cursor-cli"
+  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli" | "cursor-cli" | "antigravity-cli"
   apiKey: string
   model: string
   ollamaUrl: string
@@ -39,7 +39,7 @@ export interface SettingsDraft {
   // Multimodal (image captioning at ingest time)
   multimodalEnabled: boolean
   multimodalUseMainLlm: boolean
-  multimodalProvider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli" | "cursor-cli"
+  multimodalProvider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli" | "cursor-cli" | "antigravity-cli"
   multimodalApiKey: string
   multimodalModel: string
   multimodalOllamaUrl: string
@@ -64,6 +64,18 @@ export interface SettingsDraft {
   uiLanguage: string
   uiFontSizeScale: number
   uiFontFamily: UiFontFamily
+  /** 正文字体：与界面字体互相独立（用户确认的边界）。 */
+  uiBodyFontFamily: BodyFontFamily
+  /** 正文字号（px 绝对值）。取代原 uiBodyFontSizeScale（倍数）。 */
+  uiBodyFontPx: number
+  /** 正文行间距（无单位倍数）。 */
+  uiBodyLineHeight: number
+  /** 正文字间距（px，允许负值）。 */
+  uiBodyLetterSpacing: number
+  /** 正文左右边距（px）；null = 跟随窗口。 */
+  uiBodyMarginX: number | null
+  /** 正文底部安全距离（px）。 */
+  uiBodySafeBottom: number
   visualStyle: VisualStyle
   sidebarNavConfig: SidebarNavConfig
 

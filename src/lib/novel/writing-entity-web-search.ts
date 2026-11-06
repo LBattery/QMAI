@@ -1,6 +1,7 @@
 import type { LlmConfig, SearchApiConfig } from "@/stores/wiki-store"
 import type { ChatMessage, RequestOverrides, StreamCallbacks } from "@/lib/llm-client"
-import { providerRequiresApiKey, resolveSearchConfig, webSearch, type WebSearchResult } from "@/lib/web-search"
+import { providerRequiresApiKey, resolveSearchConfig, webSearch, webSearchDetailed, type WebSearchOutcome, type WebSearchResult } from "@/lib/web-search"
+import { formatGeminiContextBlock } from "@/lib/search-display"
 import { rethrowIfUserAbort, throwIfAborted } from "@/lib/user-abort"
 import { listLocalEntityNames } from "./local-entity-names"
 import { readPreviousChapterBodies } from "./previous-chapters-analysis"
@@ -8,15 +9,29 @@ import type { ContextPack } from "./context-engine"
 
 export const WRITING_ENTITY_SEARCH_HEADING = "外部检索（仅补本地缺失实体）"
 const MIN_NAME_LENGTH = 2
-const MAX_EXTRACTED_ENTITIES = 12
-const MAX_SEARCH_QUERIES = 3
+const MAX_EXTRACTED_ENTITIES = 20
+const MAX_SEARCH_QUERIES = 8
 const SOURCE_TEXT_CHAR_CAP = 8000
+
+/**
+ * 一个实体的搜索结果。`searchQueries` / `summary` / `searchSuggestionsHtml`
+ * 只有 Gemini 后端会给；其它后端与旧记录没有这些字段。
+ */
+export interface WritingEntitySearchItem {
+  name: string
+  results: WebSearchResult[]
+  searchQueries?: string[]
+  summary?: string
+  searchSuggestionsHtml?: string
+}
 
 export interface WritingEntityWebSearchResult {
   markdown: string
   searchedNames: string[]
   notes: string[]
-  items?: Array<{ name: string; results: WebSearchResult[] }>
+  items?: WritingEntitySearchItem[]
+  /** 按规则主动跳过（无候选、判定无需联网、未配置搜索源），区别于检索失败。 */
+  skipped?: boolean
 }
 
 export interface CollectWritingEntityWebSearchInput {
@@ -42,6 +57,8 @@ export interface CollectWritingEntityWebSearchInput {
   listEntityNames?: typeof listLocalEntityNames
   readPreviousBodies?: typeof readPreviousChapterBodies
   search?: typeof webSearch
+  /** 带附加信息的搜索（默认 webSearchDetailed）。传了 `search` 时以 `search` 为准。 */
+  searchDetailed?: typeof webSearchDetailed
 }
 
 export function isWebSearchConfigured(
@@ -62,6 +79,7 @@ export function buildLocalWritingCorpus(
     | "characterAuras"
     | "relatedSettings"
     | "canonRules"
+    | "sourceCanon"
     | "cognitionStates"
     | "foreshadowingStates"
     | "previousChapterEnding"
@@ -78,6 +96,9 @@ export function buildLocalWritingCorpus(
     pack.characterAuras,
     pack.relatedSettings,
     pack.canonRules,
+    // 同人项目：原作既有的人物/地点/势力属于本作已知实体，
+    // 不纳入语料会被当成「待查实体」去联网补搜，还可能搜回与正典冲突的资料。
+    pack.sourceCanon ?? "",
     pack.cognitionStates,
     pack.foreshadowingStates,
     pack.previousChapterEnding,
@@ -90,6 +111,24 @@ export function buildLocalWritingCorpus(
     .join("\n")
 }
 
+export function buildWritingEntityExtractionSource(
+  input: Pick<
+    CollectWritingEntityWebSearchInput,
+    "userRequest" | "outline" | "planBlueprint" | "contextPack"
+  >,
+): string {
+  const outline = input.outline?.trim()
+    || input.contextPack.entitySearchOutline?.trim()
+    || input.contextPack.outline?.trim()
+    || ""
+
+  return [
+    input.userRequest.trim(),
+    outline,
+    input.planBlueprint?.trim() ?? "",
+  ].filter(Boolean).join("\n\n").slice(0, SOURCE_TEXT_CHAR_CAP)
+}
+
 export function isLocallyResolvedEntity(
   name: string,
   corpus: string,
@@ -98,9 +137,11 @@ export function isLocallyResolvedEntity(
   const trimmed = name.trim()
   if (trimmed.length < MIN_NAME_LENGTH) return true
   if (corpus.includes(trimmed)) return true
+  // 只认「本地条目更完整地覆盖了候选」这一个方向。反向包含会把「洛云宗」「郭靖的降龙十八掌」
+  // 这类复合名按本地的两字人名短路掉，本地其实没有它们的资料。
   return entityNames.some((entityName) => (
     entityName.length >= MIN_NAME_LENGTH
-    && (trimmed.includes(entityName) || entityName.includes(trimmed))
+    && entityName.includes(trimmed)
   ))
 }
 
@@ -127,16 +168,29 @@ export function parseExtractedEntityNames(text: string): string[] {
   return uniqueNames(names).slice(0, MAX_EXTRACTED_ENTITIES)
 }
 
+export interface WritingEntitySearchQuery {
+  name: string
+  englishQuery?: string
+}
+
 export function parseNeedExternalNames(text: string, candidates: readonly string[]): string[] {
+  return parseNeedExternalQueries(text, candidates).map((item) => item.name)
+}
+
+export function parseNeedExternalQueries(
+  text: string,
+  candidates: readonly string[],
+): WritingEntitySearchQuery[] {
   const allowed = new Set(candidates.map((name) => name.trim()).filter(Boolean))
   const parsed = parseJsonPayload(text)
   if (!parsed) return []
 
-  const selected: string[] = []
-  const add = (value: unknown) => {
+  const selected: WritingEntitySearchQuery[] = []
+  const add = (value: unknown, englishSource?: Record<string, unknown>) => {
     const name = String(value ?? "").trim()
-    if (!name || !allowed.has(name) || selected.includes(name)) return
-    selected.push(name)
+    if (!name || !allowed.has(name) || selected.some((item) => item.name === name)) return
+    const englishQuery = englishSource ? readEnglishQuery(englishSource, name) : undefined
+    selected.push(englishQuery ? { name, englishQuery } : { name })
   }
 
   if (Array.isArray(parsed)) {
@@ -145,7 +199,13 @@ export function parseNeedExternalNames(text: string, candidates: readonly string
       else if (item && typeof item === "object") {
         const record = item as Record<string, unknown>
         if (record.needExternal === false) continue
-        if (record.needExternal === true || record.search === true) add(record.name)
+        if (
+          record.needExternal === true
+          || record.search === true
+          || typeof record.name === "string"
+        ) {
+          add(record.name, record)
+        }
       }
     }
     return selected
@@ -160,7 +220,7 @@ export function parseNeedExternalNames(text: string, candidates: readonly string
       else if (item && typeof item === "object") {
         const entry = item as Record<string, unknown>
         if (entry.needExternal === false) continue
-        add(entry.name)
+        add(entry.name, entry)
       }
     }
   }
@@ -168,27 +228,37 @@ export function parseNeedExternalNames(text: string, candidates: readonly string
     for (const item of record.entities) {
       if (!item || typeof item !== "object") continue
       const entry = item as Record<string, unknown>
-      if (entry.needExternal === true || entry.search === true) add(entry.name)
+      if (entry.needExternal === true || entry.search === true) add(entry.name, entry)
     }
   }
   return selected
 }
 
-export interface WritingEntitySearchWorkflowPersisted {
+interface WritingEntitySearchWorkflowPersisted {
   content: string
   searchedNames: string[]
   notes: string[]
-  items: Array<{ name: string; results: WebSearchResult[] }>
+  items: WritingEntitySearchItem[]
 }
 
 const DISPLAY_TITLE_MAX = 80
 const DISPLAY_SNIPPET_MAX = 140
 
 export function formatWritingEntitySearchMarkdown(
-  items: Array<{ name: string; results: WebSearchResult[] }>,
+  items: WritingEntitySearchItem[],
 ): string {
   if (items.length === 0) return ""
   const sections = items.map((item) => {
+    const summary = item.summary?.trim() ?? ""
+    if (summary) {
+      // Gemini：只放搜索词 + 完整摘要；来源、片段、链接只在时间线展示。
+      const block = formatGeminiContextBlock({
+        queries: item.searchQueries,
+        summary,
+        labels: { queries: "实际搜索词：", summary: "搜索摘要：" },
+      })
+      return [`### ${item.name}`, ...block].join("\n")
+    }
     const lines = item.results.length > 0
       ? item.results.map((result) => {
         const title = result.title.trim() || result.url.trim() || result.source.trim() || "未命名来源"
@@ -211,7 +281,10 @@ export function formatWritingEntitySearchWorkflowResult(
   }
   for (const item of result.items ?? []) {
     const lines = [`${item.name}`]
-    if (item.results.length === 0) {
+    const summary = item.summary?.trim()
+    if (summary) {
+      lines.push(summary)
+    } else if (item.results.length === 0) {
       lines.push("- 无可用结果")
     } else {
       for (const source of item.results) {
@@ -246,6 +319,10 @@ export function serializeWritingEntitySearchWorkflowResult(
       snippet: source.snippet,
       source: source.source,
     })),
+    // 只有 Gemini 有；没有时不写这些键，保持旧记录格式不变。
+    ...(item.searchQueries?.length ? { searchQueries: [...item.searchQueries] } : {}),
+    ...(item.summary?.trim() ? { summary: item.summary } : {}),
+    ...(item.searchSuggestionsHtml?.trim() ? { searchSuggestionsHtml: item.searchSuggestionsHtml } : {}),
   }))
   const persisted: WritingEntitySearchWorkflowPersisted = {
     content: formatWritingEntitySearchWorkflowResult({ ...result, items }),
@@ -264,15 +341,17 @@ export function parseWritingEntitySearchWorkflowResult(
     const parsed = JSON.parse(text) as unknown
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
     const record = parsed as Record<string, unknown>
-    const hasItems = Array.isArray(record.items)
-    const hasSearchedNames = Array.isArray(record.searchedNames)
+    const rawItems = record.items
+    const rawSearchedNames = record.searchedNames
+    const hasItems = Array.isArray(rawItems)
+    const hasSearchedNames = Array.isArray(rawSearchedNames)
     if (!hasItems && !hasSearchedNames) return null
 
-    const items = hasItems ? normalizePersistedSearchItems(record.items) : []
+    const items = hasItems ? normalizePersistedSearchItems(rawItems) : []
     const searchedNames = hasSearchedNames
-      ? (record.searchedNames as unknown[]).filter(
-        (name): name is string => typeof name === "string" && name.trim().length > 0,
-      )
+      ? rawSearchedNames.filter(
+          (name: unknown): name is string => typeof name === "string" && name.trim().length > 0,
+        )
       : items.map((item) => item.name)
     const notes = Array.isArray(record.notes)
       ? record.notes.filter((note): note is string => typeof note === "string")
@@ -292,13 +371,13 @@ export function parseWritingEntitySearchWorkflowResult(
 export function displayWritingEntitySearchWorkflowContent(text: string | undefined): string {
   const parsed = parseWritingEntitySearchWorkflowResult(text)
   if (!parsed) return (text ?? "").trim()
-  return parsed.content.trim() || formatWritingEntitySearchWorkflowResult({
-    ...parsed,
-    markdown: parsed.content,
-  })
+  if (parsed.items.some((item) => item.summary?.trim())) {
+    return formatWritingEntitySearchWorkflowResult({ ...parsed, markdown: "" })
+  }
+  return parsed.content.trim() || formatWritingEntitySearchWorkflowResult({ ...parsed, markdown: "" })
 }
 
-export function writingEntitySearchSourceHost(
+function writingEntitySearchSourceHost(
   result: Pick<WebSearchResult, "url" | "source">,
 ): string {
   const source = result.source.trim()
@@ -330,9 +409,9 @@ export function writingEntitySearchSourceLabels(
   return labels
 }
 
-function normalizePersistedSearchItems(value: unknown): Array<{ name: string; results: WebSearchResult[] }> {
+function normalizePersistedSearchItems(value: unknown): WritingEntitySearchItem[] {
   if (!Array.isArray(value)) return []
-  const items: Array<{ name: string; results: WebSearchResult[] }> = []
+  const items: WritingEntitySearchItem[] = []
   for (const item of value) {
     if (!item || typeof item !== "object") continue
     const record = item as Record<string, unknown>
@@ -351,7 +430,18 @@ function normalizePersistedSearchItems(value: unknown): Array<{ name: string; re
         })
       }
     }
-    items.push({ name, results })
+    const searchQueries = Array.isArray(record.searchQueries)
+      ? record.searchQueries.filter((q): q is string => typeof q === "string" && q.trim().length > 0)
+      : []
+    items.push({
+      name,
+      results,
+      ...(searchQueries.length ? { searchQueries } : {}),
+      ...(typeof record.summary === "string" && record.summary.trim() ? { summary: record.summary } : {}),
+      ...(typeof record.searchSuggestionsHtml === "string" && record.searchSuggestionsHtml.trim()
+        ? { searchSuggestionsHtml: record.searchSuggestionsHtml }
+        : {}),
+    })
   }
   return items
 }
@@ -375,7 +465,13 @@ export async function collectWritingEntityWebSearch(
 ): Promise<WritingEntityWebSearchResult> {
   const notes: string[] = []
   if (!isWebSearchConfigured(input.searchApiConfig)) {
-    return { markdown: "", searchedNames: [], notes: ["未配置外部搜索"], items: [] }
+    return {
+      markdown: "",
+      searchedNames: [],
+      notes: ["未配置外部搜索，跳过联网补搜；可在「设置 → 网页搜索」配置搜索源"],
+      items: [],
+      skipped: true,
+    }
   }
 
   throwIfAborted(input.signal)
@@ -383,7 +479,9 @@ export async function collectWritingEntityWebSearch(
   try {
     const listEntityNames = input.listEntityNames ?? listLocalEntityNames
     const readPreviousBodies = input.readPreviousBodies ?? readPreviousChapterBodies
-    const search = input.search ?? webSearch
+    const search: (term: string) => Promise<WebSearchOutcome> = input.search
+      ? async (term) => ({ results: await input.search!(term, input.searchApiConfig!, 8) })
+      : (term) => (input.searchDetailed ?? webSearchDetailed)(term, input.searchApiConfig!, 8)
 
     const [entityNames, previousBodies] = await Promise.all([
       listEntityNames(input.projectPath),
@@ -401,32 +499,61 @@ export async function collectWritingEntityWebSearch(
     const extracted = await extractEntityNames(input)
     const unresolved = selectUnresolvedEntities(extracted, corpus, entityNames)
     if (unresolved.length === 0) {
-      return { markdown: "", searchedNames: [], notes, items: [] }
+      notes.push(
+        extracted.length === 0
+          ? "未从任务与章纲中抽出候选实体，跳过联网补搜"
+          : `候选实体已能在前文或实体表中找到，跳过联网补搜：${extracted.join("、")}`,
+      )
+      return { markdown: "", searchedNames: [], notes, items: [], skipped: true }
     }
 
     const needExternal = await judgeNeedExternal(input, unresolved)
     const queries = needExternal.slice(0, MAX_SEARCH_QUERIES)
     if (queries.length === 0) {
-      return { markdown: "", searchedNames: [], notes, items: [] }
+      notes.push(`判定为本书自造、无需联网：${unresolved.join("、")}`)
+      return { markdown: "", searchedNames: [], notes, items: [], skipped: true }
     }
 
-    input.onSearchStart?.(queries)
+    input.onSearchStart?.(launchedQueriesFor(queries))
 
-    const items: Array<{ name: string; results: WebSearchResult[] }> = []
-    for (const name of queries) {
+    const items: WritingEntitySearchItem[] = []
+    const searchedNames: string[] = []
+    for (const query of queries) {
       throwIfAborted(input.signal)
-      try {
-        const results = await search(name, input.searchApiConfig, 4)
-        items.push({ name, results })
-      } catch (error) {
-        rethrowIfUserAbort(error, input.signal)
-        notes.push(`搜索「${name}」失败：${error instanceof Error ? error.message : String(error)}`)
+      const results: WebSearchResult[] = []
+      const extraQueries: string[] = []
+      const summaries: string[] = []
+      const suggestions: string[] = []
+      let searchedThisEntity = false
+      for (const term of launchedQueriesFor([query])) {
+        throwIfAborted(input.signal)
+        try {
+          const outcome = await search(term)
+          mergeSearchResults(results, outcome.results)
+          if (outcome.queries?.length) extraQueries.push(...outcome.queries)
+          if (outcome.summary?.trim()) summaries.push(outcome.summary.trim())
+          if (outcome.searchSuggestionsHtml?.trim()) suggestions.push(outcome.searchSuggestionsHtml)
+          searchedNames.push(term)
+          searchedThisEntity = true
+        } catch (error) {
+          rethrowIfUserAbort(error, input.signal)
+          notes.push(`搜索「${term}」失败：${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      if (searchedThisEntity) {
+        items.push({
+          name: query.name,
+          results,
+          ...(extraQueries.length ? { searchQueries: [...new Set(extraQueries)] } : {}),
+          ...(summaries.length ? { summary: summaries.join("\n\n") } : {}),
+          ...(suggestions.length ? { searchSuggestionsHtml: suggestions.join("\n") } : {}),
+        })
       }
     }
 
     return {
       markdown: formatWritingEntitySearchMarkdown(items),
-      searchedNames: items.map((item) => item.name),
+      searchedNames,
       notes,
       items,
     }
@@ -438,11 +565,7 @@ export async function collectWritingEntityWebSearch(
 }
 
 async function extractEntityNames(input: CollectWritingEntityWebSearchInput): Promise<string[]> {
-  const source = [
-    input.userRequest.trim(),
-    input.planBlueprint?.trim() ?? "",
-    input.outline?.trim() || input.contextPack.outline?.trim() || "",
-  ].filter(Boolean).join("\n\n").slice(0, SOURCE_TEXT_CHAR_CAP)
+  const source = buildWritingEntityExtractionSource(input)
 
   const raw = await completeText(input, [
     {
@@ -452,8 +575,9 @@ async function extractEntityNames(input: CollectWritingEntityWebSearchInput): Pr
     {
       role: "user",
       content: [
-        "从以下文本提取需要核实的专有名称，最多 12 个。",
+        "从以下文本提取专有名称，最多 20 个。",
         "不要提取章节号、普通动词、纯原创占位词如「主角」。",
+        "自造行动、功法、人名仍可抽出，是否联网由下一步判定，不要暗示这些名称都需要核实。",
         '只输出 JSON：{"entities":["名称"]}',
         "",
         source || "（无文本）",
@@ -466,7 +590,7 @@ async function extractEntityNames(input: CollectWritingEntityWebSearchInput): Pr
 async function judgeNeedExternal(
   input: CollectWritingEntityWebSearchInput,
   unresolved: readonly string[],
-): Promise<string[]> {
+): Promise<WritingEntitySearchQuery[]> {
   const raw = await completeText(input, [
     {
       role: "system",
@@ -476,15 +600,20 @@ async function judgeNeedExternal(
       role: "user",
       content: [
         "下列名称在本库前文和实体表都未找到。",
-        "只把「公开 IP / 真实历史或现实设定 / 你明确理解不了或本地解释对不上」的名字放入 needExternal。",
-        "原创角色、可按大纲自编的名字不要放入。",
-        '只输出 JSON：{"needExternal":["名称"]}',
+        "判断的是名称性质，不是你的知识量：这个名称是否可能对应现实世界或已公开的资料。",
+        "要搜：现实人物、地点、机构、历史事件、装备与型号、专业术语与行业流程、公开 IP 或已出版作品的设定。",
+        "不搜：一眼可认定是本书自造的人名、门派、功法、法宝、架空地名，以及「主角」这类占位词。",
+        "无法确定是真实还是自造时放入 needExternal：搜到无关结果的代价远小于把真实设定写错。",
+        "不要用「我已经知道它是什么」当排除理由，你的记忆可能过时或细节有误。",
+        '只输出 JSON：{"needExternal":[{"name":"名称","englishQuery":"English query"}]}',
+        "englishQuery 仅在英文检索明显更好时填写（外国人名、外文机构、技术型号）；不要为自造名硬翻英文，不要把拼音当英文检索词。",
+        "无合适英文检索词时省略 englishQuery。",
         "",
         unresolved.join("\n"),
       ].join("\n"),
     },
   ])
-  return parseNeedExternalNames(raw, unresolved)
+  return parseNeedExternalQueries(raw, unresolved)
 }
 
 async function completeText(
@@ -492,18 +621,22 @@ async function completeText(
   messages: ChatMessage[],
 ): Promise<string> {
   let result = ""
+  // streamChat 报错走 onError 而不 throw；不记下来的话模型不可用会静默变成「没有实体要搜」。
+  const failures: Error[] = []
   await input.streamChat(
     input.llmConfig,
     messages,
     {
       onToken: (token) => { result += token },
       onDone: () => {},
-      onError: () => {},
+      onError: (error) => { failures.push(error) },
       onRequestTrace: input.onRequestTrace,
     },
     input.signal,
   )
-  return result.trim()
+  const text = result.trim()
+  if (!text && failures.length > 0) throw failures[0]
+  return text
 }
 
 function parseJsonPayload(text: string): unknown | null {
@@ -561,4 +694,40 @@ function uniqueNames(names: readonly string[]): string[] {
     output.push(name)
   }
   return output
+}
+
+function readEnglishQuery(record: Record<string, unknown>, name: string): string | undefined {
+  const raw = record.englishQuery ?? record.english ?? record.queryEn
+  const query = typeof raw === "string" ? raw.trim() : ""
+  if (!query || query === name) return undefined
+  return query
+}
+
+function launchedQueriesFor(queries: readonly WritingEntitySearchQuery[]): string[] {
+  const launched: string[] = []
+  for (const query of queries) {
+    launched.push(query.name)
+    if (query.englishQuery && query.englishQuery !== query.name) {
+      launched.push(query.englishQuery)
+    }
+  }
+  return launched
+}
+
+function mergeSearchResults(target: WebSearchResult[], incoming: readonly WebSearchResult[]): void {
+  const seen = new Set(
+    target.map((result) => normalizeSearchResultKey(result)).filter(Boolean),
+  )
+  for (const result of incoming) {
+    const key = normalizeSearchResultKey(result)
+    if (key && seen.has(key)) continue
+    if (key) seen.add(key)
+    target.push(result)
+  }
+}
+
+function normalizeSearchResultKey(result: WebSearchResult): string {
+  const url = result.url.trim().toLowerCase()
+  if (url) return url
+  return `${result.title.trim()}\0${result.snippet.trim()}`
 }

@@ -7,7 +7,7 @@ import type { Conversation, DisplayMessage } from "@/stores/chat-store"
 import type { ConversationRunStates } from "@/lib/conversation-run-state"
 
 const wikiState = {
-  project: { path: "C:/QMAI_C/QMAI-main", name: "测试项目" },
+  project: { id: "mount-spec-project", path: "C:/QMAI_C/QMAI-main", name: "测试项目" },
   novelMode: true,
   dataVersion: 0,
   llmConfig: {
@@ -20,7 +20,6 @@ const wikiState = {
   },
   providerConfigs: {},
   searchApiConfig: { provider: "none", providerConfigs: {} },
-  mcpConfig: { servers: [] },
   bindingVersion: 0,
   aiChatModel: "openai/gpt-4o",
   chatEditModeEnabled: false,
@@ -34,6 +33,9 @@ const wikiState = {
   setPlanExecuteEnabled: vi.fn(),
   setChatEditModeEnabled: vi.fn(),
   setSelectedFile: vi.fn(),
+  // 丁-4：临时角色灵魂绑定写入/还原后靠 dataVersion 触发重新读盘。
+  // chat-panel 会直接调它，缺了这个属性就是一条 TypeError（不是断言失败）。
+  bumpDataVersion: vi.fn(),
 }
 
 const mockRegistry = {
@@ -54,6 +56,15 @@ const defaultAgentSkillConfig = {
 
 let mockAgentSkillConfig: typeof defaultAgentSkillConfig | null = defaultAgentSkillConfig
 let mockTaskBreakpoint: TaskBreakpoint | null = null
+/**
+ * `useAgentConfig` 每次调用的**完整实参**（最新的在最后）。
+ *
+ * 用途：丁-2 的「产出端」用例必须能问到「chat-panel 到底把什么 getter 交出去了」——
+ * 只看界面上的标签变了证明不了 getter 的返回值也跟着变
+ * （产出方与消费方是两件事，本仓库已经有过「getter 没有产出者」的死通道）。
+ * 每次 `renderChatPanel` 会清空，避免跨用例串味。
+ */
+export const agentConfigArgs: unknown[][] = []
 
 vi.mock("react-i18next", () => ({
   initReactI18next: {
@@ -81,21 +92,23 @@ vi.mock("@/stores/outline-chat-store", () => ({
 }))
 
 vi.mock("@/hooks/use-agent-config", () => ({
-  useAgentConfig: (systemPrompt: string) => ({
-    config: {
-      maxRounds: 3,
-      tools: [],
-      systemPrompt,
-      llmConfig: wikiState.llmConfig,
-    },
-    registry: mockRegistry,
-    supportsTools: true,
-    skillConfigLoaded: true,
-    skillConfig: mockAgentSkillConfig,
-    writingSkills: [],
-    mcpCapabilities: [],
-    mcpWarnings: [],
-  }),
+  useAgentConfig: (...args: unknown[]) => {
+    agentConfigArgs.push(args)
+    const systemPrompt = args[0] as string
+    return {
+      config: {
+        maxRounds: 3,
+        tools: [],
+        systemPrompt,
+        llmConfig: wikiState.llmConfig,
+      },
+      registry: mockRegistry,
+      supportsTools: true,
+      skillConfigLoaded: true,
+      skillConfig: mockAgentSkillConfig,
+      writingSkills: [],
+    }
+  },
 }))
 
 vi.mock("@/components/chat/chat-shared", () => ({
@@ -133,6 +146,16 @@ vi.mock("@/commands/fs", () => ({
   getFileSize: vi.fn(async () => 0),
   writeFileAtomic: vi.fn(async () => {}),
   listDirectory: vi.fn(async () => []),
+  /*
+   * 上下文中枢（ContextSourceRegistry）在建实例时就会取这个函数当默认 hasher。
+   * 少了它，任何**真的发出一条消息**的用例都会在后台抛
+   * 「No "getFileMd5" export is defined on the "@/commands/fs" mock」——
+   * 那是个 unhandled rejection，vitest 会把它记成整个文件的 Error。
+   * 本文件此前没有发消息的用例，所以一直没暴露。
+   */
+  getFileMd5: vi.fn(async () => "mock-md5"),
+  // 同一个注册表在构造末尾会订阅文件变更；返回值必须是可调用的退订函数。
+  subscribeProjectFileMutations: vi.fn(() => () => {}),
 }))
 
 vi.mock("@/lib/project-refresh", () => ({
@@ -142,12 +165,15 @@ vi.mock("@/lib/project-refresh", () => ({
 vi.mock("@/lib/project-store", () => ({
   saveAiChatModel: vi.fn(async () => {}),
   saveAiWorkflowMode: vi.fn(async () => {}),
+  // 合并说明：两侧各自追加了自己的 mock，取并集。
+  // main（章节共创）→ saveAiWorkflowModeBeforeDiscuss
+  saveAiWorkflowModeBeforeDiscuss: vi.fn(async () => {}),
 }))
 
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { useChatStore } from "@/stores/chat-store"
 
-export interface RenderChatPanelOptions {
+interface RenderChatPanelOptions {
   activeConversation?: boolean
   activeConversationId?: string | null
   conversations?: Conversation[]
@@ -155,6 +181,12 @@ export interface RenderChatPanelOptions {
   runStates?: ConversationRunStates
   agentSkillConfig?: typeof defaultAgentSkillConfig | null
   taskBreakpoint?: TaskBreakpoint | null
+  /**
+   * 会话执行模式。丁-3 的用例传 `"fast"`：快速模式不跑 novel pre-plugin 链
+   * （`shouldRunNovelPrePluginChain` 的第一项），用例不再依赖真实的上下文装配，
+   * 既快又不会因为磁盘 mock 的细节而变红。不传时保持 `"standard"`（原有行为）。
+   */
+  aiWorkflowMode?: "fast" | "standard" | "strict"
 }
 
 export async function renderChatPanel(options: RenderChatPanelOptions = {}) {
@@ -164,6 +196,8 @@ export async function renderChatPanel(options: RenderChatPanelOptions = {}) {
     ? defaultAgentSkillConfig
     : options.agentSkillConfig
   mockTaskBreakpoint = options.taskBreakpoint ?? null
+  wikiState.aiWorkflowMode = options.aiWorkflowMode ?? "standard"
+  agentConfigArgs.length = 0
 
   const activeConversationId = options.activeConversationId !== undefined
     ? options.activeConversationId

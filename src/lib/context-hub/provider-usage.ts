@@ -2,6 +2,7 @@ import type { LlmUsage } from "@/lib/llm-usage"
 import {
   copyLlmRequestCacheTrace,
   type LlmRequestCacheTrace,
+  type LlmRequestUsageTotals,
 } from "@/lib/llm-request-trace"
 import type { UserMemoryDecision } from "@/lib/user-memory/decision-trace"
 import type {
@@ -12,7 +13,7 @@ import type {
   LlmRequestDiagnostics,
 } from "./types"
 
-export interface PersistContextHubProviderUsageOptions {
+interface PersistContextHubProviderUsageOptions {
   memoryDecision?: UserMemoryDecision | null
   requestDiagnostics?: LlmRequestDiagnostics | null
 }
@@ -21,14 +22,19 @@ export function buildLlmRequestDiagnostics(
   usage: LlmUsage | undefined,
   requestCount = 1,
   traceOptions: {
+    usageTotals?: LlmRequestUsageTotals
     requests?: LlmRequestCacheTrace[]
     omittedRequestCount?: number
     requestCountAvailable?: boolean
     usageScope?: "workflow" | "provider_thread"
   } = {},
 ): LlmRequestDiagnostics {
-  const tracedRequestCount = (traceOptions.requests?.length ?? 0)
-    + Math.max(0, traceOptions.omittedRequestCount ?? 0)
+  const tracedRequestCount = traceOptions.usageTotals?.requestCount
+    ?? ((traceOptions.requests?.length ?? 0) + Math.max(0, traceOptions.omittedRequestCount ?? 0))
+  // 完整逐请求总账包含嵌套工作流；外层usage只作为旧调用方的兼容回退。
+  if (traceOptions.usageTotals && traceOptions.usageScope !== "provider_thread") {
+    usage = traceOptions.usageTotals
+  }
   const requestCountAvailable = traceOptions.requestCountAvailable ?? true
   const effectiveRequestCount = requestCountAvailable
     ? (tracedRequestCount > 0 ? tracedRequestCount : requestCount)
@@ -69,10 +75,16 @@ export function buildLlmRequestDiagnostics(
     ...(traceOptions.omittedRequestCount !== undefined
       ? { omittedRequestCount: Math.max(0, traceOptions.omittedRequestCount) }
       : {}),
+    ...(traceOptions.usageTotals ? { usageTotals: { ...traceOptions.usageTotals } } : {}),
   }
 }
 
-export function mergeLlmRequestDiagnostics(
+function sumReported(previous: number | undefined, next: number | undefined, previousRequests: number): number | undefined {
+  if (next === undefined || (previousRequests > 0 && previous === undefined)) return undefined
+  return (previous ?? 0) + next
+}
+
+function mergeLlmRequestDiagnostics(
   existing: LlmRequestDiagnostics | undefined,
   usage: LlmUsage | undefined,
 ): LlmRequestDiagnostics {
@@ -96,10 +108,10 @@ export function mergeLlmRequestDiagnostics(
     ...base,
     requestCount: base.requestCountAvailable === false ? base.requestCount : base.requestCount + 1,
     providerUsageAvailable: true,
-    inputTokens: (base.inputTokens ?? 0) + (usage.inputTokens ?? 0),
-    outputTokens: (base.outputTokens ?? 0) + (usage.outputTokens ?? 0),
-    cacheReadTokens: (base.cacheReadTokens ?? 0) + (usage.cachedInputTokens ?? 0),
-    cacheWriteTokens: (base.cacheWriteTokens ?? 0) + (usage.cacheWriteInputTokens ?? 0),
+    inputTokens: sumReported(base.inputTokens, usage.inputTokens, base.requestCount),
+    outputTokens: sumReported(base.outputTokens, usage.outputTokens, base.requestCount),
+    cacheReadTokens: sumReported(base.cacheReadTokens, usage.cachedInputTokens, base.requestCount),
+    cacheWriteTokens: sumReported(base.cacheWriteTokens, usage.cacheWriteInputTokens, base.requestCount),
   }
 }
 

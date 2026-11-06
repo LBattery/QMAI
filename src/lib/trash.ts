@@ -1,8 +1,17 @@
-import { createDirectory, deleteFile, fileExists, readFile, writeFile } from "@/commands/fs"
-import { normalizePath } from "@/lib/path-utils"
+import {
+  copyDirectory,
+  createDirectory,
+  deleteFile,
+  fileExists,
+  listDirectory,
+  readFile,
+  writeFile,
+} from "@/commands/fs"
+import { isChapterPath, normalizePath } from "@/lib/path-utils"
 import { makeChapterFileStem, makeSafeFileSlug } from "@/lib/wiki-filename"
+import { useWritingStatsStore } from "@/stores/writing-stats-store"
 
-export type TrashItemKind = "chapter" | "outline" | "page" | "file" | "history"
+export type TrashItemKind = "chapter" | "outline" | "page" | "file" | "history" | "skill" | "storymap"
 
 export interface TrashItem {
   id: string
@@ -14,7 +23,7 @@ export interface TrashItem {
   kind: TrashItemKind
 }
 
-export interface RestoreTrashResult {
+interface RestoreTrashResult {
   item: TrashItem
   restoredPath: string
   renamed: boolean
@@ -72,6 +81,16 @@ function getStem(name: string): string {
 
 function makeTrashId(now: number): string {
   return `${formatDateTime(now)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** 判断路径是否为目录：list_directory 对目录成功（含空目录），对文件/不存在路径会失败 */
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    await listDirectory(path)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function extractFrontmatterString(content: string, field: string): string | null {
@@ -156,19 +175,31 @@ export async function moveFileToTrash(
   const normalizedPath = normalizePath(filePath)
   const name = getBaseName(normalizedPath)
   const id = makeTrashId(now)
-  const trashPath = `${trashFilesDir(pp)}/${id}${getExtension(name)}`
-
-  // 尝试读取文件内容；如果文件不存在（损坏/幽灵条目），用空内容占位，
-  // 确保删除操作不会因为读不到文件而失败
-  let content: string
-  try {
-    content = await readFile(normalizedPath)
-  } catch {
-    content = ""
-  }
+  const isDir = await isDirectory(normalizedPath)
+  // 目录条目不带扩展名；文件条目保留原扩展名（便于恢复/预览）
+  const trashPath = isDir
+    ? `${trashFilesDir(pp)}/${id}`
+    : `${trashFilesDir(pp)}/${id}${getExtension(name)}`
 
   await ensureTrashDirs(pp)
-  await writeFile(trashPath, content)
+  if (isDir) {
+    // 整目录移入回收站（copy_directory 复制目录内容到目标目录）
+    try {
+      await copyDirectory(normalizedPath, trashPath)
+    } catch {
+      // 目录可能已不存在（幽灵条目），静默继续
+    }
+  } else {
+    // 尝试读取文件内容；如果文件不存在（损坏/幽灵条目），用空内容占位，
+    // 确保删除操作不会因为读不到文件而失败
+    let content: string
+    try {
+      content = await readFile(normalizedPath)
+    } catch {
+      content = ""
+    }
+    await writeFile(trashPath, content)
+  }
   const item: TrashItem = {
     id,
     name,
@@ -181,7 +212,7 @@ export async function moveFileToTrash(
   const items = await readTrashItems(pp)
   await writeTrashItems(pp, [item, ...items])
 
-  // 删除原文件，忽略不存在的情况（幽灵条目）
+  // 删除原路径（文件或目录），忽略不存在的情况（幽灵条目）
   try {
     await deleteFile(normalizedPath)
   } catch {
@@ -222,12 +253,24 @@ export async function restoreTrashItem(
   const items = await readTrashItems(pp)
   const item = items.find((candidate) => candidate.id === itemId)
   if (!item) throw new Error("回收站项目不存在")
-  const content = await readFile(item.trashPath)
+  const isDir = await isDirectory(item.trashPath)
+  const content = isDir ? "" : await readFile(item.trashPath)
   void now
   const restoreTarget = await resolveRestorePath(item, content)
   const dir = getDirName(restoreTarget.path)
   if (dir) await createDirectory(dir)
-  await writeFile(restoreTarget.path, content)
+  if (isDir) {
+    // 目录：整目录复制回原位置（copy_directory 复制内容到目标目录）
+    await copyDirectory(item.trashPath, restoreTarget.path)
+  } else {
+    await writeFile(restoreTarget.path, content)
+  }
+  // 还原到**改名后**的新路径时，把写作归属账本一起搬过去。
+  // 不搬的话旧键成了孤儿、新路径从零打基线，用户此前手写的归属会静默消失
+  // （自己敲了几百字 → 删掉 → 还原，那几百字就凭空不算了）。
+  if (restoreTarget.renamed && isChapterPath(restoreTarget.path)) {
+    useWritingStatsStore.getState().transferChapter(item.originalPath, restoreTarget.path)
+  }
   await deleteFile(item.trashPath)
   await writeTrashItems(pp, items.filter((candidate) => candidate.id !== itemId))
   return {
@@ -266,6 +309,7 @@ export function getTrashDaysRemaining(item: TrashItem, now = Date.now()): number
 }
 
 export async function readTrashItemContent(item: TrashItem): Promise<string> {
+  if (await isDirectory(item.trashPath)) return ""
   return await readFile(item.trashPath)
 }
 

@@ -1,11 +1,15 @@
+import { ScrollToLatestButton } from "./scroll-to-latest-button"
 import { useRef, useEffect, useCallback, useState, useMemo, useDeferredValue, type CSSProperties } from "react"
 import { createPortal } from "react-dom"
 import { useTranslation } from "react-i18next"
-import { BookOpen, Plus, Trash2, MessageSquare, FileEdit, Drama, ListChecks, ChevronDown, Check, History, ArrowDown } from "lucide-react"
+import { BookOpen, Plus, Trash2, ListChecks, ChevronDown, Check, History, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { UiTestAiIdentity, UiTestAiAuthor, UiTestAiEmpty, UiTestAiModel, getUiTestAiMenuStyle, useUiTestAiMenuFocus } from "@/components/uitest/ui-test-ai-parts"
+import "@/components/uitest/ui-test-ai.css"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ChatMessage, StreamingMessage } from "./chat-message"
 import { ChatModelSelector } from "./chat-model-selector"
+import { ReasoningDepthControl } from "./reasoning-depth-control"
 import { useSourceFiles } from "./chat-shared"
 import { useStreamingText } from "@/hooks/use-streaming-text"
 import {
@@ -19,14 +23,15 @@ import { useChatStore, type DisplayMessage } from "@/stores/chat-store"
 import { useShallow } from "zustand/react/shallow"
 import { useOutlineChatStore } from "@/stores/outline-chat-store"
 import { useWikiStore } from "@/stores/wiki-store"
+import { useWritingStatsStore } from "@/stores/writing-stats-store"
 import { useStorySimulationStore } from "@/stores/story-simulation-store"
-import { DeAiSkillPicker } from "@/components/skill-library/de-ai-skill-picker"
 import { ReferenceInput, type InsertReferenceTokens } from "@/components/reference/ReferenceInput"
 import { ReferencePickerDialog } from "@/components/reference/ReferencePickerDialog"
 import { ConversationRunStatusIcon } from "@/components/common/conversation-run-status-icon"
 import { ConversationDeleteConfirmDialog } from "@/components/common/conversation-delete-confirm-dialog"
 import { ConversationHistoryClearDialog } from "@/components/common/conversation-history-clear-dialog"
 import { chatConversationRunRegistry } from "@/lib/conversation-run-registry"
+import { registerChatGenerationStop } from "@/lib/mcp/stop-writing"
 import { toast } from "@/lib/toast"
 import {
   chapterProvider,
@@ -38,8 +43,19 @@ import {
   outlineProvider,
 } from "@/lib/reference/providers"
 import type { ReferenceToken } from "@/lib/reference/types"
+import { collectReferencedStylePresetIds, STYLE_SKILL_SUBTYPE } from "@/lib/reference/style-reference"
+import { collectReferencedSoulAuraIds, SOUL_SKILL_SUBTYPE } from "@/lib/reference/soul-reference"
+import {
+  beginMessageScopedSoulBinding,
+  releaseMessageScopedSoulBinding,
+  type MessageScopedSoulBinding,
+} from "@/lib/novel/message-scoped-soul-binding"
+import { useCharacterSoulReference } from "@/components/chat/use-character-soul-reference"
 import { runAiChatSession } from "@/lib/agent/ai-chat-session"
-import { resolveRequiredToolsOnce } from "@/lib/agent/required-tools-gate"
+import {
+  RequiredToolFallbackError,
+  resolveRequiredToolsOnce,
+} from "@/lib/agent/required-tools-gate"
 import { runDraftReviewSkill } from "@/lib/agent/skills/draft-review-skill"
 import { useDraftReviewStore } from "@/stores/draft-review-store"
 import { ToolRegistry } from "@/lib/agent/registry"
@@ -51,8 +67,8 @@ import {
 } from "@/lib/novel/chapter-plan-self-check"
 import type { AgentMessage, AgentRunRecord } from "@/lib/agent/types"
 import type { AgentToolEvent } from "@/lib/agent/types"
-import type { UserSkill } from "@/lib/novel/skill-library"
-import type { ContextPack } from "@/lib/novel/context-engine"
+import { skillDisplayName, skillDisplayNameByName, type UserSkill } from "@/lib/novel/skill-library"
+import { SourceCanonOverflowError, type ContextPack } from "@/lib/novel/context-engine"
 import type { PrePluginChainResult } from "@/lib/agent/pipeline"
 import { applyAgentToolActivityEvent, applyAgentToolEvent } from "@/lib/agent/tool-events"
 import { applyAgentActivityEvent, createAgentActivityEvent, settleRunningAgentStages } from "@/lib/agent/activity-trace"
@@ -60,8 +76,8 @@ import { useAgentConfig } from "@/hooks/use-agent-config"
 import { resolveContextPackTokenBudget } from "@/lib/context-budget"
 import { resolveChapterLengthSpec } from "@/lib/novel/deep-chapter-prompts"
 import { executeIngestWrites } from "@/lib/ingest"
-import { routeTask, buildTaskDirective, type TaskRouteResult } from "@/lib/novel/task-router"
-import { writeFile, createDirectory, deleteFile } from "@/commands/fs"
+import { routeTask, buildTaskDirective, isChapterWritingIntent, type TaskRouteResult } from "@/lib/novel/task-router"
+import { writeFile, readFile, createDirectory, deleteFile } from "@/commands/fs"
 import {
   detectLastGeneratedChapterNumber,
   findChapterFileByNumber,
@@ -85,7 +101,21 @@ import {
   canCreateNewConversation,
   EMPTY_CONVERSATION_CREATE_REASON,
 } from "@/lib/conversation-create-guard"
-import { saveAiChatModel, saveAiWorkflowMode } from "@/lib/project-store"
+import { saveAiChatModel, saveAiChatReasoningDepth, saveAiWorkflowMode, saveAiWorkflowModeBeforeDiscuss } from "@/lib/project-store"
+import {
+  buildChapterDiscussCustomPrompt,
+  buildChapterDiscussExecutionPrompt,
+  buildChapterDiscussPhaseSystemRules,
+  buildChapterDiscussPlanBlueprint,
+  buildChapterDiscussRegeneratePrompt,
+  stripChapterDiscussMarkers,
+  type ChapterDiscussDirection,
+  type ChapterDiscussDecision,
+  type ChapterDiscussPhase,
+  type ChapterDiscussProtocol,
+} from "@/lib/novel/chapter-discuss-protocol"
+import { resolveChapterDiscussProtocol } from "@/lib/novel/chapter-discuss-repair"
+import { resolveModelConfig } from "@/lib/novel/model-resolver"
 import {
   buildGoldenThreeChapterDirective,
   detectGoldenThreeChapterRequest,
@@ -116,11 +146,11 @@ import type { AiWorkflowMode } from "@/lib/agent/workflow-mode"
 import { buildPlanExecutePolicyPrompt, WRITING_INTENTS } from "@/lib/agent/plan-execute-policy"
 import {
   buildOutlineFindProtocol,
+  splitOutlineFindProtocolForCache,
   shouldIncludeOutlineFindProtocol,
 } from "@/lib/novel/outline-find-protocol"
 import { createContextTrace, finishTrace, setContextInfo, type ContextTrace } from "@/lib/agent/context-trace"
 import { settleRunningAgentToolCalls } from "@/lib/agent/tool-events"
-import { appendMcpCallTrace } from "@/lib/agent/mcp-trace"
 import { runNovelPrePluginChain } from "@/lib/agent/novel-pre-plugin-chain"
 import { buildInitialContextTraceInfo } from "@/lib/agent/context-trace-builders"
 import { runPostWriteCheckAI } from "@/lib/agent/plugins/post-write-check-ai"
@@ -133,8 +163,11 @@ import { buildResultProtocolTrace } from "@/lib/novel/result-parser"
 // import { joinPath } from "@/lib/path-utils"
 // import type { AiCapability } from "@/lib/agent/capabilities/types"
 import { deAiSkillToUserSkill } from "@/lib/novel/de-ai-skill-library"
+import { WritingStylePicker } from "@/components/skill-library/writing-style-picker"
+import { useWritingStyleOptions } from "@/components/skill-library/use-writing-style-options"
 import {
-  buildContextHubSystemContent,
+  buildContextHubPromptParts,
+  withContextHubTaskContent,
   buildSessionContextSummary,
   flattenContextHubSystemContent,
   buildLlmRequestDiagnostics,
@@ -155,6 +188,27 @@ import { getEffectiveMaxContextSize } from "@/lib/llm-providers"
 import { ContextUsageRing } from "@/components/chat/context-usage-ring"
 import { enqueueUserMemoryLearning } from "@/lib/user-memory/learning-service"
 import { recordLatestUserMemoryFeedback } from "@/lib/user-memory/feedback-service"
+import { CONTINUE_STOPPED_GENERATION_PROMPT } from "@/lib/novel/stopped-generation"
+import { FAILED_GENERATION_CONTINUE_PROMPT } from "@/lib/novel/failed-generation"
+import {
+  ensureSystemNotificationPermission,
+  notifyChapterWritingOutcome,
+} from "@/lib/system-notification"
+
+/** 快速模式普通对话（general_chat）时不给模型暴露的小说资料读取类工具，避免对无关问候无谓读取记忆/资料浪费 token。 */
+const NOVEL_CONTEXT_READ_TOOLS = new Set([
+  "read_chapter",
+  "read_outline",
+  "read_memory",
+  "read_deduction",
+  "read_chat_history",
+  "read_outline_history",
+  "search_chapters",
+  "list_chapters",
+  "list_outlines",
+  "list_memories",
+  "list_deductions",
+])
 
 
 /* spec-test patterns */
@@ -186,7 +240,13 @@ const aiWorkflowModeOptions: Array<{
     mode: "strict",
     label: "严格",
     description: "完整质检",
-    routeDescription: "读取更完整上下文，执行审稿、返修、复审、去AI味和计划验收。会联网搜索。",
+    routeDescription: "读取更完整上下文，执行审稿、返修、复审、按需局部修改和计划验收。",
+  },
+  {
+    mode: "discuss",
+    label: "共创",
+    description: "方向共创",
+    routeDescription: "读取前文推演后续走向，给出 3-4 个不同故事类型的方向供挑选；选定后再进入正文生成。",
   },
 ]
 const currentModelNotSupportMsg = "当前模型不支持工具调用，已切换为普通对话模式"
@@ -207,12 +267,6 @@ function formatDate(timestamp: number): string {
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
   }
   return d.toLocaleDateString([], { month: "short", day: "numeric" })
-}
-
-export function getDeepChapterToggleButtonClass(enabled: boolean): string {
-  return enabled
-    ? "border-primary bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 hover:text-primary-foreground"
-    : "text-muted-foreground hover:text-foreground"
 }
 
 export function getWorkflowModeButtonClass(active: boolean): string {
@@ -236,7 +290,7 @@ function appendWebSearchTrace(trace: ContextTrace, event: AgentToolEvent): Conte
   if (event.name !== "web_search" || event.type !== "result") return trace
   const fallback: NonNullable<ContextTrace["contextInfo"]> = {
     intent: "general_chat" as any, confidence: 1, routeSource: "default" as any,
-    loadedSources: [], blockedSources: [], webSearches: [], mcpCalls: [],
+    loadedSources: [], blockedSources: [], webSearches: [],
     retrievalHits: [], trimmedSections: [],
   }
   const info = trace.contextInfo ?? fallback
@@ -262,6 +316,8 @@ function buildChapterPlanSelfCheckContext(pack: ContextPack | null): ChapterPlan
     foreshadowingStates: pack.foreshadowingStates,
     timeline: pack.timeline,
     canonRules: pack.canonRules,
+    // 同人项目：章节计划自检也必须拿到原作正典，否则「原作正典」核对行恒为空。
+    sourceCanon: pack.sourceCanon ?? "",
     mustAvoid: pack.mustAvoid,
   }
 }
@@ -289,9 +345,10 @@ function buildWorkflowRouteActivityContent(
 function buildSelectedSkillsActivityContent(
   skills: UserSkill[] | undefined,
   missingSkillNames: string[] = [],
+  availableSkills: readonly UserSkill[] = [],
 ): string {
   const missingText = missingSkillNames.length > 0
-    ? `\n缺失或已禁用：${missingSkillNames.join("、")}。未强制启用。`
+    ? `\n缺失或已禁用：${missingSkillNames.map((name) => skillDisplayNameByName(name, availableSkills)).join("、")}。未强制启用。`
     : ""
   if (!skills || skills.length === 0) {
     return `本次未启用 Skill：当前任务、模式或阶段没有匹配到可用技能。${missingText}`
@@ -300,32 +357,53 @@ function buildSelectedSkillsActivityContent(
     .map((skill, index) => {
       const stageText = skill.stages.length > 0 ? skill.stages.join("、") : "未标注阶段"
       const kindText = skill.kind.length > 0 ? skill.kind.join("、") : "未标注类型"
-      return `${index + 1}. ${skill.name}｜阶段：${stageText}｜类型：${kindText}｜优先级：${skill.priority ?? 50}`
+      return `${index + 1}. ${skillDisplayName(skill)}｜阶段：${stageText}｜类型：${kindText}｜优先级：${skill.priority ?? 50}`
     })
     .join("\n") + missingText
 }
 
-function buildChatAgentSystemPrompt(options: {
+export function buildChatAgentSystemPrompt(options: {
   novelMode: boolean
   mode: "chat" | "ingest"
   chatEditModeEnabled: boolean
   aiWorkflowMode?: AiWorkflowMode
+  writingWebSearchEnabled?: boolean
   planExecuteEnabled?: boolean
   agentWritingSkills?: UserSkill[]
   projectName?: string
   bindingTitle?: string
   targetChapterNumber?: number
+  /** 共创（discuss）讨论轮的目标章节标识，用于拼接方向推演规则。 */
+  chapterDiscussModule?: string
   /** 仅章节写作且不会走 pre-plugin 时注入，避免与 build_system_prompt plugin 重复 */
   includeOutlineFindProtocol?: boolean
+  /**
+   * 本轮请求是否真的会携带工具（= 供应商开关开着 且 模型不在黑名单里）。
+   *
+   * 关闭 Function Calling 时它会是 false，而提示词**必须**跟着变：
+   * 继续要求「必须调用 run_chapter_workflow」时，模型手上没有任何工具，
+   * 只能回一句「我无法读取文件」，或者干脆吐一段假的工具 JSON ——
+   * 这正是「关掉开关后本地模型依然不能用」的直接原因。
+   */
+  toolsEnabled?: boolean
 }): string {
-  const lines = [
-    options.novelMode
-      ? "你是专业小说写作助手。请通过可用工具读取项目资料、章节、记忆、大纲、推演结果和历史对话，再完成用户要求。"
-      : "你是专业资料库问答助手。请通过可用工具读取项目资料、记忆、大纲、推演结果和历史对话，再回答用户问题。",
-    "不要假设 @ 引用内容已经注入上下文；用户提供引用时，必须优先使用对应工具读取具体内容。",
-    "如果需要修改或写入项目内容，先确认目标文件和用户意图，再使用写入类工具。",
-    "所有面向用户的回复必须使用中文，除非用户明确要求其他语言。",
-  ]
+  const toolsEnabled = options.toolsEnabled !== false
+  const lines = toolsEnabled
+    ? [
+        options.novelMode
+          ? "你是专业小说写作助手。请通过可用工具读取项目资料、章节、记忆、大纲、推演结果和历史对话，再完成用户要求。"
+          : "你是专业资料库问答助手。请通过可用工具读取项目资料、记忆、大纲、推演结果和历史对话，再回答用户问题。",
+        "不要假设 @ 引用内容已经注入上下文；用户提供引用时，必须优先使用对应工具读取具体内容。",
+        "如果需要修改或写入项目内容，先确认目标文件和用户意图，再使用写入类工具。",
+        "所有面向用户的回复必须使用中文，除非用户明确要求其他语言。",
+      ]
+    : [
+        options.novelMode
+          ? "你是专业小说写作助手。本轮未启用工具调用，请直接依据用户消息与本轮已提供的上下文完成回答或写作。"
+          : "你是专业资料库问答助手。本轮未启用工具调用，请直接依据用户消息与本轮已提供的上下文回答问题。",
+        "本轮没有任何工具可用：不要输出工具调用、函数调用或任何调用标记，不要要求用户先让你读取文件；没有给出的资料就按现有信息作答，并说明依据有限。",
+        "所有面向用户的回复必须使用中文，除非用户明确要求其他语言。",
+      ]
 
   if (options.projectName) {
     lines.push(`当前项目：${options.projectName}`)
@@ -334,15 +412,27 @@ function buildChatAgentSystemPrompt(options: {
     lines.push("当前处于资料写入模式，用户可能希望把对话内容整理写入资料库。")
   }
   if (options.novelMode) {
-    const planPhase = Boolean(options.planExecuteEnabled) && options.aiWorkflowMode !== "fast"
+    // 计划阶段依赖后续用工具执行；没有工具时只出计划等于把用户卡死在半路，
+    // 所以无工具模式下不进计划阶段，直接走下面的「直接输出正文」。
+    const planPhase = toolsEnabled && Boolean(options.planExecuteEnabled) && options.aiWorkflowMode !== "fast" && options.aiWorkflowMode !== "discuss"
     if (planPhase) {
       // 计划阶段与"只输出正文/必须调 run_chapter_workflow"互斥：同时注入
       // 会让模型在两套矛盾指令之间随机选择，表现为跳过计划直接产出正文。
-      lines.push("当前处于章节计划阶段：本轮只输出章节创作计划并等待用户确认，禁止输出章节正文，禁止调用 run_chapter_workflow 等正文生成类工具。")
+      lines.push(toolsEnabled
+        ? "当前处于章节计划阶段：本轮只输出章节创作计划并等待用户确认，禁止输出章节正文，禁止调用 run_chapter_workflow 等正文生成类工具。"
+        : "当前处于章节计划阶段：本轮只输出章节创作计划并等待用户确认，禁止输出章节正文。")
     } else if (options.aiWorkflowMode === "fast") {
       lines.push("小说模式下，如果用户要求生成、续写或改写章节，只输出可直接放入章节库的正文。")
       lines.push("章节生成、续写或改写任务的最终回复必须只包含章节正文，不要把工具读取过程、写作计划或执行过程展示给用户。")
       lines.push("不要输出读取说明、执行总结、完成目标表格、章节结构、后续建议、引用来源或 Markdown 表格；章节标题和正文以外的内容都不要输出。")
+    } else if (options.aiWorkflowMode === "discuss") {
+      // 共创讨论轮：只做方向推演，不产出正文，也不得调用章节工作流。
+      lines.push(buildChapterDiscussPhaseSystemRules(options.chapterDiscussModule ?? ""))
+    } else if (!toolsEnabled) {
+      // 没有工具就没有 run_chapter_workflow 可调：此时要求「必须调用工具否则
+      // 禁止输出正文」等于让模型什么都不能说。改为直接交付正文。
+      lines.push("小说模式下，如果用户要求生成、续写或改写章节，请直接输出可放入章节库的完整正文（含章节标题）。")
+      lines.push("不要输出读取说明、执行总结或章节结构等过程性内容。")
     } else {
       // 走工作流时正文由工具直接交付，再要求模型「只输出正文」会诱导它把
       // 终稿复述一遍：既多花一次生成，又可能改坏已经定稿的正文。
@@ -355,7 +445,9 @@ function buildChatAgentSystemPrompt(options: {
     }
     if (options.aiWorkflowMode === "fast") {
       lines.push("快速模式下可以读取必要上下文；除非用户明确要求使用工作流或 Skill，否则不要主动调用 run_chapter_workflow。")
-    } else if (!planPhase) {
+    } else if (options.aiWorkflowMode === "discuss") {
+      lines.push("本轮不要调用 run_chapter_workflow，也不要输出章节正文；只给出方向与关键判断。")
+    } else if (!planPhase && toolsEnabled) {
       lines.push("章节生成、续写、改写或润色必须调用 run_chapter_workflow 工具；未调用前禁止输出章节终稿正文。")
     }
   }
@@ -368,15 +460,27 @@ function buildChatAgentSystemPrompt(options: {
         lines.push("标准模式：读取上下文，生成任务书和正文初稿后直接完成，不做正文后审核。")
         break
       case "strict":
-        lines.push("严格模式：读取更完整上下文，执行更严格的审稿、返修和一致性检查。会联网搜索。如果有外部搜索需求，必须使用 web_search 工具，不得声称已经搜索。未使用联网资料时，在回复末尾注明。")
+        lines.push("严格模式：读取更完整上下文，执行更严格的审稿、返修和一致性检查。")
+        break
+      case "discuss":
+        lines.push("共创模式：读取前文并推演后续走向，给出 3-4 个不同故事类型的方向供作者挑选；选定方向前不产出正文。")
         break
       }
-    if (options.planExecuteEnabled && options.aiWorkflowMode !== "fast") {
+    if (
+      options.writingWebSearchEnabled
+      && toolsEnabled
+      && options.aiWorkflowMode !== "fast"
+    ) {
+      lines.push("会联网搜索。如果有外部搜索需求，必须使用 web_search 工具，不得声称已经搜索。未使用联网资料时，在回复末尾注明。")
+    }
+    if (options.planExecuteEnabled && toolsEnabled && options.aiWorkflowMode !== "fast" && options.aiWorkflowMode !== "discuss") {
       lines.push(buildPlanExecutePolicyPrompt(options.aiWorkflowMode))
     }
   }
   if (options.chatEditModeEnabled) {
-    lines.push("用户已开启编辑章节模式，如涉及章节修改，请优先定位目标章节并使用章节读写工具。")
+    lines.push(toolsEnabled
+      ? "用户已开启编辑章节模式，如涉及章节修改，请优先定位目标章节并使用章节读写工具。"
+      : "用户已开启编辑章节模式，但本轮没有写入工具：请把需要修改的段落原文与改写结果直接写在回复里。")
   }
   if (options.bindingTitle) {
     lines.push(`当前绑定故事框架：${options.bindingTitle}`)
@@ -423,9 +527,64 @@ const SIMULATION_INTENTS = new Set([
   "story_framework_generate",
   "multi_agent_simulate",
   "character_interview",
+  "scenario_simulate",
 ])
 
-function appendAgentChatMessages(conversationId: string, content: string, tokens: ReferenceToken[]) {
+interface ChatSendOptions {
+  /** Internal recovery path for a failed mandatory chapter workflow. */
+  forceRequiredToolsImmediately?: boolean
+  /** Existing assistant bubble to reset and reuse instead of appending messages. */
+  retryAssistantMessageId?: string
+  /** Preserve the execution policy selected for the failed request. */
+  workflowMode?: AiWorkflowMode
+  planExecuteActive?: boolean
+  /** 共创模式：本轮是方向推演（decision）还是选定后的正文生成（generation）。 */
+  chapterDiscussPhase?: "decision" | "generation"
+}
+
+type ChatSend = (
+  text: string,
+  tokens?: ReferenceToken[],
+  displayText?: string,
+  planBlueprint?: string,
+  targetConversationId?: string,
+  options?: ChatSendOptions,
+) => Promise<void>
+
+function isRequiredChapterWorkflowFailure(error: Error | null): boolean {
+  if (!error) return false
+  if (error instanceof RequiredToolFallbackError) {
+    return error.toolName === "run_chapter_workflow"
+  }
+  // Preserve retryability when an Error crosses a serialization boundary.
+  return (
+    error.name === "RequiredToolFallbackError"
+    && error.message.includes("run_chapter_workflow")
+  )
+}
+
+function resetAssistantMessageForRequiredToolRetry(message: DisplayMessage): DisplayMessage {
+  return {
+    ...message,
+    content: "",
+    reasoning_content: "",
+    agentToolCalls: [],
+    agentStages: [],
+    isAgentRunning: true,
+    discarded: false,
+    references: undefined,
+    contextTrace: undefined,
+    contextHubSnapshot: undefined,
+    chapterRef: undefined,
+  }
+}
+
+function appendAgentChatMessages(
+  conversationId: string,
+  content: string,
+  tokens: ReferenceToken[],
+  chapterDiscussPhase?: ChapterDiscussPhase,
+) {
   const now = Date.now()
   const userMessage: DisplayMessage = {
     id: createLocalMessageId("user"),
@@ -441,9 +600,11 @@ function appendAgentChatMessages(conversationId: string, content: string, tokens
     content: "",
     timestamp: now,
     conversationId,
+    ...(chapterDiscussPhase ? { chapterDiscussPhase } : {}),
     agentToolCalls: [],
     agentStages: [],
     isAgentRunning: true,
+    generationTiming: { startedAt: now },
   }
 
   useChatStore.setState((state) => {
@@ -472,9 +633,13 @@ function updateAgentAssistantMessage(
   updater: (message: DisplayMessage) => DisplayMessage,
 ): void {
   useChatStore.setState((state) => ({
-    messages: state.messages.map((message) =>
-      message.id === messageId ? updater(message) : message,
-    ),
+    messages: state.messages.map((message) => {
+      if (message.id !== messageId) return message
+      const next = updater(message)
+      return next.isAgentRunning === false && message.generationTiming && !message.generationTiming.finishedAt
+        ? { ...next, generationTiming: { ...message.generationTiming, finishedAt: Date.now() } }
+        : next
+    }),
   }))
 }
 
@@ -525,12 +690,14 @@ function ConversationTabs({ onBeforeDelete }: { onBeforeDelete: (conversationId:
   const [pendingClearHistoryIds, setPendingClearHistoryIds] = useState<string[] | null>(null)
 
   const isStreamingConversation = (convId: string) => runStates[convId]?.status === "running"
-  const { topConversations, historyConversations } = splitConversationToolbarItems(
+  const { historyConversations } = splitConversationToolbarItems(
     conversations,
     activeConversationId,
     isStreamingConversation,
   )
   const historyCount = historyConversations.length
+  const menuConversations = conversations
+  useUiTestAiMenuFocus(historyOpen && Boolean(historyDropdownStyle), historyDropdownRef, historyButtonRef, setHistoryOpen)
   const hasSentUserMessage = activeConversationId
     ? messages.some((message) =>
         message.conversationId === activeConversationId && message.role === "user",
@@ -570,42 +737,11 @@ function ConversationTabs({ onBeforeDelete }: { onBeforeDelete: (conversationId:
       setHistoryDropdownStyle(null)
       return
     }
-    const PANEL_WIDTH = 288
-    const GAP = 6
     function updatePosition() {
       const rect = historyButtonRef.current?.getBoundingClientRect()
       if (!rect) return
-      const vw = window.innerWidth
-      const vh = window.innerHeight
-      // 水平：默认贴按钮右边展开，右侧空间不够时贴按钮左边
-      let left: number
-      const rightSpace = vw - rect.right
-      const leftSpace = rect.left
-      if (rightSpace >= PANEL_WIDTH + GAP) {
-        left = rect.right - PANEL_WIDTH
-        if (left < GAP) left = GAP
-      } else if (leftSpace >= PANEL_WIDTH + GAP) {
-        left = rect.left
-        if (left + PANEL_WIDTH > vw - GAP) left = vw - PANEL_WIDTH - GAP
-      } else {
-        // 视口太窄，居左撑开（最大 288，剩边距）
-        left = GAP
-      }
-      // 垂直：默认下方，不够时翻上方
-      const availableBelow = vh - rect.bottom
-      const availableAbove = rect.top
-      const MAX_HEIGHT = 360
-      const MIN_HEIGHT = 160
-      let top: number
-      let maxHeight: number
-      if (availableBelow < MIN_HEIGHT && availableAbove >= MIN_HEIGHT) {
-        maxHeight = Math.min(MAX_HEIGHT, availableAbove - GAP)
-        top = rect.top - maxHeight - GAP
-      } else {
-        maxHeight = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, availableBelow - GAP))
-        top = rect.bottom + GAP
-      }
-      setHistoryDropdownStyle({ left, top, width: PANEL_WIDTH, maxHeight })
+      setHistoryDropdownStyle(getUiTestAiMenuStyle(rect))
+      return
     }
     const raf = requestAnimationFrame(updatePosition)
     window.addEventListener("resize", updatePosition)
@@ -674,12 +810,13 @@ function ConversationTabs({ onBeforeDelete }: { onBeforeDelete: (conversationId:
           type="button"
           className="flex items-center gap-2 rounded-full px-2 py-1.5"
           onClick={() => setActiveConversation(conv.id)}
+          aria-current={isActive}
           title={conv.title}
         >
           <ConversationRunStatusIcon state={runState} />
           <span className="max-w-[140px] truncate font-medium">{getConversationTabTitle(conv.title, 10)}</span>
-          <span className="text-[10px] opacity-70">{msgCount}</span>
-          <span className="text-[10px] opacity-70">{formatDate(conv.updatedAt)}</span>
+          <span className="text-[0.625rem] opacity-70">{msgCount}</span>
+          <span className="text-[0.625rem] opacity-70">{formatDate(conv.updatedAt)}</span>
         </button>
         <button
           type="button"
@@ -696,7 +833,13 @@ function ConversationTabs({ onBeforeDelete }: { onBeforeDelete: (conversationId:
   // 顶部统一为三段式：新建写作绘画 / 正在工作的绘画 / 绘画历史记录
   return (
     <>
-    <div className="flex h-12 shrink-0 items-center gap-2 border-b bg-muted/20 px-2">
+    <div className="flex h-12 shrink-0 items-center gap-2 border-b bg-muted/20 px-2" data-ui-ai-header>
+        <UiTestAiIdentity
+          title="写作助手"
+          conversationTitle={conversations.find((conversation) => conversation.id === activeConversationId)?.title}
+          status={activeConversationId ? <ConversationRunStatusIcon state={runStates[activeConversationId]} /> : undefined}
+        />
+        <div className="qmai-header-actions ml-auto flex shrink-0 items-center">
         {/* 1. 新建写作绘画 */}
         <span
           className="inline-flex shrink-0"
@@ -705,7 +848,7 @@ function ConversationTabs({ onBeforeDelete }: { onBeforeDelete: (conversationId:
           <Button
             variant="ghost"
             size="icon-sm"
-            className="qmai-new-conversation-button shrink-0 rounded-full border border-emerald-300 bg-emerald-50 text-emerald-700 shadow-sm hover:bg-emerald-100 hover:text-emerald-800 dark:border-emerald-800/70 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-900/50"
+            className="qmai-new-conversation-button shrink-0"
             onClick={() => createConversation()}
             disabled={!canCreateConversation}
             title={canCreateConversation
@@ -716,7 +859,7 @@ function ConversationTabs({ onBeforeDelete }: { onBeforeDelete: (conversationId:
               ? "chat-new-conversation-disabled-reason"
               : undefined}
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="h-4 w-4" />
           </Button>
           {!canCreateConversation && (
             <span id="chat-new-conversation-disabled-reason" className="sr-only">
@@ -726,20 +869,10 @@ function ConversationTabs({ onBeforeDelete }: { onBeforeDelete: (conversationId:
         </span>
 
         {/* 2. 正在工作的绘画：当前、生成中和今日保留项，最多显示三个 */}
-        <div className="flex min-w-0 flex-1 items-center overflow-hidden">
-          {topConversations.length > 0 ? (
-            <div className="flex min-w-0 flex-1 gap-1.5 overflow-hidden">
-              {topConversations.map((conv) => renderConversationChip(conv))}
-            </div>
-          ) : (
-            <span className="shrink-0 truncate text-xs text-muted-foreground">
-              {t(novelMode ? "novel.chat.noConversationsYet" : "chat.noConversationsYet")}
-            </span>
-          )}
-        </div>
+
 
         {/* 3. 绘画历史记录（点击展开下拉面板，显示全部历史会话） */}
-        <div className="relative ml-auto shrink-0" ref={historyRef}>
+        <div className="relative shrink-0" ref={historyRef}>
           <Button
             ref={historyButtonRef}
             variant="ghost"
@@ -753,7 +886,7 @@ function ConversationTabs({ onBeforeDelete }: { onBeforeDelete: (conversationId:
             <History className="h-3.5 w-3.5" />
             <span>{t(novelMode ? "novel.chat.conversationHistory" : "chat.conversationHistory")}</span>
             {historyCount > 0 && (
-              <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary/15 px-1 text-[10px] font-medium text-primary">
+              <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary/15 px-1 text-[0.625rem] font-medium text-primary">
                 {historyCount}
               </span>
             )}
@@ -764,37 +897,45 @@ function ConversationTabs({ onBeforeDelete }: { onBeforeDelete: (conversationId:
             createPortal(
               <div
                 ref={historyDropdownRef}
+                data-ui-ai-menu="history"
+                role="dialog"
+                aria-label="写作会话历史"
                 className="fixed z-50 max-h-[60vh] w-72 overflow-y-auto rounded-md border border-border bg-background p-1 shadow-lg"
                 style={historyDropdownStyle}
               >
               {historyCount > 0 && (
                 <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-2 py-1.5">
                   <span className="text-xs text-muted-foreground">
-                    {t("chat.historyConversationCount", { count: historyCount })}
+                    {`全部会话 ${menuConversations.length} 条`}
                   </span>
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
                     className="h-7 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    aria-label={t("chat.clearHistory")}
+                    aria-label="清理旧会话"
+                    title={`仅清理 ${historyCount} 条旧会话，保留当前和运行中的会话`}
                     onClick={requestClearHistory}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                    {t("chat.clearHistory")}
+                    {"清理旧会话"}
                   </Button>
                 </div>
               )}
-              {historyCount === 0 ? (
+              {menuConversations.length === 0 ? (
                 <div className="px-2 py-3 text-center text-xs text-muted-foreground">
                   {t(novelMode ? "novel.chat.noHistoryConversations" : "chat.noHistoryConversations")}
                 </div>
               ) : (
-                historyConversations.map((conv) => renderConversationChip(conv))
+                menuConversations.map((conv) => renderConversationChip(conv))
               )}
               </div>,
               document.body,
             )}
+        </div>
+        <button type="button" onClick={() => useWikiStore.getState().setChatExpanded(false)} aria-label="关闭写作助手" title="关闭写作助手">
+          <X className="h-4 w-4" />
+        </button>
         </div>
     </div>
     <ConversationDeleteConfirmDialog
@@ -832,9 +973,15 @@ export function ChatPanel() {
   const isConversationStreaming = useChatStore((s) => s.isConversationStreaming)
   const conversations = useChatStore((s) => s.conversations)
   const setConversationInputDraft = useChatStore((s) => s.setConversationInputDraft)
-  const setConversationDeAiSkillId = useChatStore((s) => s.setConversationDeAiSkillId)
   const pendingReferenceTokens = useChatStore((s) => s.pendingReferenceTokens)
   const consumePendingReferenceTokens = useChatStore((s) => s.consumePendingReferenceTokens)
+  /*
+   * 章节区投递过来的「生成章节细纲」请求（见 chat-store 的 PendingComposerSend）。
+   *
+   * 订阅式读取而不是靠事件：请求可能在**本组件还没挂载**时投递（写作助手栏当时是收起的），
+   * 这时只有「挂载后从 store 里读一次」才接得住。
+   */
+  const pendingComposerSend = useChatStore((s) => s.pendingComposerSend)
   const outlineConversations = useOutlineChatStore((s) => s.conversations)
   // Derive active messages via selector to re-render on message changes
   // 使用 useShallow 避免过滤数组返回新引用导致 useSyncExternalStore 无限重渲染（Zustand v5）
@@ -865,14 +1012,18 @@ export function ChatPanel() {
 
   const project = useWikiStore((s) => s.project)
   const projectPath = project?.path ? normalizePath(project.path) : ""
+  // 角色灵魂绑定表没有 zustand 镜像：临时绑定写入/还原后靠它触发重新读盘（丁-4）。
+  const bumpDataVersion = useWikiStore((s) => s.bumpDataVersion)
   const novelMode = useWikiStore((s) => s.novelMode)
   const setActiveView = useWikiStore((s) => s.setActiveView)
   const llmConfig = useWikiStore((s) => s.llmConfig)
   const bindingVersion = useWikiStore((s) => s.bindingVersion)
   const aiChatModel = useWikiStore((s) => s.aiChatModel)
   const setAiChatModel = useWikiStore((s) => s.setAiChatModel)
+  const providerConfigs = useWikiStore((s) => s.providerConfigs)
+  const aiChatReasoningDepth = useWikiStore((s) => s.aiChatReasoningDepth)
+  const setAiChatReasoningDepth = useWikiStore((s) => s.setAiChatReasoningDepth)
   const chatEditModeEnabled = useWikiStore((s) => s.chatEditModeEnabled)
-  const setChatEditModeEnabled = useWikiStore((s) => s.setChatEditModeEnabled)
   const selectedFile = useWikiStore((s) => s.selectedFile)
 
   const streamSessionGuardRef = useRef(createStreamSessionGuard())
@@ -886,13 +1037,38 @@ export function ChatPanel() {
   const [chapterSaveStatus, setChapterSaveStatus] = useState<string>("")
   const [deAiSkillWarningMessage, setDeAiSkillWarningMessage] = useState<string>("")
   const aiWorkflowMode = useWikiStore((s) => s.aiWorkflowMode)
+  // 快速与共创（discuss）模式都不支持「计划」开关：fast 直出，discuss 做方向推演。
+  const workflowModeSupportsPlan = aiWorkflowMode !== "fast" && aiWorkflowMode !== "discuss"
+  const writingWebSearchEnabled = useWikiStore((s) => s.novelConfig.writingWebSearchEnabled)
   const setAiWorkflowMode = useWikiStore((s) => s.setAiWorkflowMode)
+  const selectWorkflowMode = useCallback((mode: AiWorkflowMode) => {
+    setAiWorkflowMode(mode)
+    void saveAiWorkflowMode(mode)
+    // 只在切入「共创」时持久化"上一个模式"：此时才需要它来记住选定方向后用什么强度生成。
+    // 其余切换由 setAiWorkflowMode 在内存里维护，重启后也会随当前模式重新推导。
+    if (mode === "discuss") {
+      void saveAiWorkflowModeBeforeDiscuss(useWikiStore.getState().aiWorkflowModeBeforeDiscuss).catch(() => {})
+    }
+  }, [setAiWorkflowMode])
   const [workflowModeDropdownOpen, setWorkflowModeDropdownOpen] = useState(false)
   const workflowModeTriggerRef = useRef<HTMLButtonElement>(null)
-  const [workflowModeDropdownStyle, setWorkflowModeDropdownStyle] = useState<{ left: number; top: number; width: number } | null>(null)
+  const [workflowModeDropdownStyle, setWorkflowModeDropdownStyle] = useState<CSSProperties | null>(null)
   const workflowModeDropdownRef = useRef<HTMLDivElement | null>(null)
+  useUiTestAiMenuFocus(workflowModeDropdownOpen && Boolean(workflowModeDropdownStyle), workflowModeDropdownRef, workflowModeTriggerRef, setWorkflowModeDropdownOpen)
   const planExecuteEnabled = useWikiStore((s) => s.planExecuteEnabled)
   const setPlanExecuteEnabled = useWikiStore((s) => s.setPlanExecuteEnabled)
+
+  /**
+   * The config the thinking-depth slider steers, or null to hide the slider.
+   *
+   * Depth is stamped onto `chapterWritingLlmConfig`, which drives the chapter
+   * body request. The slider stays available in every workflow mode for a
+   * reasoning-capable chat model.
+   */
+  const reasoningDepthTargetConfig = useMemo(
+    () => resolveModelConfig(aiChatModel, llmConfig, providerConfigs),
+    [aiChatModel, llmConfig, providerConfigs],
+  )
   const [isSavingChapter, setIsSavingChapter] = useState(false)
   // 故事框架绑定状态
   const [activeBinding, setActiveBinding] = useState<{ binding: FrameworkBinding; framework: StoryFramework } | null>(null)
@@ -950,13 +1126,8 @@ export function ChatPanel() {
     const updatePosition = () => {
       const rect = workflowModeTriggerRef.current?.getBoundingClientRect()
       if (!rect) return
-      const width = Math.min(Math.max(rect.width, 320), window.innerWidth - 8)
-      const top = rect.bottom + 6
-      setWorkflowModeDropdownStyle({
-        left: Math.min(rect.left, window.innerWidth - width - 4),
-        top,
-        width,
-      })
+      setWorkflowModeDropdownStyle({ ...getUiTestAiMenuStyle(rect, 320, true), maxHeight: "none" })
+      return
     }
     const raf = requestAnimationFrame(updatePosition)
     window.addEventListener("resize", updatePosition)
@@ -992,7 +1163,8 @@ export function ChatPanel() {
         mode,
         chatEditModeEnabled,
         aiWorkflowMode,
-        planExecuteEnabled: aiWorkflowMode !== "fast" && planExecuteEnabled,
+        writingWebSearchEnabled,
+        planExecuteEnabled: aiWorkflowMode !== "fast" && aiWorkflowMode !== "discuss" && planExecuteEnabled,
         projectName: project?.name,
         bindingTitle: activeBinding?.framework.title,
       }),
@@ -1002,6 +1174,7 @@ export function ChatPanel() {
       mode,
       novelMode,
       aiWorkflowMode,
+      writingWebSearchEnabled,
       planExecuteEnabled,
       project?.name,
     ],
@@ -1012,6 +1185,81 @@ export function ChatPanel() {
     const value = selectedSkillsPromptRef.current.trim()
     return value || undefined
   }, [])
+  /*
+   * 丁-2「文风写作」：本轮临时覆盖的文风预设 id。
+   *
+   * 这条通道照 `getSelectedSkillsPrompt` 的 getter 形状（pull 模型）：
+   * 它不是工具参数，所以模型漏传也照样生效；而章节区那条链路拿不到这里的闭包，
+   * 由它自己把值直接塞进 `DeepChapterGenerationInput`（两条都接上，缺一条就是"一半有用"）。
+   *
+   * ⚠️ 三态必须原样返回：`undefined` = 没有覆盖、`null` = 本次显式不用文风。
+   * 这里**不要**写 `.trim() || undefined` 之类的归一化 —— 那会把 `null` 抹成
+   * `undefined`，用户点了「本次不用文风」反而会用上项目启用的那条。
+   *
+   * ⚠️ 只进这个状态，不写项目设置（用户决定 2）。
+   *
+   * ⚠️ **这里刻意不写跨项目重置**，与 `preview-panel.tsx` 里 `chapterWritingStyleId`
+   * 那处（挂在 `[project?.path]` effect 上的 `setChapterWritingStyleId(undefined)`）
+   * **不对称**。这个不对称是**有意的**，别照着章节区"补齐"，理由两条：
+   * (i) 本组件与 PreviewPanel 一样活不过一次项目切换：换项目走
+   *     `App.tsx` 的 `handleSwitchProject` → `setProject(null)`，而
+   *     `ui-test-shell.tsx` 的 `showShelf`（`!project && !showGlobalSettings`）
+   *     会把整个工作区子树换成书架 ⇒ 本组件卸载，`useState` 随之销毁，
+   *     **不存在跨项目残留**；章节区那处是**契约 + 防将来**，不是今天在踩的 bug。
+   * (ii) ⚠️ **不要拿「registry 会随项目重建」当不做重置的理由** —— 那条推论是错的，
+   *     本注释第一版就是这么写的，复核时被推翻。事实是：registry **确实**会随
+   *     `projectPath` 重建（`use-agent-config.ts` 里 `projectPath` 既在取值处、
+   *     也在技能配置加载 effect 与构建 registry 的 `useMemo` 依赖里；
+   *     `projectPath` 为空时它直接返回全新空 `ToolRegistry`），
+   *     但重建出来的 registry 注册的是**本组件自己这个 getter**，而
+   *     `getWritingStyleIdOverride` 的身份**只随 `sessionWritingStyleId` 变
+   *     （它的 `useCallback` 依赖数组只有 `[sessionWritingStyleId]`）、不随项目变**
+   *     —— 注意它读的是 `runWritingStyleIdOverrideRef.current`，那是**引用**、
+   *     身份稳定；所以第 4 个入参的引用只随 `sessionWritingStyleId` 改
+   *     （丁-3 加了 `@` 引用通道之后依然如此，没有新增依赖）。
+   *     于是项目切换那一刻重建出来的 registry，调用它取到的**仍是旧 id**。
+   *     ⇒ 重置**不能**靠它。
+   *
+   *     所以今日不做重置的**唯一**理由是 (i)：本组件活不过项目切换，压根到不了
+   *     「带着旧 id 在新项目里生成」那一步。**(i) 一旦不成立，这里就必须补重置。**
+   *
+   * ⚠️ **前提（这条结论依赖 App shell 的结构，不是永久真理）**：上面 (i) 成立
+   * 的唯一原因是「`project === null` 时工作区被卸载」。**若将来 shell 改成工作区
+   * 跨项目常驻**（例如在工具栏里直接放项目切换器、或把 `ContentArea` 提到
+   * `showShelf` 之外），本组件就会和 `preview-panel.tsx` 一样暴露在同一个残留
+   * 风险下（旧项目的 preset id 在新项目里不存在 → 覆盖文本变 `""` → 静默压掉
+   * 新项目启用的文风）。**届时必须对称补上重置**。
+   */
+  const [sessionWritingStyleId, setSessionWritingStyleId] = useState<string | null | undefined>(undefined)
+  /*
+   * 丁-3「输入框引用」：本条消息**点名**的文风预设 id。
+   *
+   * 引用的语义是「这一条消息要用这条文风」，所以它在 `handleSend` 里**每次发送都重写**
+   * （没有文风引用时写回 `undefined`）。不能只在「有引用时」赋值：那样上一条消息的
+   * 点名会顺着这条通道漏进下一次生成，而两次生成之间隔着一次用户操作，
+   * 用户看不到任何提示 —— 正是本仓库反复出现的「临时值泄漏成持久行为」。
+   *
+   * ⚠️ **取值优先级（裁决）**：`@` 引用 > 工具栏选择器 > 项目启用项。
+   * 引用比选择器**窄**（绑定到具体消息）、也比选择器**新**（和这条消息一起敲进去的），
+   * 所以引用赢，**包括**选择器是 `null`（「本次不用文风」）的时候：
+   * 若让 `null` 赢，用户刚敲进去的引用会被静默丢掉，那正是本批要消灭的行为。
+   *
+   * ⚠️ 引用之间**不裁决**：`handleSend` 在两条**不同**预设的引用时直接拒绝发送
+   * （并给出可见提示），所以这里最多只会拿到一个 id。
+   *
+   * ⚠️ 这是**组件级、不是 run 级**的通道：同一个面板里 >1 个会话并发运行时，
+   * 后一次发送会改掉前一次仍在跑的 run 读到的值。本批**没有**把它变好，
+   * 也没有让它比既有的 `getSelectedSkillsPrompt`（同样在发送时写 ref、同样被 getter 读）
+   * 更糟；`ToolExecutionContext` 里没有会话 id，getter 也没有入参，所以今天做不了 per-run。
+   * 要如实知道这条性质，不要把它读成「每次生成都拿到自己那条」。
+   */
+  const runWritingStyleIdOverrideRef = useRef<string | undefined>(undefined)
+  const getWritingStyleIdOverride = useCallback(
+    () => (runWritingStyleIdOverrideRef.current !== undefined
+      ? runWritingStyleIdOverrideRef.current
+      : sessionWritingStyleId),
+    [sessionWritingStyleId],
+  )
   const {
     config: agentConfig,
     registry: agentRegistry,
@@ -1019,8 +1267,7 @@ export function ChatPanel() {
     skillConfigLoaded: agentSkillConfigLoaded,
     skillConfig: agentSkillConfig,
     writingSkills: agentUserWritingSkills,
-    mcpCapabilities: agentMcpCapabilities,
-  } = useAgentConfig(agentSystemPrompt, undefined, getSelectedSkillsPrompt)
+  } = useAgentConfig(agentSystemPrompt, undefined, getSelectedSkillsPrompt, getWritingStyleIdOverride)
   const deferredReferenceText = useDeferredValue(referenceText)
   const liveContextUsage = useMemo(() => {
     const historyMessages = selectContextHistoryMessages(
@@ -1030,6 +1277,7 @@ export function ChatPanel() {
         && !message.isAgentRunning
       )),
       activeConversation?.contextSummary?.text,
+      Math.min(4000, Math.floor((agentConfig?.llmConfig ? getEffectiveMaxContextSize(agentConfig.llmConfig) : 204_800) * 0.05)),
     )
     const measuredAt = activeConversation?.lastContextUsage?.measuredAt ?? 0
     const pendingToolResultTexts = activeMessages
@@ -1046,6 +1294,8 @@ export function ChatPanel() {
       windowTokens: agentConfig?.llmConfig
         ? getEffectiveMaxContextSize(agentConfig.llmConfig)
         : undefined,
+      softwareRules: agentSystemPrompt,
+      toolDefinitionsJson: agentConfig?.tools?.length ? JSON.stringify(agentConfig.tools) : "",
       sessionSummaryText: activeConversation?.contextSummary?.text ?? "",
       historyTexts: historyMessages.map((message) => message.content),
       currentInput: deferredReferenceText,
@@ -1056,6 +1306,8 @@ export function ChatPanel() {
     activeConversation?.lastContextUsage,
     activeMessages,
     agentConfig?.llmConfig,
+    agentConfig?.tools,
+    agentSystemPrompt,
     deferredReferenceText,
   ])
   const runChapterPlanSelfCheck = useCallback(async (planContent: string, contextPack?: ContextPack | null) => {
@@ -1092,6 +1344,27 @@ export function ChatPanel() {
     }
     return Array.from(byId.values())
   }, [agentUserWritingSkills, agentDeAiSkills])
+  /*
+   * 丁-3：把项目里的文风预设也做成「技能库」子 tab 下的可引用条目。
+   *
+   * 复用 `useWritingStyleOptions`（文风选择器的同一个 loader）：条目形状
+   * `{id, name, description}` 正好是引用条目需要的（id = 预设 id）。
+   * 这里只传 `projectPath`，不传 `selectedSkillId` —— 本处只要「库里有哪些预设」，
+   * 选择器当前选了什么不参与引用列表。
+   */
+  const { styles: writingStylePresets } = useWritingStyleOptions({
+    projectPath: projectPath || undefined,
+  })
+  /*
+   * 丁-4：项目里的**角色灵魂**（`CharacterAura`）也做成「技能库」子 tab 下的
+   * 可引用条目。`souls` 只用于列表；真正写盘的那一步在 `handleSend` 里，
+   * 且必须经过 `requestSoulBindingTarget` 这个确认弹窗（见本组件下的使用者）。
+   */
+  const {
+    souls: characterSouls,
+    requestSoulBindingTarget,
+    soulBindingDialog,
+  } = useCharacterSoulReference({ projectPath: projectPath || undefined })
   const referenceProviders = useMemo(
     () => [
       chapterProvider,
@@ -1109,12 +1382,38 @@ export function ChatPanel() {
         const writingSkills = agentUserWritingSkills.map((skill) => ({
           id: skill.id,
           name: skill.name,
+          displayName: skill.displayName,
           subtype: "writing" as const,
           kind: skill.kind,
           stages: skill.stages,
           modes: skill.modes,
         }))
-        return [...deAiSkills, ...writingSkills]
+        /*
+         * 文风预设条目：
+         * - `name` = 预设名，它是弹窗列表的**搜索键**（`ReferencePickerDialog` 按 `title` 过滤）
+         *   与 **token 的 title**（`createSkillProvider` 的 `title: skill.name`）。
+         *   注意芯片上显示的不是它，而是 `displayTitle = truncateTitle(name)`
+         *   （超过 20 字会被截断；三种子类型一样，不是文风特有的行为）。
+         * - `id` 会被 `createSkillProvider` 透传成 `token.skillId`，
+         *   也就是 `collectReferencedStylePresetIds` 读回的那个预设 id。
+         */
+        const stylePresets = writingStylePresets.map((preset) => ({
+          id: preset.id,
+          name: preset.name,
+          subtype: STYLE_SKILL_SUBTYPE,
+        }))
+        /*
+         * 灵魂条目（丁-4）：`id` 是 aura id，经 `createSkillProvider` 透传成
+         * `token.skillId`，也就是 `collectReferencedSoulAuraIds` 读回的那个 id。
+         * ⚠️ 这里**只列条目**：点它不会写盘，写盘发生在 `handleSend` 里
+         * 用户确认了「绑给哪个小说人物」之后。
+         */
+        const soulEntries = characterSouls.map((soul) => ({
+          id: soul.id,
+          name: soul.name,
+          subtype: SOUL_SKILL_SUBTYPE,
+        }))
+        return [...deAiSkills, ...writingSkills, ...stylePresets, ...soulEntries]
       }),
       createChatHistoryProvider(() =>
         conversations.map((conversation) => ({ id: conversation.id, title: conversation.title })),
@@ -1123,7 +1422,7 @@ export function ChatPanel() {
         outlineConversations.map((conversation) => ({ id: conversation.id, title: conversation.title })),
       ),
     ],
-    [agentSkillConfig, conversations, outlineConversations],
+    [agentSkillConfig, conversations, outlineConversations, writingStylePresets, characterSouls],
   )
   // === Stage C: 章节计划确认 ===
   const [pendingChapterPlans, setPendingChapterPlans] = useState<Record<string, {
@@ -1134,7 +1433,7 @@ export function ChatPanel() {
   }>>({})
   const pendingChapterPlan = activeConversationId ? pendingChapterPlans[activeConversationId] : undefined
   const chapterPlanResolversRef = useRef<Record<string, (action: "confirm" | "skip" | "cancel" | { modify: string }) => void>>({})
-  const handleSendRef = useRef<(text: string, tokens?: ReferenceToken[], displayText?: string, planBlueprint?: string, targetConversationId?: string) => Promise<void>>(() => Promise.resolve())
+  const handleSendRef = useRef<ChatSend>(() => Promise.resolve())
   const lastWritingTaskRouteRef = useRef<Record<string, TaskRouteResult>>({})
 
   const closeChapterPlanDialog = useCallback(
@@ -1239,7 +1538,12 @@ export function ChatPanel() {
       await createDirectory(chapterDir)
       const chapterPath = `${chapterDir}/chapter-${String(targetChapterNumber).padStart(3, "0")}.md`
       const chapterMarkdown = buildDraftContent(targetChapterNumber, chapterTitle, cleanedContent)
+      // 目标路径通常还是空的（新章），但也可能撞上一份已存在的同号文件；
+      // 有旧正文就交给记账层差分，否则整份覆盖会被算成今天 AI 新写的。
+      const previousMarkdown = await readFile(chapterPath).catch(() => undefined)
       await writeFile(chapterPath, chapterMarkdown)
+      // 聊天里生成并保存的章节：内容由模型产出，记进「今日 AI 生成」。
+      useWritingStatsStore.getState().recordChapter(chapterPath, chapterMarkdown, "ai", previousMarkdown)
       useChatStore.getState().setMessageChapterRef(messageId, {
         chapterNumber: targetChapterNumber,
         path: chapterPath,
@@ -1297,7 +1601,7 @@ export function ChatPanel() {
     setShowScrollToBottom(false)
     container.scrollTo({
       top: container.scrollHeight,
-      behavior: "smooth",
+      behavior: "auto",
     })
   }, [])
 
@@ -1310,23 +1614,22 @@ export function ChatPanel() {
       const threshold = 50
       const currentScrollTop = container.scrollTop
       const atBottom = container.scrollHeight - currentScrollTop - container.clientHeight < threshold
-      if (currentScrollTop < lastScrollTopRef.current - 1) {
-        userScrolledUpRef.current = true
-      } else if (atBottom) {
+      if (atBottom) {
         userScrolledUpRef.current = false
+      } else if (currentScrollTop < lastScrollTopRef.current - 1) {
+        userScrolledUpRef.current = true
       }
-      setShowScrollToBottom(userScrolledUpRef.current && isStreaming)
+      setShowScrollToBottom(userScrolledUpRef.current && !atBottom)
       lastScrollTopRef.current = currentScrollTop
     }
     container.addEventListener("scroll", handleScroll)
     return () => container.removeEventListener("scroll", handleScroll)
   }, [activeConversationId, isStreaming])
 
-  // Reset scroll lock when streaming ends or conversation changes
+  // 结束生成仍尊重用户正在查看历史的位置，只切换回底部按钮的状态。
   useEffect(() => {
-    if (!isStreaming) {
-      userScrolledUpRef.current = false
-    }
+    const container = scrollContainerRef.current
+    if (container) setShowScrollToBottom(userScrolledUpRef.current && container.scrollHeight - container.scrollTop - container.clientHeight >= 50)
   }, [isStreaming])
 
   useEffect(() => {
@@ -1369,12 +1672,21 @@ export function ChatPanel() {
   // 切换会话时不再中断后台生成——每个会话独立运行
 
   const handleSend = useCallback(
-    async (text: string, tokens: ReferenceToken[] = [], displayText?: string, planBlueprint?: string, targetConversationId?: string) => {
+    async (
+      text: string,
+      tokens: ReferenceToken[] = [],
+      displayText?: string,
+      planBlueprint?: string,
+      targetConversationId?: string,
+      sendOptions?: ChatSendOptions,
+    ) => {
       const plainText = text.trim()
       const userVisibleText = (displayText ?? plainText).trim()
       const planExecutionFollowup = isChapterPlanExecutionFollowup(plainText)
-      const planExecuteActive =
-        aiWorkflowMode !== "fast" && planExecuteEnabled && !planExecutionFollowup
+      const sessionWorkflowMode = sendOptions?.workflowMode ?? aiWorkflowMode
+      const planExecuteActive = sendOptions?.planExecuteActive ?? (
+        sessionWorkflowMode !== "fast" && sessionWorkflowMode !== "discuss" && planExecuteEnabled && !planExecutionFollowup
+      )
       setDeAiSkillWarningMessage("")
       // 新一轮对话清空上一轮的章节保存提示，避免「已保存为第X章」残留在新消息下方
       setChapterSaveStatus("")
@@ -1388,10 +1700,49 @@ export function ChatPanel() {
         return
       }
       if (!agentSkillConfigLoaded || !agentConfig) {
+        // 能走到这里只剩「配置还在加载」一种情况：模型不支持工具 / 用户关掉
+        // Function Calling 时 config 照样会构建（无工具模式），不再被拦下。
+        setDeAiSkillWarningMessage("Agent配置仍在加载，请稍后重试")
+        return
+      }
+
+      /*
+       * 丁-3：本条消息 `@` 引用的文风 → 本次生成的临时覆盖（走丁-2 的
+       * `writingStyleIdOverride` 通道，`getWritingStyleIdOverride` 就是它的产出端）。
+       *
+       * ⚠️ **两条不同预设的引用 ⇒ 拒绝发送**，不挑一条「赢」：
+       * 覆盖通道只收一个预设，自动挑一条就等于**静默丢掉**另一条用户的明确指令
+       * （本批反复出现的缺陷形状）。拒绝发送的代价最小：输入框与芯片都原样保留
+       * （下面的清空只在真正开始生成之后），用户删掉一条即可。
+       * 设计文档 §3 曾建议「后者覆盖前者 + 提示」，这里**不采用**：芯片顺序对用户不可见，
+       * 提示又可能被忽略，而「挑赢家」一旦发生就已经生成过一次了。
+       */
+      const referencedStylePresetIds = collectReferencedStylePresetIds(tokens)
+      if (referencedStylePresetIds.length > 1) {
         setDeAiSkillWarningMessage(
-          !agentSupportsTools
-            ? "Agent 调度模型不支持工具调用，请更换小说设置中的默认模型"
-            : "Agent配置仍在加载，请稍后重试",
+          `一条消息只能引用一条文风（本次引用了 ${referencedStylePresetIds.length} 条）。请删掉多余的文风引用再发送。`,
+        )
+        return
+      }
+      // 无论有没有引用都要写：没有引用时写回 undefined，才不会把上一条消息的点名
+      // 漏进这一次生成（见 getWritingStyleIdOverride 的注释）。
+      runWritingStyleIdOverrideRef.current = referencedStylePresetIds[0]
+
+      /*
+       * 丁-4：本条消息 `@` 引用的**角色灵魂** → 本条消息的临时绑定。
+       *
+       * 这里先做两件不写盘的事：解析 id、拒绝「一次引用多条」。
+       * ⚠️ **两条不同的灵魂引用 ⇒ 拒绝发送**，理由与文风那条一致但不完全相同：
+       * 确认弹窗一次只问「绑给哪个人物」，两条灵魂要么串两次弹窗（用户以为只绑了一条）、
+       * 要么自动挑一条（静默丢掉另一条明确指令）。两种都不接受，所以要求用户删到一条。
+       *
+       * ⚠️ 真正的写盘**不在这里**：它在 `startConversationRun` 之前、
+       * 且必须经过 `requestSoulBindingTarget` 的用户确认（见下方 `runId` 那一段）。
+       */
+      const referencedSoulAuraIds = collectReferencedSoulAuraIds(tokens)
+      if (referencedSoulAuraIds.length > 1) {
+        setDeAiSkillWarningMessage(
+          `一条消息只能引用一条角色灵魂（本次引用了 ${referencedSoulAuraIds.length} 条）。请删掉多余的灵魂引用再发送。`,
         )
         return
       }
@@ -1403,10 +1754,45 @@ export function ChatPanel() {
       const capturedConvId = convId
       const storeState = useChatStore.getState()
       const activeConv = storeState.conversations.find((conversation) => conversation.id === capturedConvId)
+      if (
+        sendOptions?.retryAssistantMessageId
+        && storeState.runStates[capturedConvId]?.status === "running"
+      ) {
+        toast.info("该会话正在强制重试，请勿重复点击", {
+          dedupeKey: `required-workflow-retry-running:${capturedConvId}`,
+        })
+        return
+      }
+      const retryAssistantIndex = sendOptions?.retryAssistantMessageId
+        ? storeState.messages.findIndex((message) => message.id === sendOptions.retryAssistantMessageId)
+        : -1
+      const retryAssistantCandidate = retryAssistantIndex >= 0
+        ? storeState.messages[retryAssistantIndex]
+        : undefined
+      const retryAssistantMessage = retryAssistantCandidate
+        && retryAssistantCandidate.conversationId === capturedConvId
+        && retryAssistantCandidate.role === "assistant"
+        && !retryAssistantCandidate.isAgentRunning
+        && retryAssistantCandidate.content.includes("出错：")
+        ? retryAssistantCandidate
+        : undefined
+      const retryUserMessageId = retryAssistantMessage
+        ? [...storeState.messages.slice(0, retryAssistantIndex)].reverse().find((message) => (
+            message.conversationId === capturedConvId && message.role === "user"
+          ))?.id
+        : undefined
+      if (sendOptions?.retryAssistantMessageId && !retryAssistantMessage) {
+        toast.info("原失败消息已失效，无法强制重试", {
+          dedupeKey: `required-workflow-retry-stale:${capturedConvId}:${sendOptions.retryAssistantMessageId}`,
+        })
+        return
+      }
       const activeConvMessages = storeState.messages
         .filter((message) => (
           message.conversationId === capturedConvId &&
           (message.role === "user" || message.role === "assistant") &&
+          message.id !== sendOptions?.retryAssistantMessageId &&
+          message.id !== retryUserMessageId &&
           !message.discarded &&
           !message.isAgentRunning
         ))
@@ -1424,7 +1810,7 @@ export function ChatPanel() {
       }
 
       if (taskRoute && SIMULATION_INTENTS.has(taskRoute.intent)) {
-        const { assistantMessage } = appendAgentChatMessages(capturedConvId, userVisibleText || plainText, tokens)
+        const { assistantMessage } = appendAgentChatMessages(capturedConvId, userVisibleText || plainText, tokens, sessionWorkflowMode === "discuss" ? "decision" : undefined)
         if (!targetConversationId) {
           setConversationInputDraft(capturedConvId, "")
           setFallbackReferenceText("")
@@ -1451,9 +1837,74 @@ export function ChatPanel() {
         return
       }
 
+      /*
+       * ── 丁-4：本条消息的临时角色灵魂绑定 ──
+       *
+       * 步骤顺序是有意的，每一步都有理由：
+       *  1. 先**问**（`requestSoulBindingTarget`）：确认弹窗在 `startConversationRun`
+       *     **之前**弹，所以「取消」不会占用运行槽、不会 append 助手消息、也不会写盘
+       *     —— 取消是零代价的。
+       *  2. 再**写**（`beginMessageScopedSoulBinding`）：仍然在 `startConversationRun`
+       *     之前。写盘失败（灵魂被删 / 人物没档案 / 磁盘错误）时同样什么都还没开始，
+       *     把 `bindCharacterAura` 的原话直接显示出来即可，没有运行状态要回收。
+       *  3. 然后才抢运行槽。抢不到时绑定已经写进项目了，所以那一支必须显式释放。
+       *  4. 释放：正典溢出的两处硬停机各显式释放一次；其余路径（成功、生成中抛错）
+       *     由本轮生成块末尾的 `finally` 兜住。`releaseMessageSoulBinding` 幂等
+       *     （先把引用置空再动盘），所以「先硬停机释放、finally 再跑一次」无害。
+       *
+       * ⚠️ 不能在 `contextHub.prepare` **之后**才写：那个调用就是真正读
+       * `.qmai/character-aura.json` 组装上下文包的地方（本文件下面那个
+       * `contextHub.prepare`），晚一步这条灵魂就不会进本次上下文。
+       */
+      let messageSoulBinding: MessageScopedSoulBinding | null = null
+      const releaseMessageSoulBinding = async () => {
+        const binding = messageSoulBinding
+        messageSoulBinding = null
+        if (!binding) return
+        try {
+          await releaseMessageScopedSoulBinding(pp, binding)
+          // 绑定表**没有** zustand 镜像，界面只能靠 dataVersion 触发重新读盘
+          // （灵魂侧栏是同一口径）。生成路径不需要刷新：它每次都重读盘。
+          bumpDataVersion()
+        } catch (error) {
+          // 「临时绑定没还回去」是用户必须知道的状态：静默吞掉会让人以为项目没被改过。
+          toast.error(error instanceof Error && error.message ? error.message : "还原临时角色灵魂绑定失败", {
+            title: "临时角色灵魂绑定未还原",
+            persistent: true,
+            dedupeKey: `soul-binding-release:${capturedConvId}`,
+          })
+        }
+      }
+      if (referencedSoulAuraIds.length === 1) {
+        const referencedAuraId = referencedSoulAuraIds[0]
+        const targetCharacterName = await requestSoulBindingTarget(referencedAuraId)
+        // `null` = 用户取消。**必须**直接 return —— 拿一个默认人物顶上就是「静默挑一个」。
+        if (!targetCharacterName) return
+        try {
+          messageSoulBinding = await beginMessageScopedSoulBinding(pp, {
+            auraId: referencedAuraId,
+            characterName: targetCharacterName,
+          })
+        } catch (error) {
+          // 「请先在大纲中添加人物小传或人物设定，再绑定角色灵魂」这类原话必须原样呈现：
+          // 它是可操作指引，不是可以概括成「绑定失败」的内部错误。
+          setDeAiSkillWarningMessage(
+            error instanceof Error && error.message ? error.message : "绑定角色灵魂失败，请稍后重试",
+          )
+          return
+        }
+      }
+
       const runId = crypto.randomUUID()
       if (!useChatStore.getState().startConversationRun(capturedConvId, runId)) {
         setDeAiSkillWarningMessage(concurrencyLimitReason)
+        if (sendOptions?.retryAssistantMessageId) {
+          toast.info(concurrencyLimitReason, {
+            dedupeKey: `required-workflow-retry-running:${capturedConvId}`,
+          })
+        }
+        // 临时绑定已经写过盘、而本轮没有真正开始：立刻释放，否则它会永久留在项目里。
+        await releaseMessageSoulBinding()
         return
       }
 
@@ -1465,8 +1916,13 @@ export function ChatPanel() {
           )
         : undefined
 
-      const { assistantMessage } = appendAgentChatMessages(capturedConvId, userVisibleText || plainText, tokens)
-      if (!targetConversationId) {
+      const assistantMessage = retryAssistantMessage
+        ? resetAssistantMessageForRequiredToolRetry(retryAssistantMessage)
+        : appendAgentChatMessages(capturedConvId, userVisibleText || plainText, tokens, sessionWorkflowMode === "discuss" ? "decision" : undefined).assistantMessage
+      if (retryAssistantMessage) {
+        updateAgentAssistantMessage(retryAssistantMessage.id, () => assistantMessage)
+      }
+      if (!targetConversationId && !retryAssistantMessage) {
         setConversationInputDraft(capturedConvId, "")
         setFallbackReferenceText("")
         setReferenceTokensByConversation((drafts) =>
@@ -1491,7 +1947,7 @@ export function ChatPanel() {
       let taskDirective = ""
       let goldenDirective = ""
       let prePluginResult: PrePluginChainResult | null = null
-      const shouldRunNovelPrePluginChain = novelMode && (aiWorkflowMode !== "fast" || planExecuteActive)
+      const shouldRunNovelPrePluginChain = novelMode && (sessionWorkflowMode !== "fast" || planExecuteActive)
       const explicitSkills = collectExplicitSkills(
         availableAgentSkills,
         plainText,
@@ -1503,6 +1959,7 @@ export function ChatPanel() {
       void shouldRunNovelPrePluginChain
       let hasAgentError = false
       let lastAgentError = "生成失败"
+      let lastAgentErrorObject: Error | null = null
       let accumulatedReasoningContent = ""
       // 终结型工具（run_chapter_workflow）是否已直接交付正文。
       let finalContentDelivered = false
@@ -1541,6 +1998,7 @@ export function ChatPanel() {
       const markError = (error: Error) => {
         hasAgentError = true
         lastAgentError = error.message || "生成失败"
+        lastAgentErrorObject = error
         updateAgentAssistantMessage(assistantMessage.id, (message) => {
           const settledTools = settleRunningAgentToolCalls(message.agentToolCalls, "error")
           const rawContent = message.content ?? ""
@@ -1559,6 +2017,35 @@ export function ChatPanel() {
             contextTrace: contextTrace || message.contextTrace,
             isAgentRunning: false,
           }
+        })
+      }
+
+      const showRunErrorToast = (error: Error) => {
+        const action = isRequiredChapterWorkflowFailure(error)
+          ? {
+              label: "强制重试",
+              onClick: () => {
+                void handleSendRef.current(
+                  plainText,
+                  tokens,
+                  displayText,
+                  planBlueprint,
+                  capturedConvId,
+                  {
+                    forceRequiredToolsImmediately: true,
+                    retryAssistantMessageId: assistantMessage.id,
+                    workflowMode: sessionWorkflowMode,
+                    planExecuteActive,
+                  },
+                )
+              },
+            }
+          : undefined
+        toast.error(error.message || "生成失败", {
+          title: "AI 会话生成失败",
+          persistent: true,
+          dedupeKey: `chat-run-failed:${capturedConvId}:${error.message || "生成失败"}`,
+          ...(action ? { action } : {}),
         })
       }
 
@@ -1599,18 +2086,28 @@ export function ChatPanel() {
         novelMode,
         mode,
         chatEditModeEnabled,
-        aiWorkflowMode,
+        aiWorkflowMode: sessionWorkflowMode,
+        writingWebSearchEnabled,
         planExecuteEnabled: planExecuteActive,
         projectName: project?.name,
         bindingTitle: activeBinding?.framework.title,
         targetChapterNumber,
+        // 共创讨论轮把目标章节标识传给方向推演规则。
+        chapterDiscussModule: targetChapterNumber ? `第${targetChapterNumber}章` : undefined,
         // pre-plugin 会注入找纲协议；仅在不会跑 pre-plugin 的章节写作路径由这里注入一次
         includeOutlineFindProtocol:
           shouldIncludeOutlineFindProtocol(effectiveTaskRoute?.intent) &&
-          !(novelMode && (aiWorkflowMode !== "fast" || planExecuteActive)),
+          !(novelMode && (sessionWorkflowMode !== "fast" || planExecuteActive)),
+        // 本轮是否真的带工具（关闭 Function Calling / 模型在黑名单时是 false）。
+        // 提示词必须跟着降级成「直接生成内容」，否则它要求的工具根本不存在。
+        toolsEnabled: agentSupportsTools,
       })
 
-      if (novelMode && effectiveTaskRoute) {
+      // 快速模式普通对话（general_chat）与小说内容无关：不预载小说上下文、不给模型暴露读取类工具，
+      // 避免对「你好」这类问候白白读取记忆/资料浪费 token；小说相关问题仍按原逻辑读取。
+      const isQuickGeneralChat = sessionWorkflowMode === "fast" && effectiveTaskRoute?.intent === "general_chat"
+
+      if (novelMode && effectiveTaskRoute && !isQuickGeneralChat) {
         const contextHub = getContextHub(pp)
         try {
           contextHubResult = await contextHub.prepare({
@@ -1644,10 +2141,27 @@ export function ChatPanel() {
           }
         } catch (error) {
           console.warn("上下文中控准备失败，继续使用原有流程：", error)
+          // 正典溢出必须让用户看到并停下：继续生成等于在没有任何原作约束的
+          // 情况下写同人正文。不可与其它「中控失败」一样静默降级。
+          if (error instanceof SourceCanonOverflowError) {
+            markError(error)
+            showRunErrorToast(error)
+            finishAgentSession()
+            // 这一支在下面的生成块之外 return，走不到那个 finally：显式释放临时灵魂绑定。
+            await releaseMessageSoulBinding()
+            return
+          }
         }
       }
 
-      if (shouldRunNovelPrePluginChain && effectiveTaskRoute) {
+      /*
+       * 无工具模式（关闭 Function Calling 或模型在黑名单里）时**跳过**
+       * novel pre-plugin 链：这条链是围绕工具编排长出来的（找纲协议、
+       * 能力筛选、`build_system_prompt` 拼的提示词里写着「必须调用
+       * run_chapter_workflow」），它的 finalSystemPrompt 会**顶掉**上面那份
+       * 无工具提示词，于是纯聊天模型又被要求去调用不存在的工具。
+       */
+      if (shouldRunNovelPrePluginChain && effectiveTaskRoute && agentSupportsTools) {
         try {
           prePluginResult = await runNovelPrePluginChain({
             input: {
@@ -1660,11 +2174,10 @@ export function ChatPanel() {
               novelMode,
               taskRoute: effectiveTaskRoute,
               effectiveTaskRoute,
-              aiWorkflowMode,
+              aiWorkflowMode: sessionWorkflowMode,
               planExecuteEnabled: planExecuteActive,
               availableSkills: availableAgentSkills,
               selectedSkills: explicitSkills,
-              mcpCapabilities: agentMcpCapabilities,
               selectedFile,
             },
             deps: contextHubResult
@@ -1695,7 +2208,7 @@ export function ChatPanel() {
           stageId: "task_understanding",
           kind: "analysis",
           title: "当前执行路线",
-          content: buildWorkflowRouteActivityContent(aiWorkflowMode, planExecuteActive, effectiveTaskRoute),
+          content: buildWorkflowRouteActivityContent(sessionWorkflowMode, planExecuteActive, effectiveTaskRoute),
           timestamp: now,
         })
         const skillEvent = createAgentActivityEvent({
@@ -1706,6 +2219,7 @@ export function ChatPanel() {
           content: buildSelectedSkillsActivityContent(
             sessionSelectedSkills,
             (prePluginResult?.missingSkillNames as string[] | undefined) ?? [],
+            availableAgentSkills,
           ),
           timestamp: now + 1,
         })
@@ -1726,7 +2240,7 @@ export function ChatPanel() {
       const qmQuaiSystemPrompt = shouldUseQmQuaiSkill ? buildQmQuaiSystemPrompt() : ""
       novelContextPrompt = ""
 
-      if (novelMode && effectiveTaskRoute) {
+      if (novelMode && effectiveTaskRoute && !isQuickGeneralChat) {
         try {
           taskDirective = buildTaskDirective(effectiveTaskRoute)
           const goldenThreeChapter = detectGoldenThreeChapterRequest(plainText, effectiveTaskRoute.chapterNumber)
@@ -1753,6 +2267,7 @@ export function ChatPanel() {
             timeline: "",
             relatedSettings: "",
             canonRules: "",
+            sourceCanon: "",
             writingStyle: "",
             searchResults: "",
             graphSearchResults: "",
@@ -1773,6 +2288,17 @@ export function ChatPanel() {
           }
         } catch (error) {
           console.warn("构建Agent小说上下文失败:", error)
+          // 同人正典溢出是硬失败：继续下去会让模型在完全没有小说上下文
+          // （既没有正典，也没有人物状态与大纲）的情况下写作。必须停机并告知用户，
+          // 而不是只留一条控制台警告。
+          if (error instanceof SourceCanonOverflowError) {
+            markError(error)
+            showRunErrorToast(error)
+            finishAgentSession()
+            // 同上一处：生成块之外 return，显式释放临时灵魂绑定。
+            await releaseMessageSoulBinding()
+            return
+          }
         }
       }
 
@@ -1809,11 +2335,16 @@ export function ChatPanel() {
         : [
             baseSystemPrompt,
           ].filter(Boolean).join("\n")
-      const contextHubSoftwareRules = hasSplitSystemRules
+      const rawContextHubSoftwareRules = hasSplitSystemRules
         ? (stableSystemRulesPrompt ?? "")
         : (prePluginSystemRulesPrompt || sessionAgentSystemPrompt)
-      const contextHubSystemContent = contextHubResult
-        ? buildContextHubSystemContent(contextHubSoftwareRules, contextHubResult, [
+      const { stableRules: contextHubSoftwareRules, dynamicRules: outlineCacheRules } = splitOutlineFindProtocolForCache(
+        rawContextHubSoftwareRules,
+        targetChapterNumber,
+      )
+      const contextHubPromptParts = contextHubResult
+        ? buildContextHubPromptParts(contextHubSoftwareRules, contextHubResult, [
+            outlineCacheRules,
             dynamicSystemRulesPrompt ?? "",
             qmQuaiSystemPrompt ? `## QM-QUAI 技能\n${qmQuaiSystemPrompt}` : "",
             prePluginSystemRulesPrompt || hasSplitSystemRules ? "" : taskDirective,
@@ -1824,20 +2355,27 @@ export function ChatPanel() {
               : "",
           ])
         : null
+      const contextHubSystemContent = contextHubPromptParts?.systemContent ?? null
       const systemPromptForConfig = contextHubSystemContent
         ? flattenContextHubSystemContent(contextHubSystemContent)
         : effectiveSystemPrompt
 
       const deAiMode = activeConv?.deAiMode ?? false
       const rawUserContent = buildAgentUserContent(plainText, tokens)
-      const userContent = !effectiveDeAiSkill && deAiMode
+      const baseUserContent = !effectiveDeAiSkill && deAiMode
         ? injectDeAiDirective(rawUserContent, deAiMode)
         : rawUserContent
-      const readChapterToolAvailable = !prePluginResult?.enabledToolNames
+      const userContent = contextHubPromptParts
+        ? withContextHubTaskContent(baseUserContent, contextHubPromptParts.taskContext)
+        : baseUserContent
+      const readChapterToolAvailable = !isQuickGeneralChat && (
+        !prePluginResult?.enabledToolNames
         || prePluginResult.enabledToolNames.includes("read_chapter")
+      )
       const historyForModel = selectContextHistoryMessages(
         activeConvMessages,
         contextHubResult?.sessionSummary,
+        Math.min(4000, Math.floor(getEffectiveMaxContextSize(agentConfig.llmConfig) * 0.05)),
       )
       const historyMessages = await buildAgentHistoryMessages(historyForModel, {
         projectPath: pp,
@@ -1871,37 +2409,45 @@ export function ChatPanel() {
           ],
         })
       }
-      if (planBlueprint) {
-        const workflowTool = agentRegistry.get("run_chapter_workflow")
-        if (workflowTool) {
-          sessionRegistry.register({
-            ...workflowTool,
-            execute: (params, signal, context) => workflowTool.execute({
-              ...params,
-              planBlueprint: typeof params.planBlueprint === "string" && params.planBlueprint.trim()
-                ? params.planBlueprint
-                : planBlueprint,
-            }, signal, context),
-          })
-        }
+      const workflowTool = agentRegistry.get("run_chapter_workflow")
+      if (workflowTool) {
+        sessionRegistry.register({
+          ...workflowTool,
+          execute: (params, signal, context) => workflowTool.execute({
+            ...params,
+            workflowMode: sessionWorkflowMode,
+            ...(planBlueprint
+              ? {
+                  planBlueprint: typeof params.planBlueprint === "string" && params.planBlueprint.trim()
+                    ? params.planBlueprint
+                    : planBlueprint,
+                }
+              : {}),
+          }, signal, context),
+        })
       }
 
       try {
+        if (isChapterWritingIntent(effectiveTaskRoute?.intent)) {
+          void ensureSystemNotificationPermission()
+        }
         const requiredToolsOnce = resolveRequiredToolsOnce({
           novelMode,
           intent: effectiveTaskRoute?.intent,
-          mode: aiWorkflowMode,
+          mode: sessionWorkflowMode,
           planExecuteActive,
           enabledToolNames: prePluginResult?.enabledToolNames,
         })
-        // 计划阶段硬管控：不依赖任务路由/pre-plugin 是否命中，直接从本轮可用
+        // 计划阶段 / 共创讨论轮硬管控：不依赖任务路由/pre-plugin 是否命中，直接从本轮可用
         // 工具中移除正文生成与写入类工具（模型的 tools 广告和文本工具调用解析
-        // 都以 config.tools 为准），从根上阻止模型跳过计划直接产出正文。
-        const sessionTools = planExecuteActive
+        // 都以 config.tools 为准），从根上阻止模型跳过计划或推演直接产出正文。
+        const chapterDiscussActive = sessionWorkflowMode === "discuss"
+        const sessionTools = (planExecuteActive || chapterDiscussActive
           ? agentConfig.tools.filter(
               (tool) => tool.name !== "run_chapter_workflow" && tool.category !== "write",
             )
-          : agentConfig.tools
+          : agentConfig.tools)
+          .filter((tool) => !(isQuickGeneralChat && NOVEL_CONTEXT_READ_TOOLS.has(tool.name)))
         const advertisedTools = prePluginResult?.enabledToolNames
           ? sessionTools.filter((tool) => prePluginResult.enabledToolNames!.includes(tool.name))
           : sessionTools
@@ -1919,7 +2465,7 @@ export function ChatPanel() {
               ? message.content
               : message.content.map((block) => block.type === "text" ? block.text : "").join("")
           )),
-          currentInput: userContent,
+          currentInput: baseUserContent,
         })
         // Seed this turn's baseline so the ring can grow with tool reads before the first usage report.
         useChatStore.getState().setConversationContextUsage(capturedConvId, usageSnapshotBase)
@@ -1933,6 +2479,9 @@ export function ChatPanel() {
             projectPath,
             taskGoal: plainText,
             ...(requiredToolsOnce ? { requiredToolsOnce } : {}),
+            ...(sendOptions?.forceRequiredToolsImmediately
+              ? { forceRequiredToolsImmediately: true }
+              : {}),
             requestOverrides: {
               ...agentConfig.requestOverrides,
               userMemorySurface: "ai-chat",
@@ -1969,7 +2518,6 @@ export function ChatPanel() {
               onToolEvent: (event) => {
                 if (contextTrace) {
                   contextTrace = appendWebSearchTrace(contextTrace, event)
-                  contextTrace = appendMcpCallTrace(contextTrace, event)
                 }
                 if (!streamSessionGuardRef.current.isActive(capturedConvId, sessionId)) return
                 updateAgentAssistantMessage(assistantMessage.id, (message) => ({
@@ -2044,6 +2592,7 @@ export function ChatPanel() {
                   record.usage,
                   Math.max(1, record.roundsUsed || 1),
                   {
+                    usageTotals: record.requestUsageTotals,
                     requests: record.requestTraces,
                     omittedRequestCount: record.omittedRequestTraceCount,
                     requestCountAvailable: record.providerRequestCountAvailable,
@@ -2062,6 +2611,40 @@ export function ChatPanel() {
             console.warn("供应商缓存用量快照保存失败，继续保留本地缓存统计：", error)
           }
         }
+        /*
+         * 共创（discuss）讨论轮：解析 chapter_discuss 协议并落成方向卡片。
+         *
+         * 这里**不再自己写重试链**，统一交给 resolveChapterDiscussProtocol：
+         * 解析失败先「补协议」、校验不过再「补齐」一轮，两轮都不过就把已经解析出来的
+         * 方向原样放行（附一句提示），绝不因为"介绍短了 20 字"把整轮讨论作废。
+         * 用户 2026-10-21 的口径：前面问了非常多问题，后面一报格式无效内容全丢，
+         * 那几轮的 token 比一次修补贵得多。
+         */
+        if (sessionWorkflowMode === "discuss") {
+          const discussModule = targetChapterNumber ? `第${targetChapterNumber}章` : ""
+          const rawDiscussContent = useChatStore.getState().messages
+            .find((m) => m.id === assistantMessage.id)?.content || record.finalText || ""
+          void (async () => {
+            try {
+              const gate = await resolveChapterDiscussProtocol({
+                text: rawDiscussContent,
+                module: discussModule,
+                llmConfig: agentConfig.llmConfig,
+                signal: controller.signal,
+              })
+              updateAgentAssistantMessage(assistantMessage.id, (message) => ({
+                ...message,
+                content: stripChapterDiscussMarkers(message.content),
+                chapterDiscussProtocol: gate.protocol,
+                chapterDiscussError: gate.error || undefined,
+                chapterDiscussNotice: gate.notice || undefined,
+                chapterDiscussDecision: undefined,
+              }))
+            } catch (error) {
+              console.warn("章节共创协议处理失败：", error)
+            }
+          })()
+        }
         // 计划模式：markDone/getCopyableAssistantContent 会重写消息内容
         // （剥掉 HTML 注释等隐藏块），先捕获原始文本供后续计划提取使用，
         // 避免 `<!-- chapter_plan -->` 标记在提取前就被剥掉。
@@ -2070,14 +2653,36 @@ export function ChatPanel() {
             || record.finalText
             || ""
           : ""
+        if (contextTrace && effectiveTaskRoute && record.requiredToolDiagnostics) {
+          const diagnosticTraceInfo = buildInitialContextTraceInfo(effectiveTaskRoute, prePluginResult, {
+            workflowMode: sessionWorkflowMode,
+            contextHub: contextHubResult?.stats,
+          })
+          contextTrace = setContextInfo(contextTrace, {
+            ...diagnosticTraceInfo,
+            requiredToolDiagnostics: record.requiredToolDiagnostics,
+          })
+        }
+        if (hasAgentError && contextTrace) {
+          contextTrace = finishTrace(contextTrace, "error", lastAgentError)
+          updateAgentAssistantMessage(assistantMessage.id, (message) => ({
+            ...message,
+            contextTrace,
+          }))
+        }
         finishAgentSession(() => {
           if (!hasAgentError) {
             if (contextTrace && effectiveTaskRoute) {
               const traceInfo = buildInitialContextTraceInfo(effectiveTaskRoute, prePluginResult, {
-                workflowMode: aiWorkflowMode,
+                workflowMode: sessionWorkflowMode,
                 contextHub: contextHubResult?.stats,
               })
-              contextTrace = setContextInfo(contextTrace, traceInfo)
+              contextTrace = setContextInfo(contextTrace, {
+                ...traceInfo,
+                ...(record.requiredToolDiagnostics
+                  ? { requiredToolDiagnostics: record.requiredToolDiagnostics }
+                  : {}),
+              })
               const storeStateForValidation = useChatStore.getState()
               const lastAssistantForValidation = storeStateForValidation.messages.find(
                 (m) => m.id === assistantMessage.id && m.role === "assistant",
@@ -2100,13 +2705,17 @@ export function ChatPanel() {
               if (finalContent) {
                 const protocolTrace = buildResultProtocolTrace("chapter", finalContent)
                 chapterProtocolValid = protocolTrace.valid
-                contextTrace = setContextInfo(contextTrace, { ...traceInfo, resultProtocol: protocolTrace })
+                contextTrace = setContextInfo(contextTrace, {
+                  ...contextTrace.contextInfo!,
+                  resultProtocol: protocolTrace,
+                })
               }
               // === Stage D: 写后剧情自检 ===
               // 仅对 write_chapter / continue_chapter 任务触发，避免对普通对话误触发
               if (
-                effectiveTaskRoute.intent === "write_chapter" ||
-                effectiveTaskRoute.intent === "continue_chapter"
+                sessionWorkflowMode !== "discuss"
+                && (effectiveTaskRoute.intent === "write_chapter" ||
+                  effectiveTaskRoute.intent === "continue_chapter")
               ) {
                 const chapterContent = finalContent
                 // 排除含 chapter_plan 标记的内容（计划本身不是正文）与空内容；
@@ -2199,10 +2808,12 @@ export function ChatPanel() {
         }
         if (hasAgentError) {
           useChatStore.getState().failConversationRun(capturedConvId, lastAgentError, runId)
-          toast.error(lastAgentError, {
-            title: "AI 会话生成失败",
-            persistent: true,
-            dedupeKey: `chat-run-failed:${capturedConvId}:${lastAgentError}`,
+          showRunErrorToast(lastAgentErrorObject ?? new Error(lastAgentError))
+          void notifyChapterWritingOutcome({
+            intent: effectiveTaskRoute?.intent,
+            ok: false,
+            chapterNumber: effectiveTaskRoute?.chapterNumber,
+            error: lastAgentError,
           })
         } else {
           useChatStore.getState().finishConversationRun(
@@ -2211,6 +2822,7 @@ export function ChatPanel() {
             runId,
           )
         }
+        let chapterWritingPlanOnly = false
         if (!hasAgentError && planExecuteActive) {
           const storeState = useChatStore.getState()
           const lastAssistant = storeState.messages.find(
@@ -2237,6 +2849,7 @@ export function ChatPanel() {
             ?? (planFallbackEligible && fullContent.trim()
               ? { plan: fullContent.trim(), body: "" }
               : null)
+          chapterWritingPlanOnly = Boolean(extracted) || hasMarker
           if (extracted) {
             console.info("[PlanExecute] 计划提取成功，弹出确认对话框", {
               planLength: extracted.plan.length,
@@ -2272,10 +2885,19 @@ export function ChatPanel() {
             })
           }
         }
+        if (!hasAgentError) {
+          void notifyChapterWritingOutcome({
+            intent: effectiveTaskRoute?.intent,
+            planOnly: chapterWritingPlanOnly,
+            ok: true,
+            chapterNumber: effectiveTaskRoute?.chapterNumber,
+          })
+        }
       } catch (error) {
         if (controller.signal.aborted) return
         if (!streamSessionGuardRef.current.isActive(capturedConvId, sessionId)) return
-        const errorMessage = error instanceof Error ? error.message : String(error)
+        const resolvedError = error instanceof Error ? error : new Error(String(error))
+        const errorMessage = resolvedError.message
         const partialContent = useChatStore.getState().streamingContents[capturedConvId] ?? ""
         finishAgentSession(() => {
           if (partialContent) {
@@ -2286,20 +2908,28 @@ export function ChatPanel() {
             }))
           }
           if (contextTrace) contextTrace = finishTrace(contextTrace, "error", errorMessage)
-          markError(error instanceof Error ? error : new Error(String(error)))
+          markError(resolvedError)
         })
         useChatStore.getState().failConversationRun(capturedConvId, errorMessage, runId)
-        toast.error(errorMessage, {
-          title: "AI 会话生成失败",
-          persistent: true,
-          dedupeKey: `chat-run-failed:${capturedConvId}:${errorMessage}`,
+        showRunErrorToast(resolvedError)
+        void notifyChapterWritingOutcome({
+          intent: effectiveTaskRoute?.intent,
+          ok: false,
+          chapterNumber: effectiveTaskRoute?.chapterNumber,
+          error: errorMessage,
         })
+      } finally {
+        /*
+         * 丁-4：本轮生成**无论成功、抛错还是被中止**都要把临时角色灵魂绑定还原。
+         * 放在 finally 而不是成功路径：生成失败时把一条临时绑定永久留在项目里，
+         * 是本子批后果最重的一种失败（它会静默改变之后所有章节的上下文）。
+         */
+        await releaseMessageSoulBinding()
       }
     },
     [
       activeBinding?.framework.title,
       agentConfig,
-      agentMcpCapabilities,
       agentRegistry,
       agentSkillConfig,
       agentSkillConfigLoaded,
@@ -2319,12 +2949,35 @@ export function ChatPanel() {
       projectPath,
       referenceDraftConversationId,
       requestChapterPlanConfirm,
+      requestSoulBindingTarget,
       selectedFile,
       setConversationInputDraft,
       startStreaming,
+      bumpDataVersion,
     ],
   )
   handleSendRef.current = handleSend
+
+  /**
+   * 把章节区投递的「生成章节细纲」请求发出去。
+   *
+   * 三个要点：
+   * 1. **先取后发**（consume 在 handleSend 之前）：handleSend 是个长流程，里面还有
+   *    多个 await；不先清空队列的话，期间任何一次重渲染（依赖数组变化）都会再消费一次
+   *    同一条请求，同一个提示词被发两轮、烧两次钱。
+   * 2. **有会话在生成时先不发**：这条请求是一条**新的**用户消息，插进正在跑的轮次里
+   *    会和它抢同一个会话。不消费即可 —— 流式状态是依赖项，等那一轮收尾后本 effect
+   *    会重跑并把请求发出去，用户点的那一次不会丢。
+   * 3. `displayText` 走 handleSend 的第三参：提示词有几十行，原样铺进气泡会淹掉对话；
+   *    模型收到的仍是完整提示词（第一参）。
+   */
+  useEffect(() => {
+    if (!pendingComposerSend) return
+    if (Object.keys(streamingContents).length > 0) return
+    const payload = useChatStore.getState().consumeComposerSend()
+    if (!payload) return
+    void handleSendRef.current(payload.text, [], payload.displayText)
+  }, [pendingComposerSend, streamingContents])
 
   const handleStop = useCallback(() => {
     const convId = useChatStore.getState().activeConversationId
@@ -2375,6 +3028,24 @@ export function ChatPanel() {
     }
   }, [clearStreaming, finalizeStream])
 
+  useEffect(() => {
+    return registerChatGenerationStop((requestedPath) => {
+      const open = useWikiStore.getState().project?.path
+      if (!open || normalizePath(open) !== normalizePath(requestedPath)) return false
+      const state = useChatStore.getState()
+      const convId = state.activeConversationId
+      if (!convId) return false
+      const streaming = state.streamingContents[convId] !== undefined
+      const running = state.messages.some((message) => (
+        message.conversationId === convId && message.role === "assistant" && message.isAgentRunning
+      ))
+      const runRunning = state.runStates[convId]?.status === "running"
+      if (!streaming && !running && !runRunning) return false
+      handleStop()
+      return true
+    })
+  }, [handleStop])
+
   const handleRegenerate = useCallback(async () => {
     // 直接从 store 获取最新状态，避免闭包旧值
     const storeState = useChatStore.getState()
@@ -2401,8 +3072,74 @@ export function ChatPanel() {
     handleSend(lastUserMsg.content, lastUserMsg.attachedReferences ?? [])
   }, [removeLastAssistantMessage, handleSend])
 
-  const handleContinueNextChapter = useCallback(() => {
-    if (isStreaming) return
+  const markChapterDiscussDecision = useCallback((messageId: string, decision: ChapterDiscussDecision) => {
+    useChatStore.getState().setMessageChapterDiscuss(messageId, { chapterDiscussDecision: decision })
+  }, [])
+
+  /** 选定一个方向：标记卡片已用，并按切入共创前的模式生成正文。 */
+  const handleChapterDiscussSelect = useCallback((
+    messageId: string,
+    protocol: ChapterDiscussProtocol,
+    direction: ChapterDiscussDirection,
+  ) => {
+    const conversationId = useChatStore.getState().activeConversationId
+    if (!conversationId) return
+    markChapterDiscussDecision(messageId, "selected")
+    const storedMode = useWikiStore.getState().aiWorkflowModeBeforeDiscuss
+    const generationMode: AiWorkflowMode = storedMode === "discuss" ? "standard" : storedMode
+    return handleSend(
+      buildChapterDiscussExecutionPrompt({ module: protocol.module, direction }),
+      [],
+      `按「${direction.title}」写这一章`,
+      buildChapterDiscussPlanBlueprint(direction),
+      conversationId,
+      { workflowMode: generationMode, planExecuteActive: false, chapterDiscussPhase: "generation" },
+    )
+  }, [handleSend, markChapterDiscussDecision])
+
+  /** 换一批：标记卡片已用，重新推演一批故事类型不同的方向。 */
+  const handleChapterDiscussRegenerate = useCallback((
+    messageId: string,
+    protocol: ChapterDiscussProtocol,
+  ) => {
+    const conversationId = useChatStore.getState().activeConversationId
+    if (!conversationId) return
+    markChapterDiscussDecision(messageId, "regenerated")
+    return handleSend(
+      buildChapterDiscussRegeneratePrompt({
+        module: protocol.module,
+        previous: protocol.directions.map((d) => ({ storyType: d.storyType, title: d.title })),
+      }),
+      [],
+      "换一批：重新推演后续方向",
+      undefined,
+      conversationId,
+      { workflowMode: "discuss", planExecuteActive: false, chapterDiscussPhase: "decision" },
+    )
+  }, [handleSend, markChapterDiscussDecision])
+
+  /** 其他想法：把作者自己的想法交给 AI，按它重新推演方向。 */
+  const handleChapterDiscussCustom = useCallback((
+    messageId: string,
+    protocol: ChapterDiscussProtocol,
+    idea: string,
+  ) => {
+    const conversationId = useChatStore.getState().activeConversationId
+    if (!conversationId) return
+    const trimmed = idea.trim()
+    if (!trimmed) return
+    markChapterDiscussDecision(messageId, "custom")
+    return handleSend(
+      buildChapterDiscussCustomPrompt({ module: protocol.module, idea: trimmed }),
+      [],
+      `我的想法：${trimmed}`,
+      undefined,
+      conversationId,
+      { workflowMode: "discuss", planExecuteActive: false, chapterDiscussPhase: "decision" },
+    )
+  }, [handleSend, markChapterDiscussDecision])
+
+  const handleContinueNextChapter = useCallback(() => {    if (isStreaming) return
     // 按设置中的单章目标字数生成提示词（issue #8）
     const lengthSpec = resolveChapterLengthSpec(useWikiStore.getState().novelConfig?.chapterTargetChars)
     const target = lengthSpec.targetChars
@@ -2431,6 +3168,31 @@ export function ChatPanel() {
     await handleSendRef.current(prompt, [], "继续未完成")
   }, [isStreaming])
 
+  /**
+   * 「继续」：上一条回复被用户手动停止后，保留已生成的内容接着往下写。
+   *
+   * 与「重试」的分工：重试会删掉这条回复、换成当前选中的模型把原始请求整条重发；
+   * 继续则不动已有内容，作为新一轮用户请求把"接着写"的指令发给模型，
+   * 模型在历史里看得到已经生成的那半截，于是从断点续写。
+   * 提示词是共用常量，保证章节与大纲两侧的"继续"含义一致。
+   */
+  const handleContinueStopped = useCallback(async () => {
+    if (isStreaming) return
+    await handleSendRef.current(CONTINUE_STOPPED_GENERATION_PROMPT, [], "继续")
+  }, [isStreaming])
+
+  /**
+   * 「继续」：上一条回复**生成失败**后，保留已生成的内容接着往下写。
+   *
+   * 与 handleContinueStopped 的差别只在提示词：失败有两种形态（断在半截 /
+   * 什么都没产出），一句话必须同时覆盖，具体写在 failed-generation.ts 的常量里。
+   * 重试不另开函数 —— 它接的就是 handleRegenerate（整条重发、可先换模型）。
+   */
+  const handleContinueFailed = useCallback(async () => {
+    if (isStreaming) return
+    await handleSendRef.current(FAILED_GENERATION_CONTINUE_PROMPT, [], "继续")
+  }, [isStreaming])
+
   const handleWriteToWiki = useCallback(async () => {
     if (!project) return
     const pp = normalizePath(project.path)
@@ -2450,28 +3212,25 @@ export function ChatPanel() {
   const showWriteButton = mode === "ingest" && !isStreaming && hasAssistantMessages
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-background">
+    <div className="flex h-full flex-col overflow-hidden bg-background" data-ui-ai-panel="chapter">
       <ConversationTabs onBeforeDelete={cancelPendingChapterPlan} />
 
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         {!activeConversationId ? (
-          <div className="flex flex-1 items-center justify-center text-muted-foreground">
-            <div className="text-center">
-              <MessageSquare className="mx-auto mb-3 h-8 w-8 opacity-30" />
-              <p className="text-sm">{t(novelMode ? "novel.chat.startNewConversation" : "chat.startNewConversation")}</p>
-              <p className="mt-1 text-xs opacity-60">{t(novelMode ? "novel.chat.clickNewChatToBegin" : "chat.clickNewChatToBegin")}</p>
-            </div>
-          </div>
+          <UiTestAiEmpty kind="chapter" />
         ) : (
           <>
+            <div className="relative min-h-0 flex-1" data-chat-message-region>
             <div
+              data-chat-scroll
               ref={scrollContainerRef}
-              className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2"
+              className="h-full min-h-0 min-w-0 overflow-y-auto overflow-x-hidden px-3 py-2"
             >
               <div className="flex w-full min-w-0 max-w-full flex-col gap-3">
+                {activeMessages.length === 0 && !isStreaming && <UiTestAiEmpty kind="chapter" />}
                 {activeMessages.map((msg, idx) => {
                   const isLastAssistant = msg.role === "assistant" && idx === lastAssistantIndex
-                  return (
+                  const messageElement = (
                     <ChatMessage
                       key={msg.id}
                       message={msg}
@@ -2482,26 +3241,34 @@ export function ChatPanel() {
                       onSaveAsChapter={handleSaveAsChapter}
                       onContinueNextChapter={isLastAssistant ? handleContinueNextChapter : undefined}
                       onContinueUnfinished={isLastAssistant ? () => handleContinueUnfinished(msg) : undefined}
+                      onContinueStopped={isLastAssistant && !isStreaming ? handleContinueStopped : undefined}
+                      onContinueFailed={isLastAssistant && !isStreaming ? handleContinueFailed : undefined}
+                      onSelectChapterDiscussDirection={handleChapterDiscussSelect}
+                      onRegenerateChapterDiscuss={handleChapterDiscussRegenerate}
+                      onCustomChapterDiscuss={handleChapterDiscussCustom}
                       saveStatus={isLastAssistant ? chapterSaveStatus : undefined}
                       isSaving={isSavingChapter}
                     />
                   )
+                  return (
+                    <div key={msg.id} data-ui-ai-message={msg.role}>
+                      {msg.role === "assistant" && <UiTestAiAuthor running={isStreaming && Boolean(msg.isAgentRunning)} />}
+                      {messageElement}
+                    </div>
+                  )
                 })}
-                {isStreaming && batchedStreamingContent && !activeMessages.some((msg) => msg.role === "assistant" && msg.isAgentRunning) && <StreamingMessage content={batchedStreamingContent} isStreaming={isStreaming} />}
+                {isStreaming && batchedStreamingContent && !activeMessages.some((msg) => msg.role === "assistant" && msg.isAgentRunning) && (
+                  <div data-ui-ai-message="assistant" data-ui-ai-stream>
+                    <UiTestAiAuthor running />
+                    <StreamingMessage content={batchedStreamingContent} isStreaming={isStreaming} />
+                  </div>
+                )}
                 <div ref={bottomRef} />
               </div>
             </div>
 
-            {showScrollToBottom && (
-              <button
-                type="button"
-                onClick={handleScrollToBottom}
-                className="absolute bottom-20 right-4 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/90 shadow-md backdrop-blur-sm transition-all hover:bg-accent"
-                title="回到最新"
-              >
-                <ArrowDown className="h-4 w-4" />
-              </button>
-            )}
+            {showScrollToBottom && <ScrollToLatestButton isStreaming={isStreaming} onClick={handleScrollToBottom} />}
+            </div>
 
             {showWriteButton && (
               <div className="border-t px-3 py-2">
@@ -2525,24 +3292,16 @@ export function ChatPanel() {
               {deAiSkillWarningMessage}
             </div>
           ) : null}
-          <div className="border-t px-3 py-2">
-            <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="border-t px-3 py-2" data-ui-ai-composer>
+            <div className="hidden" data-ui-ai-tools />
+            <div className="hidden">
               <TooltipProvider delay={200}>
-                <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
-                  <DeAiSkillPicker
-                    value={activeConversation?.selectedDeAiSkillId}
-                    buttonLabel="技能库"
-                    showLibraryShortcut
-                    onChange={(skillId) => {
-                      const convId = useChatStore.getState().activeConversationId
-                      if (convId) setConversationDeAiSkillId(convId, skillId)
-                    }}
-                  />
-                  {novelMode && (
+                <div className="hidden">
+                  {false && novelMode && (
                     <>
                       <div className="relative">
                         <Button
-                          ref={workflowModeTriggerRef}
+                          ref={null as never}
                           type="button"
                           variant="outline"
                           size="sm"
@@ -2566,14 +3325,10 @@ export function ChatPanel() {
                             />
                             <div
                               ref={workflowModeDropdownRef}
+                              data-ui-ai-menu="mode"
                               role="listbox"
                               className="fixed rounded-md border bg-popover p-1 shadow-md"
-                              style={{
-                                left: workflowModeDropdownStyle.left,
-                                top: workflowModeDropdownStyle.top,
-                                width: workflowModeDropdownStyle.width,
-                                zIndex: 9999,
-                              }}
+                              style={{ ...workflowModeDropdownStyle, zIndex: 9999 }}
                             >
                               {aiWorkflowModeOptions.map(({ mode, label, description, routeDescription }) => (
                                 <button
@@ -2583,8 +3338,7 @@ export function ChatPanel() {
                                   aria-selected={aiWorkflowMode === mode}
                                   className="flex w-full items-start gap-2 rounded-sm px-3 py-2 text-left hover:bg-accent"
                                   onClick={() => {
-                                    setAiWorkflowMode(mode)
-                                    void saveAiWorkflowMode(mode)
+                                    selectWorkflowMode(mode)
                                     setWorkflowModeDropdownOpen(false)
                                   }}
                                 >
@@ -2596,7 +3350,7 @@ export function ChatPanel() {
                                   <span className="min-w-0 flex-1">
                                     <span className="flex items-center gap-2 text-sm font-medium">
                                       <span>{label}</span>
-                                      <span className="rounded border px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">
+                                      <span className="rounded border px-1.5 py-0.5 text-[0.6875rem] font-normal text-muted-foreground">
                                         {description}
                                       </span>
                                     </span>
@@ -2618,16 +3372,16 @@ export function ChatPanel() {
                               type="button"
                               variant="ghost"
                               size="sm"
-                              aria-pressed={planExecuteEnabled && aiWorkflowMode !== "fast"}
-                              disabled={aiWorkflowMode === "fast"}
+                              aria-pressed={planExecuteEnabled && workflowModeSupportsPlan}
+                              disabled={!workflowModeSupportsPlan}
                               className={`h-8 shrink-0 rounded-full border px-2.5 text-xs ${
-                                planExecuteEnabled && aiWorkflowMode !== "fast"
+                                planExecuteEnabled && workflowModeSupportsPlan
                                   ? "border-primary bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 hover:text-primary-foreground"
                                   : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
                               } disabled:cursor-not-allowed disabled:opacity-50`}
                               onClick={() => setPlanExecuteEnabled(!planExecuteEnabled)}
-                              title={aiWorkflowMode === "fast" ? "快速模式下不支持计划，请切换到标准或严格模式" : planExecuteEnabled ? "关闭计划模式" : "开启计划模式"}
-                              aria-label={aiWorkflowMode === "fast" ? "快速模式下不支持计划，请切换到标准或严格模式" : planExecuteEnabled ? "关闭计划模式" : "开启计划模式"}
+                              title={!workflowModeSupportsPlan ? "当前模式不支持计划，请切换到标准或严格模式" : planExecuteEnabled ? "关闭计划模式" : "开启计划模式"}
+                              aria-label={!workflowModeSupportsPlan ? "当前模式不支持计划，请切换到标准或严格模式" : planExecuteEnabled ? "关闭计划模式" : "开启计划模式"}
                             />
                           )}
                         >
@@ -2635,70 +3389,9 @@ export function ChatPanel() {
                           计划
                         </TooltipTrigger>
                         <TooltipContent side="top" className="max-w-xs leading-5">
-                          {aiWorkflowMode === "fast"
-                            ? "快速模式下不支持计划，请切换到标准或严格模式。"
+                          {!workflowModeSupportsPlan
+                            ? "快速与共创模式下不支持计划；请切换到标准或严格模式。"
                             : "开启后，本次写作会先创建计划，等待确认后再执行；可与标准、严格模式组合使用。"}
-                        </TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={(
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              aria-pressed={chatEditModeEnabled}
-                              className={chatEditModeEnabled ? "border-amber-500 bg-amber-50 text-amber-900 hover:bg-amber-100" : ""}
-                              onClick={() => setChatEditModeEnabled(!chatEditModeEnabled)}
-                              title="编辑章节"
-                              aria-label="编辑章节"
-                            />
-                          )}
-                        >
-                          <FileEdit className="h-4 w-4" />
-                        </TooltipTrigger>
-                        <TooltipContent side="top" className="max-w-xs leading-5">
-                          开启后，AI会话会读取当前章节或识别到的章节范围进行修改，并在写回前自动备份原内容。
-                        </TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={(
-                            <button
-                              type="button"
-                              onClick={() => setActiveView("storySimulation")}
-                              className={`flex h-8 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs transition-colors ${
-                                activeBinding
-                                  ? "border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100"
-                                  : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
-                              }`}
-                            >
-                              <Drama className="h-3.5 w-3.5" />
-                              <span className="max-w-[100px] truncate">
-                                {activeBinding
-                                  ? activeBinding.framework.shortTitle || activeBinding.framework.title
-                                  : "故事框架"}
-                              </span>
-                            </button>
-                          )}
-                        />
-                        <TooltipContent side="top" className="max-w-xs leading-5">
-                          {activeBinding ? (
-                            <>
-                              <div className="font-medium">已绑定故事框架</div>
-                              <div className="mt-1 text-xs opacity-80">
-                                {activeBinding.framework.title}
-                              </div>
-                              <div className="mt-1 text-xs opacity-70">
-                                目标章节数：{activeBinding.binding.targetChapterCount}章
-                              </div>
-                              <div className="mt-1 text-xs opacity-70">
-                                点击可进入剧情推演室管理
-                              </div>
-                            </>
-                          ) : (
-                            <>未绑定故事框架，点击进入剧情推演室创建</>
-                          )}
                         </TooltipContent>
                       </Tooltip>
                     </>
@@ -2707,6 +3400,8 @@ export function ChatPanel() {
               </TooltipProvider>
             </div>
             <ReferenceInput
+              enableClipboardMenu
+              clipboardScope={activeConversationId}
               value={referenceText}
               tokens={currentTokens}
               disabled={isStreaming || Boolean(pendingChapterPlan)}
@@ -2714,31 +3409,150 @@ export function ChatPanel() {
               submitDisabled={concurrencyFull}
               submitDisabledReason={concurrencyFull ? concurrencyLimitReason : undefined}
               onStop={handleStop}
-              leftFooterControls={
-                <ContextUsageRing
-                  usage={liveContextUsage}
-                  onCreateConversation={() => createConversation()}
-                />
-              }
+              leftFooterControls={(
+                <>
+                  <ContextUsageRing
+                    usage={liveContextUsage}
+                    onCreateConversation={() => createConversation()}
+                  />
+                  {novelMode && (
+                    <>
+                      <div className="relative">
+                        <Button
+                          ref={workflowModeTriggerRef}
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          data-guide="chat.mode"
+                          aria-haspopup="listbox"
+                          aria-expanded={workflowModeDropdownOpen}
+                          aria-label={aiSessionWorkflowModeLabel}
+                          className="h-8 shrink-0 border-0 bg-transparent px-1.5 text-xs shadow-none"
+                          onClick={() => setWorkflowModeDropdownOpen(!workflowModeDropdownOpen)}
+                        >
+                          {/*
+                            只有文字，**没有下拉箭头**（用户要求：不需要下拉图标）。
+                            它仍是 `aria-haspopup="listbox"` + `aria-expanded` 的按钮，
+                            所以「点开有列表」这件事对读屏与自动化仍然成立 ——
+                            去掉的只是一个视觉提示，不是这个控件的语义。
+                            ⚠️ 别再给它加回 `ChevronDown`：`role="option"` 的列表
+                            仍然存在（下面那个 portal），箭头只是被用户明确点名删掉。
+                          */}
+                          <span>{aiWorkflowModeOptions.find((option) => option.mode === aiWorkflowMode)?.label ?? "标准"}</span>
+                        </Button>
+                        {workflowModeDropdownOpen && workflowModeDropdownStyle && createPortal(
+                          <>
+                            <div className="fixed inset-0" style={{ zIndex: 9998 }} onClick={() => setWorkflowModeDropdownOpen(false)} />
+                            <div ref={workflowModeDropdownRef} data-ui-ai-menu="mode" role="listbox" className="fixed rounded-md border bg-popover p-1 shadow-md" style={{ ...workflowModeDropdownStyle, maxHeight: "none", overflow: "visible", zIndex: 9999 }}>
+                              {aiWorkflowModeOptions.map(({ mode, label, description, routeDescription }) => (
+                                <button key={mode} type="button" role="option" aria-selected={aiWorkflowMode === mode} className="flex w-full items-start gap-2 rounded-sm px-3 py-2 text-left hover:bg-accent" onClick={() => { selectWorkflowMode(mode); setWorkflowModeDropdownOpen(false) }}>
+                                  <Check className={`mt-0.5 h-4 w-4 shrink-0 ${aiWorkflowMode === mode ? "opacity-100" : "opacity-0"}`} />
+                                  <span className="min-w-0 flex-1"><span className="flex items-center gap-2 text-sm font-medium"><span>{label}</span><span className="rounded border px-1.5 py-0.5 text-[0.6875rem] font-normal text-muted-foreground">{description}</span></span><span className="mt-1 block text-xs leading-5 text-muted-foreground">{routeDescription}</span></span>
+                                </button>
+                              ))}
+                            </div>
+                          </>,
+                          document.body,
+                        )}
+                      </div>
+                      {/*
+                        计划开关：常态只留图标，悬停显示「计划」两个字
+                        （与「文风写作」同一处理，用户要求）。
+
+                        ⚠️ 与「文风写作」那个按钮的处理**刻意不同**：
+                        文风按钮是纯图标、无描边无底色；计划按钮保留
+                        「开启时填充 primary」的激活态 —— 它是一个**开关**，
+                        去掉颜色就看不出当前是开还是关。所以只去掉文字与横向内边距，
+                        收成方正的小方块（`p-0` + 固定宽高；原来的 `px-2` 是给
+                        「图标 + 文字」留的，留着会让图标看起来偏左）。
+
+                        尺寸是 `h-7 w-7`（28px），不是 32px：用户反馈图标之间隔得太远。
+                        28px 与同一行里本来就是 28px 的「上下文用量」圆环和 @ 按钮统一，
+                        配合左组 `gap-0.5`（见 ReferenceInput.tsx）把墨迹间距从约 25px
+                        收到约 16px。大纲面板的同名按钮用同一组数值，两边必须一致。
+
+                        三个悬停/无障碍出口各司其职，缺一不可：
+                        · `title="计划"` —— 常态悬停就显示这两个字（用户明确要求）；
+                        · `aria-label` —— 随「开启 / 关闭 / 模式不支持」三态变化。
+                          它**不能**跟着 `title` 一起退化成一个光秃秃的「计划」：
+                          图标按钮没有可见文字，读屏用户唯一的动作线索就是这里，
+                          而开关必须说清「点了会怎样」。
+                        · `TooltipContent` —— 第一行是「计划」（与 title 一致），
+                          第二行随状态给出解释。
+                        ⚠️ 别把三者合并：它们分别服务「看清楚是什么」「知道点了会怎样」
+                        「了解当前是什么状态」。
+
+                        ⚠️ 上面 `{false && novelMode && ...}` 那块里有一个同名按钮，
+                        它是**死代码、从不渲染**，不要再去改它（本轮已踩过一次，
+                        改了没有任何效果，还会让回归测试定位到错误的元素）。
+                      */}
+                      <Tooltip>
+                        <TooltipTrigger render={<Button type="button" variant="ghost" size="sm" data-guide="chapter.plan" aria-pressed={planExecuteEnabled && aiWorkflowMode !== "fast"} disabled={aiWorkflowMode === "fast"} className={`h-7 w-7 shrink-0 border-0 bg-transparent p-0 shadow-none ${planExecuteEnabled && aiWorkflowMode !== "fast" ? "text-primary" : "text-muted-foreground"} disabled:cursor-not-allowed disabled:opacity-50`} onClick={() => setPlanExecuteEnabled(!planExecuteEnabled)} title="计划" aria-label={aiWorkflowMode === "fast" ? "快速模式下不支持计划，请切换到标准或严格模式" : planExecuteEnabled ? "关闭计划模式" : "开启计划模式"} />}>
+                          <ListChecks className="h-3.5 w-3.5" />
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-xs leading-5">
+                          <div className="font-medium">计划</div>
+                          <div className="mt-0.5 text-muted-foreground">
+                            {aiWorkflowMode === "fast"
+                              ? "快速模式下不支持计划，请切换到标准或严格模式。"
+                              : planExecuteEnabled
+                                ? "已开启：本次写作会先创建计划，等待确认后再执行。"
+                                : "开启后，本次写作会先创建计划，等待确认后再执行；可与标准、严格模式组合使用。"}
+                          </div>
+                        </TooltipContent>
+                      </Tooltip>
+                      {/*
+                        丁-2「文风写作」：文风入口。
+
+                        ⚠️ 浮层已按用户要求收成**两项**：「当前文风（只读）」+
+                        「打开文风库」。选文风改由文风库承担（在那里点卡片启用），
+                        所以 `sessionWritingStyleId` 不再有覆盖入口 ——
+                        `onChange` 留在组件接口里只是为了不动下面这条三态管道
+                        （见 `writing-style-picker.tsx` 文件头）。
+                        管道本身仍在：选中的 id 经 `getWritingStyleIdOverride`
+                        交给 useAgentConfig → tools → run_chapter_workflow →
+                        DeepChapterGenerationInput.writingStyleIdOverride。
+
+                        ⚠️ `iconOnly`：常态只留一个图标，把「文风写作：…」那段文字
+                        收进悬停提示（用户要求收窄工具栏）。当前生效的是哪一条
+                        从悬停提示里看（「文风：甲书 · 文风」），浮层里另有一行当前文风。
+                      */}
+                      <span className="inline-flex" data-guide="chapter.style">
+                        <WritingStylePicker
+                          value={sessionWritingStyleId}
+                          onChange={setSessionWritingStyleId}
+                          iconOnly
+                        />
+                      </span>
+                    </>
+                  )}
+                </>
+              )}
               rightControls={
-                <ChatModelSelector
-                  value={aiChatModel}
-                  onChange={(model) => {
-                    setAiChatModel(model)
-                    void saveAiChatModel(model)
-                  }}
-                />
+                <UiTestAiModel enabled value={aiChatModel}>
+                  <ReasoningDepthControl
+                    value={aiChatReasoningDepth}
+                    onChange={(depth) => {
+                      setAiChatReasoningDepth(depth)
+                      void saveAiChatReasoningDepth(depth)
+                    }}
+                    modelConfig={reasoningDepthTargetConfig}
+                  />
+                  <ChatModelSelector
+                    value={aiChatModel}
+                    onChange={(model) => {
+                      setAiChatModel(model)
+                      void saveAiChatModel(model)
+                    }}
+                  />
+                </UiTestAiModel>
               }
               insertTokensRef={insertReferenceTokensRef}
               onChange={updateReferenceDraft}
               onTokensChange={updateCurrentTokens}
               onSubmit={handleSend}
               onAtTrigger={() => setReferencePickerOpen(true)}
-              placeholder={
-                mode === "ingest"
-                  ? t(novelMode ? "novel.chat.ingestPlaceholder" : "chat.ingestPlaceholder")
-                  : t(novelMode ? "novel.chat.typeAMessage" : "chat.typeAMessage")
-              }
+              placeholder={"写下你的想法，或 @ 引用资料..."}
             />
           </div>
           <ReferencePickerDialog
@@ -2765,6 +3579,9 @@ export function ChatPanel() {
             onCancel={() => closeChapterPlanDialog(pendingChapterPlan.conversationId, "cancel")}
           />
         )}
+        {/* 丁-4：`@某人灵魂` 的确认步骤（选绑给哪个小说人物）。由 hook 持有，
+            打开时 `handleSend` 正 await 它，所以关闭（取消）就等于中止本次发送。 */}
+        {soulBindingDialog}
       </div>
     </div>
   )

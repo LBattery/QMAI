@@ -1,11 +1,31 @@
+import { ScrollToLatestButton } from "@/components/chat/scroll-to-latest-button"
+import { UserMessageMeta } from "@/components/chat/user-message-meta"
+import { StoppedGenerationActions } from "@/components/novel/stopped-generation-actions"
+import { FailedGenerationActions } from "@/components/novel/failed-generation-actions"
+import { CONTINUE_STOPPED_GENERATION_PROMPT, isStoppedGenerationMessage } from "@/lib/novel/stopped-generation"
+import {
+  FAILED_GENERATION_CONTINUE_PROMPT,
+  hasFailedGenerationPartialContent,
+  isFailedGenerationMessage,
+} from "@/lib/novel/failed-generation"
+import { buildSettingProfileOutputRules } from "@/lib/novel/setting-profile-contracts";
+import { useGuideStore } from "@/lib/guide/guide-store"
+import {
+  buildGuideDemoOutlineMarkdown,
+  pickGuideDemoNovel,
+  readGuideDemoNovel,
+  rememberGuideDemoNovel,
+} from "@/lib/guide/guide-demo-novel"
 import {
   type CSSProperties,
+  type ReactNode,
   useRef,
   useCallback,
   useEffect,
   useMemo,
   useState,
   useDeferredValue,
+  isValidElement,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -20,7 +40,6 @@ import {
   Trash2,
   ListPlus,
   History,
-  ArrowDown,
 } from "lucide-react";
 import { useWikiStore } from "@/stores/wiki-store";
 import {
@@ -28,12 +47,20 @@ import {
   type OutlineWorkflowMode,
 } from "@/lib/agent/workflow-mode";
 import { OUTPUT_TRUNCATED_ERROR_MARKER } from "@/lib/llm-client";
+import { friendlyLlmErrorMessage } from "@/lib/novel/llm-error-message";
 import { Button } from "@/components/ui/button";
-import { saveAiOutlineModel, saveOutlineWorkflowMode } from "@/lib/project-store";
+import { UiTestAiIdentity, UiTestAiAuthor, UiTestAiEmpty, UiTestAiModel, UiTestAiComposer, getUiTestAiMenuStyle, useUiTestAiMenuFocus } from "@/components/uitest/ui-test-ai-parts";
+import "@/components/uitest/ui-test-ai.css";
+import {
+  saveAiOutlineModel,
+  saveAiOutlineReasoningDepth,
+  saveOutlineWorkflowMode,
+} from "@/lib/project-store";
 import {
   useOutlineChatStore,
   type OutlineMultiAgentRunState,
   type OutlineChatMessage,
+  type OutlineSaveReport,
 } from "@/stores/outline-chat-store";
 import { normalizePath } from "@/lib/path-utils";
 import { refreshProjectState } from "@/lib/project-refresh";
@@ -61,10 +88,13 @@ import {
   type OutlineSaveConfirmPayload,
 } from "@/components/sources/outline-save-confirm-dialog";
 import { OutlineWizardDialog } from "@/components/sources/outline-wizard-dialog";
+import { EventOutlineCard } from "@/components/sources/event-outline-card";
 import { NovelGenerationRequestMessage } from "@/components/sources/novel-generation-request-message";
 import { OutlineMultiAgentPanel } from "@/components/sources/outline-multi-agent-panel";
+import { OutlineSaveReportPanel } from "@/components/sources/outline-save-report";
 import {
   OutlineStandardWorkflowPanel,
+  shouldShowOutlineToolCalls,
   shouldUseOutlineStandardWorkflowCard,
 } from "@/components/sources/outline-standard-workflow-panel";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -72,8 +102,17 @@ import { OUTLINE_SECTION_GENERATION_CONFIGS } from "@/lib/novel/outline-section-
 import {
   buildOutlineWizardPrompt,
   getOutlineWizardSkillNames,
+  isFanficRequest,
+  resolveFanficDeviations,
+  resolveFanficMode,
   type OutlineWizardRequest,
 } from "@/lib/novel/outline-wizard";
+import {
+  compileFanficCanon,
+  fanficCanonPath,
+  loadFanficCanon,
+  stripFanficCanonFrontmatter,
+} from "@/lib/novel/fanfic-canon";
 import {
   createNovelGenerationRequestPackage,
   getOutlineMessageModelContent,
@@ -104,6 +143,8 @@ import {
 import { buildScopedOutlineSubAgentContext } from "@/lib/novel/outline-agent-context";
 import {
   buildClassifiedOutlineSaveRequest,
+  decideOutlineAutoSaveGate,
+  isEventOutlineSaveBlocked,
   isSaveableOutlineDeliverable,
   prepareOutlineSaveSourceContent,
 } from "@/lib/outline-save";
@@ -123,6 +164,7 @@ import {
 } from "@/lib/novel/character-multi-agent";
 import {
   characterDraftsToSaveRequests,
+  excludeEventOutlineSaveRequests,
   formatOutlineSaveParseFeedback,
   mergeOutlineSaveRequests,
   type OutlineSaveRequest,
@@ -131,10 +173,55 @@ import {
   splitConfirmRequiredSaveRequests,
 } from "@/lib/novel/outline-save-request";
 import {
+  extractVolumeOutlineData,
+  getVolumeSkeletonReference,
+  loadSavedVolumeOutlineDataList,
+  primeVolumeOutlineTemplate,
+  primeVolumeSkeletonReference,
+  validateVolumeOutlineData,
+} from "@/lib/novel/volume-outline-template";
+import {
+  buildChapterBatchPrompt,
+  buildChapterOutlineSaveRequest,
+  crossCheckChapterAgainstVolume,
+  collectProblemChapterNumbers,
+  extractChapterOutlineBatch,
+  extractChapterOutlineData,
+  mergeChapterBatches,
+  nextChapterBatchRange,
+  primeChapterOutlineTemplate,
+  renderChapterOutlineMarkdown,
+  validateChapterOutlineData,
+  type ChapterOutlineData,
+} from "@/lib/novel/chapter-outline-template";
+import {
+  primeSettingOutlineTemplate,
+  resolveSettingSpecByTitle,
+  type SettingOutlineSpec,
+} from "@/lib/novel/setting-outline-template";
+import {
+  primeCharacterProfileTemplate,
+  buildCharacterProfileHtmlForDraft,
+  extractCharacterProfiles,
+} from "@/lib/novel/character-profile-template";
+import { primeFactionProfileTemplate, extractFactionProfiles } from "@/lib/novel/faction-profile-template";
+import { primePowerProfileTemplate, extractPowerProfiles } from "@/lib/novel/power-system-template";
+import { primeForeshadowingProfileTemplate, extractForeshadowingProfiles } from "@/lib/novel/foreshadowing-plan-template";
+import { primeGoldenFingerProfileTemplate, extractGoldenFingerProfiles } from "@/lib/novel/golden-finger-template";
+import { primeGeographyProfileTemplate, extractGeographyProfiles } from "@/lib/novel/geography-setting-template";
+import { primeLocationProfileTemplate, extractLocationProfiles } from "@/lib/novel/location-setting-template";
+import { primeBackgroundProfileTemplate, extractBackgroundProfiles } from "@/lib/novel/background-setting-template";
+import {
   resolveModelConfig,
   resolveNovelModel,
   resolveUsableModelKey,
 } from "@/lib/novel/model-resolver";
+import {
+  buildChapterOutlineResumePrompt,
+  clearChapterOutlineDraft,
+  readChapterOutlineDraft,
+  writeChapterOutlineDraft,
+} from "@/lib/novel/chapter-outline-draft";
 import { hasAvailableModels as hasConfiguredModels } from "@/lib/llm-model-keys";
 import {
   planOutlineRequestBudget,
@@ -146,10 +233,13 @@ import {
   thinkingMinMaxTokens,
 } from "@/lib/llm-providers";
 import { ChatModelSelector } from "@/components/chat/chat-model-selector";
+import { ReasoningDepthControl } from "@/components/chat/reasoning-depth-control";
+import { applyReasoningDepth } from "@/lib/reasoning-depth";
 import { ContextUsageRing } from "@/components/chat/context-usage-ring";
 import { highlightCode } from "@/lib/streaming-code-highlight";
 import { separateThinking } from "@/lib/separate-thinking";
 import { StreamingMarkdown } from "@/components/common/streaming-markdown";
+import { useWaitingHint, composeWaitingText } from "@/hooks/use-waiting-hint";
 import { ContextHubDetails } from "@/components/common/context-hub-details";
 import { parseContextHubSnapshotRef } from "@/lib/context-hub/types";
 import {
@@ -167,13 +257,29 @@ import {
   memoryProvider,
   outlineProvider,
 } from "@/lib/reference/providers";
+import type { SkillSummary } from "@/lib/reference/providers";
 import type { ReferenceToken } from "@/lib/reference/types";
+import { collectReferencedSoulAuraIds, SOUL_SKILL_SUBTYPE } from "@/lib/reference/soul-reference";
+import {
+  beginMessageScopedSoulBinding,
+  releaseMessageScopedSoulBinding,
+  type MessageScopedSoulBinding,
+} from "@/lib/novel/message-scoped-soul-binding";
+import { useCharacterSoulReference, type CharacterSoulOption } from "@/components/chat/use-character-soul-reference";
 import { useChatStore } from "@/stores/chat-store";
 import { AgentRunner } from "@/lib/agent/runner";
-import { isReasoningOnlyResponseError } from "@/lib/reasoning-retry";
+import {
+  isReasoningDisabled,
+  isReasoningOnlyResponseError,
+  withReasoningDisabled,
+} from "@/lib/reasoning-retry";
+import {
+  isThoughtDumpText,
+  stripThoughtDumpFromText,
+} from "@/lib/thought-dump";
 import { ToolRegistry } from "@/lib/agent/registry";
-import { buildAgentConfig, modelSupportsTools } from "@/lib/agent/config";
-import type { AgentMessage, AgentRunRecord } from "@/lib/agent/types";
+import { buildAgentConfig, isFunctionCallingEnabled, modelSupportsTools } from "@/lib/agent/config";
+import type { AgentConfig, AgentMessage, AgentRunRecord } from "@/lib/agent/types";
 import {
   applyAgentToolEvent,
   settleRunningAgentToolCalls,
@@ -239,7 +345,35 @@ import {
   extractNextStep,
   buildNextStepPromptSuffix,
 } from "@/lib/novel/outline-next-step";
-import { IntentOptionsCard } from "@/components/sources/outline-intent-options-card";
+import {
+  buildOutlineDiscussAnswerPrompt,
+  buildOutlineDiscussExecutionPrompt,
+  buildOutlineDiscussPhaseSystemRules,
+  findLatestOutlineDiscussProtocol,
+  isOutlineDiscussFinalizeRequest,
+  parseOutlineDiscussProtocol,
+  type OutlineDiscussAnswer,
+  type OutlineDiscussPhase,
+  type OutlineDiscussProtocol,
+} from "@/lib/novel/outline-discuss-protocol";
+import { resolveOutlineDiscussProtocol } from "@/lib/novel/outline-discuss-repair";
+import { resolveOutlinePlanProtocol } from "@/lib/novel/outline-plan-repair";
+import { resolveIntentClarityProtocol } from "@/lib/novel/outline-intent-repair";
+import {
+  buildOutlinePlanClarifyAnswerPrompt,
+  buildOutlinePlanElementCheckPrompt,
+  buildOutlinePlanExecutionPrompt,
+  buildOutlinePlanPhaseSystemRules,
+  type OutlinePlanAnswer,
+  type OutlinePlanPhase,
+  type OutlinePlanProtocol,
+} from "@/lib/novel/outline-plan-protocol";
+import { getOutlinePlanRequiredElements } from "@/lib/novel/outline-plan-elements";
+import { OutlineIntentDialog } from "@/components/sources/outline-intent-dialog";
+import { listOutlineEntries, type OutlineListEntry } from "@/lib/agent/tools/outline-list-helpers";
+import { OutlineClarifyCard } from "@/components/sources/outline-clarify-card";
+import { OutlineDiscussCard } from "@/components/sources/outline-discuss-card";
+import { OutlinePlanCard } from "@/components/sources/outline-plan-card";
 import { NextStepCard } from "@/components/sources/outline-next-step-card";
 import { ConversationRunStatusIcon } from "@/components/common/conversation-run-status-icon";
 import { ConversationDeleteConfirmDialog } from "@/components/common/conversation-delete-confirm-dialog";
@@ -250,6 +384,8 @@ import {
 } from "@/lib/conversation-create-guard";
 import { outlineConversationRunRegistry } from "@/lib/conversation-run-registry";
 import { toast } from "@/lib/toast";
+import { extractEventOutlineData, type EventOutlineData } from "@/lib/novel/event-outline";
+import { handoffEventOutlineToProse } from "@/lib/novel/event-outline-handoff";
 import { finalizeStructuredMarkdownMessage } from "@/lib/novel/markdown-quality-finalizer";
 import { repairMarkdownFormatWithAi } from "@/lib/novel/markdown-quality-ai-repair";
 import {
@@ -265,6 +401,83 @@ import {
 
 type OutlineSendResult = { started: boolean; sent: boolean };
 
+/**
+ * 某条消息所属那一轮生成里，用户提的事件细纲硬要求
+ * （扩写提示词里 `## 用户对本章的要求` 那一节的来源）。
+ *
+ * 要求就存在消息本身上（`eventOutlineRequirement`，与消息一起写进
+ * `.qmai/outline-chats.json`），所以这里既不查表也不解析提示词：
+ * 「谁的要求」这个问题只有一个答案 —— 这条消息自己的。
+ *
+ * ⚠️ 别写成「事件细纲**向导**里填的要求」：向导已按用户要求删除（丙-2c）。
+ * 现在把字段写到**新**消息上的只剩两条重发路径 —— `handleRegenerate` 直接抄，
+ * 以及「继续」经 `handleContinueStopped` → `handleSendMessage` → `handleSend` 盖章。
+ */
+function requirementFor(msg: OutlineChatMessage): string | undefined {
+  return msg.eventOutlineRequirement;
+}
+
+const OUTLINE_REASONING_ONLY_ERROR_MESSAGE =
+  "模型只输出了思考内容，没有输出正文。已关闭 reasoning 重试一次，仍未返回可用的大纲内容。";
+
+export function filterOutlineGeneratedContent(content: string): {
+  content: string;
+  reasoningOnly: boolean;
+} {
+  const trimmed = content.trim();
+  if (!trimmed) return { content: "", reasoningOnly: false };
+
+  const stripped = stripThoughtDumpFromText(trimmed).trim();
+  const reasoningOnly = !stripped || (
+    stripped === trimmed && isThoughtDumpText(trimmed)
+  );
+  return {
+    content: reasoningOnly ? "" : stripped,
+    reasoningOnly,
+  };
+}
+
+type OutlineFilteredAttempt = {
+  text: string;
+  error?: Error;
+};
+
+async function runOutlineAttemptWithReasoningRetry<T extends OutlineFilteredAttempt>(
+  config: Pick<AgentConfig, "llmConfig" | "requestOverrides">,
+  runAttempt: (requestOverrides: AgentConfig["requestOverrides"]) => Promise<T>,
+  onRetry?: (thoughtText: string) => void,
+): Promise<T> {
+  const firstAttempt = await runAttempt(config.requestOverrides);
+  const firstOutput = filterOutlineGeneratedContent(firstAttempt.text);
+  const firstReasoningOnlyError = Boolean(
+    firstAttempt.error && isReasoningOnlyResponseError(firstAttempt.error),
+  );
+
+  // AgentRunner 已经会对供应商明确上报的 reasoning-only 错误重试；
+  // 这里只为“被当作普通文本返回”的思考摘要补一次上层重试。
+  if (firstReasoningOnlyError) {
+    throw new Error(OUTLINE_REASONING_ONLY_ERROR_MESSAGE);
+  }
+  if (!firstOutput.reasoningOnly) {
+    return { ...firstAttempt, text: firstOutput.content };
+  }
+  if (isReasoningDisabled(config.llmConfig, config.requestOverrides)) {
+    throw new Error(OUTLINE_REASONING_ONLY_ERROR_MESSAGE);
+  }
+
+  onRetry?.(firstAttempt.text);
+  const retryAttempt = await runAttempt(withReasoningDisabled(config.requestOverrides));
+  const retryOutput = filterOutlineGeneratedContent(retryAttempt.text);
+  if (
+    retryOutput.reasoningOnly
+    || !retryOutput.content
+    || (retryAttempt.error && isReasoningOnlyResponseError(retryAttempt.error))
+  ) {
+    throw new Error(OUTLINE_REASONING_ONLY_ERROR_MESSAGE);
+  }
+  return { ...retryAttempt, text: retryOutput.content };
+}
+
 const OUTLINE_CHAT_DISABLED_TOOLS = ["write_chapter", "write_memory", "write_outline_node"];
 const OUTLINE_CHAT_WIZARD_DISABLED_TOOLS = [...OUTLINE_CHAT_DISABLED_TOOLS];
 
@@ -275,6 +488,14 @@ function showOutlineAutoSaveError(message: string) {
     dedupeKey: `outline-auto-save:${message}`,
   });
 }
+
+/** 自动修复配额按任务类型分开计数：同一条会话里生成卷纲后又生成章纲时，互不挤占配额。 */
+function outlineRepairAttemptsKey(task: "volume" | "chapter", conversationId: string): string {
+  return `${task}:${conversationId}`;
+}
+
+/** 章纲第 1 批生成提示词里的标记：用于识别「首次生成章纲」并触发草稿续跑。 */
+const CHAPTER_OUTLINE_FIRST_BATCH_MARKER = "本次只写第 1 批";
 
 function mergeDisabledTools(...groups: Array<readonly string[] | undefined>): string[] {
   return Array.from(new Set(groups.flatMap((group) => group ?? [])));
@@ -429,35 +650,105 @@ const OUTLINE_WORKFLOW_MODE_OPTIONS: Array<{
     description: "完整工作流",
     routeDescription: "先做意图分析或向导多 Agent，再生成可保存的大纲，并保留澄清与分步生成。",
   },
+  {
+    mode: "plan",
+    label: "计划",
+    description: "先问后写",
+    routeDescription: "先按大纲结构盘点要素，缺口用选项追问补齐，再生成计划并等你确认后才开始写。",
+  },
+  {
+    mode: "discuss",
+    label: "共创",
+    description: "边聊边定",
+    routeDescription: "把 AI 当责编来回讨论：每轮给出判断、抛出需要你决策的分歧点和它自己的倾向，等你说定稿才输出正文。",
+  },
 ];
+
+/** 只在模型自己建议拆成两章章纲时补写第 2 章章纲，不改其他范围规则。 */
+const TWO_CHAPTER_OUTLINE_SUGGESTION_RULE =
+  "如果你在本轮或上一轮主动建议分成两章章纲，这次章纲生成必须按完整流程写出这两章章纲，各一份，后一章章纲承接前一章章纲的钩子。「下一章交接」不能代替第 2 章章纲，不要等用户再说「连续生成」。用户拒绝该建议、建议不是两章章纲、或明确只要一章时，不要应用这条。";
 
 export function buildOutlineAgentSystemPrompt(options: {
   projectName?: string;
   webResearchContext?: string;
   soulDoc?: string;
   mode?: OutlineWorkflowMode;
+  /** 计划模式的目标模块；只有在要素盘点轮才传，正文生成轮不传。 */
+  planModule?: string;
+  /** 共创模式的目标模块；只有在讨论轮才传，定稿后的正文生成轮不传。 */
+  discussModule?: string;
 }): string {
   const mode = resolveOutlineWorkflowMode(options.mode);
+  const discussTurn = Boolean(options.discussModule);
+  const protocolTurn = Boolean(options.planModule || options.discussModule);
+  /** 只读与分析纪律：所有模式共用。 */
+  const sharedReadRules = [
+    "你必须通过可用工具读取项目大纲、章节、记忆、推演结果和历史对话后，再进行分析、回答、生成或修改建议。",
+    "不要假设引用内容已经注入上下文；不要跳过工具直接空泛回答。",
+    "回答必须基于已读取内容进行分析，说明关键判断依据。",
+    "## AI大纲固定分析流程",
+    "1. 先调用 list_outlines、list_chapters、list_memories、list_deductions 确认可用资料范围。",
+    "2. 再调用 read_outline、read_chapter、read_memory、read_deduction 读取用户 @ 引用和相关项目内容。",
+    "3. 分析冲突、缺口、伏笔、角色动机和章节承接，明确哪些判断来自已读取资料。",
+    "4. 最后再生成大纲建议；没有完成读取和分析前，不要直接给出结论。",
+  ];
+  /**
+   * 生成工作流规则：**只有真的要产出正文的模式才带上**。
+   *
+   * 共创讨论轮必须排除它 —— 这一段讲的是「先出方案、确认后生成、生成后列写回清单」，
+   * 与讨论轮「禁止生成完整正文、必须输出 outline_discuss 协议」直接冲突。
+   * 两套契约同时出现时，模型会挑生成那套照做，于是整轮被闸门判死
+   * （实测故障：模型返回了完整卷纲 + 写回清单，却没有任何 outline_discuss 块）。
+   */
+  const sharedGenerationWorkflowRules = [
+    "## AI大纲生成工作流",
+    "固定向导提交的小说生成需求必须先进入“需求分析/生成方案”阶段：先判断缺失信息，信息足够时只输出生成方案、文件清单、保存位置和生成顺序，并询问用户是否确认开始生成；用户确认前不得生成完整文件，不得调用保存工具。",
+    "需求分析必须执行充分性闸门：缺少篇幅、频道、题材、故事灵感、核心卖点、作品规模、主要人物方向、世界观/背景方向或预期章节结构时，只追问最关键缺口。",
+    "长篇小说必须先卷后章：先形成核心设定、总纲、卷节拍表、卷时间线和卷纲，再生成章纲；不得从灵感直接跳到全书章纲。",
+    "章纲采用滚动章纲方式：优先生成前 10 章或用户指定范围，后续依据已确认章纲继续补齐，避免一次性生成整本导致承接断裂。",
+    "生成章纲后必须列出新增设定写回清单，包含新增角色、势力、世界观规则、伏笔、地图地点和状态变化；用户确认前不得写入设定文件。",
+  ];
+  const sharedAnalysisRules = [...sharedReadRules, ...sharedGenerationWorkflowRules];
   const workflowRules = mode === "fast"
     ? [
       "快速模式下像普通对话一样直接出结果。可以按需读取必要上下文，但不要主动进入需求分析、意图分析或多 Agent 编排。",
       "用户要求生成或修改大纲时，直接输出可保存的大纲正文；不要先追问方案或等待确认才开始写。",
+      TWO_CHAPTER_OUTLINE_SUGGESTION_RULE,
+    ]
+    : mode === "discuss"
+    ? discussTurn
+      ? [
+        ...sharedReadRules,
+        "## 共创讨论模式总则",
+        "本模式是责编和作者围绕大纲来回讨论，不是一次性交付。未经作者确认定稿前，不要输出完整大纲正文，也不要输出 outlineSaveRequest 保存请求。",
+        "禁止输出 intent_clarity 和 outline_plan 协议块。",
+        "必须输出 outline_discuss 协议块；卡片认这个协议，正文里只留关键判断和下一步建议。",
+        "每轮回复必须包含三部分：1）你基于已读取资料得出的关键判断和依据；2）1-3 个需要作者拍板的具体分歧点，每个都要给出可选方案、你自己的倾向和理由；3）一句下一步建议。",
+        "抛出分歧点时必须给出具体可选方案，禁止只抛开放式问题让作者自己想；禁止用「你希望怎么写」这类空问题占位。",
+        "资料已经足够、确实没有需要拍板的分歧时，直接说明为什么可以开写，并请作者确认定稿，不要为了提问而提问。",
+        "作者明确要求「先直接给我一版」时可以给出草案，但草案之后仍要列出你认为需要继续讨论的点。",
+        buildOutlineDiscussPhaseSystemRules(options.discussModule || "大纲"),
+      ]
+      : [
+        ...sharedAnalysisRules,
+        "## 共创讨论模式总则",
+        "作者已经确认定稿。本轮只输出完整可保存正文并附加保存请求。",
+        "禁止输出 intent_clarity、outline_plan 和 outline_discuss 协议块。",
+      ]
+    : mode === "plan"
+    ? [
+      ...sharedAnalysisRules,
+      "## 计划模式总则",
+      "计划模式不做意图清晰度分析，禁止输出 intent_clarity。要素齐备并经用户确认生成计划后，才允许生成大纲正文。",
+      ...(options.planModule
+        ? [buildOutlinePlanPhaseSystemRules(
+          options.planModule,
+          getOutlinePlanRequiredElements(options.planModule),
+        )]
+        : []),
     ]
     : [
-      "你必须通过可用工具读取项目大纲、章节、记忆、推演结果和历史对话后，再进行分析、回答、生成或修改建议。",
-      "不要假设引用内容已经注入上下文；不要跳过工具直接空泛回答。",
-      "回答必须基于已读取内容进行分析，说明关键判断依据。",
-      "## AI大纲固定分析流程",
-      "1. 先调用 list_outlines、list_chapters、list_memories、list_deductions 确认可用资料范围。",
-      "2. 再调用 read_outline、read_chapter、read_memory、read_deduction 读取用户 @ 引用和相关项目内容。",
-      "3. 分析冲突、缺口、伏笔、角色动机和章节承接，明确哪些判断来自已读取资料。",
-      "4. 最后再生成大纲建议；没有完成读取和分析前，不要直接给出结论。",
-      "## AI大纲生成工作流",
-      "固定向导提交的小说生成需求必须先进入“需求分析/生成方案”阶段：先判断缺失信息，信息足够时只输出生成方案、文件清单、保存位置和生成顺序，并询问用户是否确认开始生成；用户确认前不得生成完整文件，不得调用保存工具。",
-      "需求分析必须执行充分性闸门：缺少篇幅、频道、题材、故事灵感、核心卖点、作品规模、主要人物方向、世界观/背景方向或预期章节结构时，只追问最关键缺口。",
-      "长篇小说必须先卷后章：先形成核心设定、总纲、卷节拍表、卷时间线和卷纲，再生成章纲；不得从灵感直接跳到全书章纲。",
-      "章纲采用滚动章纲方式：优先生成前 10 章或用户指定范围，后续依据已确认章纲继续补齐，避免一次性生成整本导致承接断裂。",
-      "生成章纲后必须列出新增设定写回清单，包含新增角色、势力、世界观规则、伏笔、地图地点和状态变化；用户确认前不得写入设定文件。",
+      ...sharedAnalysisRules,
       "## 意图清晰度分析阶段",
       "仅当系统明确标记本轮为“意图分析”时，才输出 intent_clarity；正文生成阶段严禁再次输出该标记。",
       "当本轮为意图分析时：",
@@ -465,31 +756,58 @@ export function buildOutlineAgentSystemPrompt(options: {
       "2. 判断用户意图是否清晰（能否确定具体生成范围）",
       "3. 严格输出以下完整协议块：",
       "<!-- intent_clarity -->",
-      '{"clarity":"clear|needs_input","module":"模块名","analysis":"判断依据","detectedScope":"明确范围","missingItems":[],"options":[],"question":""}',
+      '{"clarity":"clear|needs_input","module":"模块名","analysis":"判断依据","detectedScope":"明确范围","missingItems":[],"options":[{"id":"A","label":"具体范围","description":"现状与依据"}],"question":""}',
       "<!-- /intent_clarity -->",
       "开闭标记必须成对出现；字段名必须使用 clarity，禁止使用 status。JSON 必须完整且可解析。",
       "4. clear 时：只输出 JSON，不生成正文，等待系统自动注入生成指令",
-      "5. needs_input 时：只输出 JSON，在 question 和 options 中提供澄清问题与4个推荐选项",
-      "推荐选项必须包含：A.全部缺失项 B.基于已有内容推断 C.最近范围 D.自定义",
+      "5. needs_input 时：只输出 JSON，question 问清楚要哪一个，options 列出具体的候选范围",
+      "options 必须是能直接执行的具体对象（如具体卷次、具体章节区间），取自刚读到的资料，最多 6 个",
+      "严禁把候选塞进 missingItems 而让 options 为空：options 为空视为格式错误",
+      "严禁输出「全部缺失项生成」「基于已有内容推断」「最近范围生成」这类抽象策略；「自定义」由系统自动追加，不要自己输出",
       "用户选择或回复后，直接进入生成流程，不再二次分析。",
     ];
+  const appliedWorkflowRules = mode !== "fast" && !discussTurn
+    ? [...workflowRules, TWO_CHAPTER_OUTLINE_SUGGESTION_RULE]
+    : workflowRules;
   return [
     "你是专业小说大纲分析与创作助手。",
     "如果用户提供 @ 引用，必须优先按路径、标题或会话ID调用对应读取工具获取正文内容。",
-    "需要保存大纲时只输出 outlineSaveRequest 或 outlineSaveRequests JSON 块，禁止调用 write_outline_node；系统解析后弹出确认，用户确认后才写入文件。",
-    ...workflowRules,
+    // 讨论轮不提保存请求：它的产出是「待拍板的分歧点」，提保存只会诱导模型直接交付正文。
+    ...(discussTurn ? [] : [
+      "需要保存大纲时只输出 outlineSaveRequest 或 outlineSaveRequests JSON 块，禁止调用 write_outline_node；系统解析后弹出确认，用户确认后才写入文件。",
+    ]),
+    ...appliedWorkflowRules,
     "",
-    "## 下一步推荐输出",
-    "生成完成后，在回复末尾附加 <!-- next_step --> JSON 标记块。",
-    "推荐方向仅限大纲体系内（人物小传、组织势力、力量体系等），严禁推荐正文生成。",
-    "必须包含一个 id 为 D 的自定义选项。",
-    ...(mode === "fast" ? [] : [
+    // 协议轮只允许输出对应协议块，不能再要求附加下一步推荐
+    ...(protocolTurn ? [] : [
+      "## 下一步推荐输出",
+      "生成完成后，在回复末尾附加 <!-- next_step --> JSON 标记块。",
+      "推荐方向仅限大纲体系内（人物小传、组织势力、力量体系等），严禁推荐正文生成。",
+      "必须包含一个 id 为 D 的自定义选项。",
+    ]),
+    ...(mode === "fast" || protocolTurn ? [] : [
+      "## 主动性要求",
+      "读完资料后如果发现剧情矛盾、人物动机站不住、卖点不足、伏笔无法回收或结构失衡，必须主动指出，不要沉默照做。",
+      "每轮最多提出 1 条对用户已有设定的质疑，且必须同时给出替代方案和这样改的代价；没有发现真实问题时不要为了质疑而质疑。",
+      "指出问题时先给结论，再给依据，再给你建议的改法；禁止只否定不给方案。",
+      "如果系统标记本轮为意图分析或要素盘点，本节不适用，仍然只输出对应协议块。",
+    ]),
+    ...(mode === "fast" || discussTurn ? [] : [
       "当用户要求生成、完善或续写任何大纲分项时，必须按 PRD 3.1 主流程执行：提取请求关键词，识别用户意图，按意图读取资料，提取对小说创作有用的关键内容，结合用户要用的 skill + soul.md 约束生成内容，再做结果强约束收敛。",
     ]),
     "关键内容提取必须服务于小说创作：只保留能帮助用户继续写小说的信息，例如章节目标、冲突推进、人物动机、伏笔状态、设定限制、时间线承接和结尾钩子。",
-    "生成章纲时必须使用章纲标准结构：基础信息、上层依据、本章目标、核心事件、场景顺序、结构节点、章首钩子、爽点设计、章尾钩子、执行约束、人物状态、伏笔与追踪、待写回设定、写作约束、AI写作提示。核心事件不少于6条，场景顺序为2-4个场景。",
-    "结构节点必须包含 CBN、CPNs、CEN；CEN 必须能承接下一章 CBN。执行约束必须包含必须覆盖节点和本章禁区。基础信息必须包含时间锚点、章内时间跨度和与上章时间差。",
+    // 章纲结构硬要求属于「产出正文」的契约，讨论轮带上会让模型直接开写章纲。
+    ...(discussTurn ? [] : [
+      "生成章纲时必须使用章纲标准结构：基础信息、上层依据、本章目标、核心事件、场景顺序、结构节点、章首钩子、爽点设计、章尾钩子、执行约束、人物状态、伏笔与追踪、待写回设定、写作约束、AI写作提示。核心事件不少于6条，场景顺序为2-4个场景。",
+      "结构节点必须包含 CBN、CPNs、CEN；CEN 必须能承接下一章 CBN。执行约束必须包含必须覆盖节点和本章禁区。基础信息必须包含时间锚点、章内时间跨度和与上章时间差。",
+    ]),
     "Markdown 格式约束：结构化资料使用一级标题，** 必须成对，不要用代码围栏包裹全文，已有表格必须保留合法分隔行。",
+    // ⚠️ 整段（标题 + 正文）都要在 discussTurn 时排除。
+    // 这里曾经只把「## Markdown 格式强制要求」这个**标题**放进排除数组，
+    // 正文却留在数组外面，于是讨论轮的提示词里仍然出现
+    // 「所有大纲正文必须使用标准 Markdown 格式输出」和整段大纲示例 ——
+    // 一边要求「禁止输出完整大纲正文」，一边给了正文格式规范与范例。
+    ...(discussTurn ? [] : [
     "## AI 大纲输出协议",
     "当本轮生成了可保存的大纲、卷纲、章纲、人物、设定、伏笔、组织或质量检查内容时，最终回复末尾必须附加一个 json 代码块，顶层字段为 outlineSaveRequest 或 outlineSaveRequests。",
     "保存请求必须包含 targetFolder、fileName、fileType、writeMode、referencedSkills、sourceIntent、content。fileName 必须是 .md 文件，targetFolder 必须是相对路径（仅文件夹名，如「大纲」「人物小传」「章纲」「设定」「伏笔」「组织」「质量检查」「卷纲」），禁止使用绝对路径（如 C:\\... 或 /Users/...）。",
@@ -514,7 +832,12 @@ export function buildOutlineAgentSystemPrompt(options: {
     "- **身份：** 穿越者→清水村村民→清水社首领→异姓王→隐士",
     "- **核心技能：** 高中/大学化学知识（有机/无机化学基础）、物理常识、急救知识",
     "- **性格：** 表面冷漠实则心软，前期被动应对，中后期主动布局",
-    "最终回复只输出大纲标题和大纲正文；如果内容需要保存，末尾附加 AI 大纲输出协议 JSON 保存块（含 content）。禁止输出工具调用报告、分析过程、完成报告、下一步行动、无法直接保存的大段说明。",
+    ]),
+    "## 输出边界（按本轮性质区分）",
+    ...(discussTurn ? [] : [
+    "当本轮要交付可保存的大纲正文时：最终回复只输出大纲标题和大纲正文；如果内容需要保存，末尾附加 AI 大纲输出协议 JSON 保存块（含 content）。禁止输出工具调用报告、分析过程、完成报告、下一步行动、无法直接保存的大段说明。",
+    ]),
+    "当本轮是讨论、答疑、方案对比、澄清或提出异议时：允许并鼓励输出你的判断、依据、疑问和方案对比，不要用「只输出正文」的规则压制讨论；此时仍然禁止输出工具调用报告和流程完成报告。",
     mode === "fast"
       ? "工具调用过程只应展示在工具调用 UI 中，不要混入最终正文。不要用流程说明冒充生成结果。"
       : "工具调用过程只应展示在工具调用 UI 中，不要混入最终正文。资料不足以生成完整正文时，先提出最少必要澄清问题，不要用流程说明冒充生成结果。",
@@ -529,55 +852,325 @@ export function buildOutlineAgentSystemPrompt(options: {
     .join("\n");
 }
 
+/**
+ * 共创讨论轮里，模型偶尔不按讨论协议走，而是**直接交付一份完整大纲**
+ * （MD 正文 + ```json 的 volumeOutlineData/chapterOutlineData + outlineSaveRequest）。
+ *
+ * 这时不能把整轮判成「未返回 outline_discuss 协议块」作废：那份正文和结构化数据
+ * 是模型真正生成的内容，判死等于把它们一起丢掉，用户只能在气泡里看到一坨 JSON 源码
+ * （结构化数据既没被提取成折叠树/卡片，也没进保存确认链路）。
+ *
+ * 所以先判定「本轮是否其实已经交付了可保存大纲」：
+ * - 带 outlineSaveRequest(s) → 是交付；
+ * - 解析得出 volumeOutlineData（卷纲结构化数据）→ 是交付；
+ * - 正文本身像一份可保存大纲（isSaveableOutlineDeliverable）→ 是交付。
+ *
+ * 命中则按生成轮处理（正文照常显示、结构化数据进保存链路），
+ * 只有真的只是讨论而没有交付内容时，才继续要求 outline_discuss 协议。
+ * 回复里出现了 outline_discuss 标记就一定是讨论轮：正文以「# 卷纲」开头这类
+ * 启发式命中也不能把协议块绕过去。
+ */
+function isDiscussDeliveredOutline(content: string): boolean {
+  if (!content.trim()) return false;
+  if (parseOutlineDiscussProtocol(content).kind !== "none") return false;
+  if (parseOutlineSaveRequests(content).requests.length > 0) return true;
+  if (extractVolumeOutlineData(content)) return true;
+  /*
+   * 章纲分批产出（chapterOutlineBatch）**不带** outlineSaveRequest —— 保存请求由软件在
+   * 最后一批之后合并生成。结构化-only 之后正文也空了，上面三条判据全落空，
+   * 于是「讨论轮里模型直接交付了章纲」会被判成"没交付"，回答被丢弃后重新要求它讲协议。
+   * 分批数据同样是一份真交付，这里必须认。
+   */
+  if (extractChapterOutlineBatch(content)) return true;
+  return isSaveableOutlineDeliverable(content);
+}
+
+/**
+ * 只返回了结构化数据（没有 MD 正文）时，气泡里给一句可读的交代。
+ *
+ * 卷纲/章纲从 4.3.6 起不再让模型重复写一遍 MD —— 气泡里的正文因此会变成空，
+ * 用户只看到一团被清掉的 JSON 围栏。这里用数据本身算出统计，告诉他生成成功了、
+ * 有多少内容、去哪里看。文字由软件生成，不占模型输出。
+ */
+export function describeStructuredOnlyAnswer(raw: string): string {
+  const volume = extractVolumeOutlineData(raw)
+  if (volume) {
+    const stages = volume.stories.reduce((sum, story) => sum + story.st.length, 0)
+    return `已生成卷纲《${volume.title}》：${volume.stories.length} 个故事、${stages} 个环节。正文与折叠树由软件从结构化数据生成，可在下方保存为 .md / .html。`
+  }
+  const chapter = extractChapterOutlineData(raw)
+  if (chapter) {
+    const numbers = chapter.chapters.map((item) => item.n).sort((a, b) => a - b)
+    const range = numbers.length > 1 ? `第 ${numbers[0]}–${numbers[numbers.length - 1]} 章` : `第 ${numbers[0] ?? 1} 章`
+    /*
+     * 节数按**实际产出的 .md** 数，不写死 17。
+     *
+     * 反推会跳过全空的分区（模型少给几节就少几节）。写死「每章 17 节」等于替软件
+     * 保证了一件没发生的事：用户打开 .md 只有 8 节，第一反应是「软件把内容吞了」，
+     * 而数据本来就只有这些。全部写满时文案与旧版逐字相同。
+     */
+    const sectionCounts = chapter.chapters.map(
+      (item) => (renderChapterOutlineMarkdown({ ...chapter, chapters: [item] }).match(/^### /gm) ?? []).length,
+    )
+    const minSections = Math.min(...sectionCounts)
+    const maxSections = Math.max(...sectionCounts)
+    const sectionsNote = sectionCounts.length === 0 || minSections === 0
+      ? ""
+      : minSections === maxSections
+        ? `，每章 ${minSections} 节`
+        : `，每章 ${minSections}–${maxSections} 节`
+    return `已生成章纲 ${range}（共 ${chapter.chapters.length} 章${sectionsNote}）。正文与卡片流由软件从结构化数据生成。`
+  }
+  /*
+   * 事件细纲同样从 2026-10-18 起只收结构化数据（`eventOutlineData`）。
+   * 它的围栏被 `extractBodyContent` 剥掉之后气泡就空了 —— 主对话那边由
+   * `chat-message` 用 `renderEventOutlineMarkdown` 补正文，大纲面板没有那条腿，
+   * 于是同一条细纲回复在「章节区」有完整正文、在「大纲面板」只剩一张空消息 + 卡片。
+   * 这里补一句统计交代，与其余结构化-only 产线口径一致。
+   */
+  const eventOutline = extractEventOutlineData(raw)
+  if (eventOutline) {
+    const count = eventOutline.events.length
+    const budget = eventOutline.targetWords > 0 ? `，目标约 ${eventOutline.targetWords} 字` : ""
+    return `已生成第 ${eventOutline.chapterNumber} 章事件细纲：${count} 个事件${budget}。正文与细纲卡片由软件从结构化数据生成。`
+  }
+  const profiles = extractCharacterProfiles(raw)
+  if (profiles.length > 0) {
+    const sections = profiles.reduce((sum, profile) => sum + profile.sections.length, 0)
+    const names = profiles.slice(0, 3).map((profile) => profile.name).join("、")
+    const suffix = profiles.length > 3 ? "…" : ""
+    const subject = profiles.length > 1
+      ? `${profiles.length} 个角色（${names}${suffix}）`
+      : `角色《${profiles[0].name}》`
+    return `已生成${subject}的人物小传，共 ${sections} 个分区。正文与角色卡由软件从结构化数据生成，可在下方保存为 .md / .html。`
+  }
+  /*
+   * 其余七类设定同样只收结构化数据（2026-10-18 起），气泡必须给一句可读的交代，
+   * 否则用户看到的是一条空消息 —— 明明生成了内容，界面上却什么都没有。
+   *
+   * ⚠️ 必须**聚合全部命中的类别**，不能命中第一类就 return：「一键生成全部设定」
+   * 那一轮里，同一条回复经常同时带力量体系与地点设定（八类共用 fileType=setting，
+   * 批量产出是常态）。旧写法在第一类上直接返回，气泡只报「已生成 3 份力量体系」，
+   * 地点那几份一个都不提 —— 用户以为软件漏做了，实际只是没报数
+   * （`attachSettingFamilyHtml` 那边早就得按文件名二次配对，也是同一批回复）。
+   */
+  const settingFamilies: Array<{ label: string; extract: (text: string) => Array<{ name: string; sections: unknown[] }> }> = [
+    { label: "势力档案", extract: extractFactionProfiles },
+    { label: "力量体系", extract: extractPowerProfiles },
+    { label: "金手指", extract: extractGoldenFingerProfiles },
+    { label: "背景设定", extract: extractBackgroundProfiles },
+    { label: "地理设定", extract: extractGeographyProfiles },
+    { label: "地点设定", extract: extractLocationProfiles },
+    { label: "伏笔计划", extract: extractForeshadowingProfiles },
+  ]
+  const familySummaries: string[] = []
+  for (const family of settingFamilies) {
+    const docs = family.extract(raw)
+    if (docs.length === 0) continue
+    const sections = docs.reduce((sum, doc) => sum + doc.sections.length, 0)
+    const names = docs.slice(0, 3).map((doc) => doc.name).join("、")
+    const suffix = docs.length > 3 ? "…" : ""
+    const subject = docs.length > 1
+      ? `${docs.length} 份${family.label}（${names}${suffix}）`
+      : `${family.label}《${docs[0].name}》`
+    familySummaries.push(`${subject}，共 ${sections} 个分区`)
+  }
+  if (familySummaries.length > 0) {
+    // 单类时这一句与旧文案逐字相同（只有一类命中时 `join` 不引入任何分隔符之外的变化）。
+    return `已生成${familySummaries.join("；")}。正文与卡片由软件从结构化数据生成，可在下方保存为 .md / .html。`
+  }
+  return ""
+}
+
+/**
+ * 剥掉数据围栏后剩下的文字，是否只是「已生成…」这类交代语。
+ *
+ * 提示词允许模型在围栏外留一句说明，而气泡的内容判定如果只写「剥完还有没有字」，
+ * 那句话就会顶掉 `describeStructuredOnlyAnswer` 的统计交代 —— 用户看到的是
+ * 「好的，已按折叠树生成卷一。」这种一句话回复，明明生成了 10 个故事却什么都不显示。
+ *
+ * 判据只看形状（没有标题行 + 去掉空白极短），不认关键词：一份真交付的大纲
+ * 必然带 `#`/`##` 标题且远超 80 字，而交代语换个说法也逃离不了长度限制。
+ */
+export function looksLikeOutlineDeliveryNote(content: string): boolean {
+  const trimmed = content.trim()
+  if (!trimmed) return true
+  if (/^#{1,6}\s/m.test(trimmed)) return false
+  return trimmed.replace(/\s+/g, "").length <= 80
+}
+
 function getOutlineSectionOutputRules(title: string): string {
-  if (title.includes("章节细纲")) {
-    return "按章节输出：章节标题、章节目标、核心事件、主要冲突、关键转折、结尾钩子、与前后章节承接。";
+  if (title.includes("卷纲")) {
+    return [
+      "【载体】只产出两部分，缺一不可：",
+      "(1) 一个 ```json 围栏，顶层字段为 volumeOutlineData（10 个故事 × 10 个环节的结构化数据）；",
+      '(2) outlineSaveRequest（content 写空字符串 ""，软件会用结构化数据自动生成 MD 与 HTML）。',
+      "**不要再手写一遍 MD 正文**：MD 里的每个字都能从结构化数据原样得到，重复写一遍等于让用户为同一份内容付两遍钱。",
+      "**不要自己写 HTML/CSS/标签**——软件会套模板渲染折叠树。",
+      "",
+      "【只要故事，不要台账】卷纲只回答一件事：这卷发生了哪些故事、每个故事怎么推进。",
+      "禁止输出（写了软件也不显示，纯烧 token）：卷级定位（卷定位 / 主题句 / 叙事形态 / 结构选用 / 建议章数 / 卷末落点）、角色索引、地点索引、伏笔追踪表、悬念债务、对手推进表、人物成长表、整卷账本、期待感曲线、反转类型分布、支线推进矩阵、节拍体检、环节完整性矩阵、任何评分与统计。",
+      "",
+      "【结构硬要求】",
+      "1. stories 必须写满 10 个故事对象，一个都不能少；每个故事只有 `id` / `range` / `title` / `st` 四个字段（可选 `beats`）；",
+      "2. range 是该故事覆盖的章号范围（如「第 1–12 章」）；title 是这个故事的名字；",
+      "3. st 必须写满 10 个环节：起①起②起③承①承②承③转①转②合①合②，每个环节只有三个字段——",
+      "   - stage：环节标识，值就写「起①」这种（**不要用 k / id / name 代替键名**）；",
+      "   - label：该故事在这一步的具体小标题（如「沐浴昏死」），要具体，不要照抄环节名；",
+      "   - who：这一步出场的人物（可带一句身份或功能）；",
+      "   - p：3 条这个环节里**具体发生了什么**——写事件、动作、决定、代价、说出口的话，不要写「铺垫矛盾」「承上启下」「推动剧情」这类空话；",
+      "4. 可选 beats：12 个字符的节拍串（平升起紧落缓升紧顶缓顶悬），章纲要靠它对齐，能写就写；",
+      "5. 承③ 与 转① 不要用同一个反转。",
+      "",
+      "【禁止事项】禁止出现「…」「等等」「略」「参考上文」「其余同理」「此处省略」等缩写写法；禁止只写第 1 个和第 10 个故事；禁止输出方法论说明板块（10 环节表 / 8 期待感 / 7 反转库 / 8 情绪结构 / 叙事结构表 / 三层线表 / 12 章排布表）。",
+      "【输出顺序】先写 ```json 的 volumeOutlineData，再写 outlineSaveRequest。",
+      "【自检】输出前确认：故事数=10、每故事环节数=10、每环节 p 满 3 条且条条是具体事件、无省略号、承③≠转①。",
+    ].join("\n");
   }
-  if (title.includes("人物")) {
-    return "按人物输出：人物定位、目标与动机、欲望和恐惧、关系变化、冲突点、成长或崩坏路径、当前状态。";
+  if (title.includes("章节细纲") || title.includes("章纲") || title.includes("细纲")) {
+    const skeletonReference = getVolumeSkeletonReference();
+    return [
+      "【载体】只产出两部分，缺一不可：",
+      "(1) 一个 ```json 围栏，顶层字段为 chapterOutlineData（含 story 骨架 + chapters 数组）；",
+      '(2) outlineSaveRequest（content 写空字符串 ""，软件会用结构化数据自动生成 MD 与 HTML）。',
+      "**不要再手写一遍 MD 正文**（本分项已改为分批生成，17 节 MD 与 JSON 内容完全重复，写两遍就是让用户付两遍钱）。",
+      "**不要自己写 HTML/CSS/标签**——软件会套模板渲染章纲卡片流。",
+      "",
+      "【每章 17 节硬要求】§1 基础信息 / §2 上章承接 / §3 本章定位 / §4 浓缩剧情 / §5 核心事件链 / §6 关键词与必要条件 / §7 四段式 / §8 情绪曲线 / §9 爽点与看点 / §10 关键信息与扩写方式 / §11 画面细节 / §12 伏笔与钩子 / §13 出场角色与状态变化 / §14 设定与道具更新 / §15 写作约束 / §16 下一章交接 / §17 写作检查清单，一节都不能少。",
+      "",
+      "【对齐补字段（每章必填）】stage（所属环节 起①~合②）、beat（本章节拍）、expect（本章主期待感，8 类之一）、time（章内时间）、place（主要地点）、seedFores / payFores（本章预埋 / 回收的伏笔名，多个用「、」分隔）。这七项必须与卷纲骨架逐字一致。",
+      "",
+      "【完整性硬要求】",
+      "1. chapters 必须写满该故事的每一章，章号连续递增，禁止只写首尾章；",
+      "2. story 骨架（index / name / range / beats）必须与卷纲一致，不得自创；",
+      "3. §5 核心事件链必须 6 条以上，每条必须有 what/cause/action/result/use；",
+      "4. §6 必要条件四类齐全（enter/trigger/interact/result）；",
+      "5. §8 moodCurve 写满 4 个节点，§13 castChanges 至少 1 条；",
+      "6. 各章节拍串起来必须与 story.beats 逐字一致，且遵守节拍纪律（不连续 3 章同拍、顶最多 2 连、顶后接落或缓、悬必须落在末章）；",
+      "7. 第 N 章的 handover.nextStart 必须与第 N+1 章的 carry.hook / carry.left 呼应，章间不得断档；",
+      "8. payFores 里的每一条都必须在本故事更早章节的 seedFores 出现过；",
+      "9. 日常章只能落在 平/落/缓/悬 拍；逐章 info.words 合计与 words 偏差不超过 20%。",
+      "10. 关键节不得留空：§8 moodCurve 写满 4 个节点；§10 expand 至少 1 条且含 info/how；§11 visual.env 与 visual.memory 必须有内容；§13 castChanges 至少 1 条；§14 worldUpdate 至少一项有内容（确无新增就写「无新增」）。",
+      "11. §17 checks 必须覆盖 10 条固定项：三行内入戏 / 有明确变化 / 事件链有因果 / 有核心记忆点 / 有动作微细节 / 有爽点 / 回收旧信息 / 埋新信息 / 有追读钩子 / 已写明下一章交接。",
+      "",
+      "【分批输出（重要）】17 节标准体量大，一次写完整故事必被截断，因此**本次只写第 1 批**：从该故事的第 1 章起，连续 3 章（若该故事不足 3 章则写满为止）。",
+      "分批规则：",
+      "1. JSON 顶层字段固定为 `chapterOutlineBatch`（结构与 chapterOutlineData 相同：title / story 骨架 / words / chapters，chapters 只含本批章节）；",
+      "2. 本批**不要**输出 outlineSaveRequest，也不要重复已完成的章节；软件会在最后一批之后自动合并并统一保存；",
+      "3. 必须带上 story 骨架（index / name / range / beats）——软件据此计算剩余批次；",
+      "4. 输出顺序：先写本批 ```json 围栏的 chapterOutlineBatch（**不要写 MD 正文**，正文由软件从数据生成）。",
+      "",
+      skeletonReference || "【卷纲骨架】项目里还没有可用的卷纲结构化数据（伴生 .json），story 骨架必须从卷纲 MD 原文逐字抄写，不得自创。",
+      "",
+      "【禁止事项】禁止出现「…」「等等」「略」「参考上文」「其余同理」「同上」「此处省略」等任何缩写写法；禁止输出方法论说明板块。",
+      "【自检】输出前确认：本批章数正确、章号连续、17 节全写、事件链≥6 条有因果、四类必要条件齐全、节拍与骨架逐字一致、章间交接闭合。",
+    ].join("\n");
   }
-  if (title.includes("组织") || title.includes("势力")) {
-    return "按组织或势力输出：阵营目标、利益诉求、掌握资源、内部矛盾、外部冲突、剧情作用、与主角线关系。";
-  }
-  if (title.includes("金手指") || title.includes("能力")) {
-    return "按能力体系输出：能力规则、限制、代价、成长路径、反制方式、剧情用途、容易制造的冲突。";
-  }
-  if (title.includes("伏笔")) {
-    return "按伏笔输出：伏笔名称、埋设位置、表层误导、真实指向、推进节点、回收位置、关联人物和风险。";
-  }
-  if (title.includes("地点")) {
-    return "按地点输出：地点定位、所属势力、空间规则、资源与限制、可触发事件、剧情作用、与人物线关系。";
+  // 设定类分项：由 SETTING_OUTLINE_SPECS 统一驱动，避免此处关键词与规格表漂移
+  // （各分项有专属卡模板，走自己的结构化契约；未命中的才落到通用卡片流）
+  const settingSpec = resolveSettingSpecByTitle(title);
+  if (settingSpec) {
+    switch (settingSpec.id) {
+      case "characterBriefs":
+        return buildCharacterProfileOutputRules();
+      case "organizationsOutline":
+        return buildFactionProfileOutputRules();
+      case "powerSystem":
+        return buildPowerSystemOutputRules();
+      case "goldenFinger":
+        return buildGoldenFingerOutputRules();
+      case "backgroundSetting":
+        return buildBackgroundOutputRules();
+      case "geographySetting":
+        return buildGeographyOutputRules();
+      case "foreshadowingPlan":
+        return buildForeshadowingOutputRules();
+      case "locationsOutline":
+        return buildLocationOutputRules();
+      default:
+        return buildSettingOutlineOutputRules(settingSpec);
+    }
   }
   return "按可保存的大纲正文输出：标题清楚、条目完整、能直接指导后续小说写作。";
 }
 
-export function buildOutlineSectionGenerationPrompt(
-  title: string,
-  requestHint: string,
-): string {
+/** 人物小传专属输出规则：角色卡结构化数据 characterProfileData。 */
+function buildCharacterProfileOutputRules(): string {
+  return buildSettingProfileOutputRules("characterBriefs");
+}
+
+/** 组织势力专属输出规则：势力卡结构化数据 factionProfileData。 */
+function buildFactionProfileOutputRules(): string {
+  return buildSettingProfileOutputRules("organizationsOutline");
+}
+
+/** 力量体系专属输出规则：体系卡结构化数据 powerProfileData（等级阶梯 + 代价矩阵）。 */
+function buildPowerSystemOutputRules(): string {
+  return buildSettingProfileOutputRules("powerSystem");
+}
+
+/** 伏笔计划专属输出规则：伏笔台账结构化数据 foreshadowingProfileData（伏笔线 + 状态徽章）。 */
+function buildForeshadowingOutputRules(): string {
+  return buildSettingProfileOutputRules("foreshadowingPlan");
+}
+
+/** 金手指专属输出规则：能力卡结构化数据 goldenFingerProfileData（系统面板 + 边界代价）。 */
+function buildGoldenFingerOutputRules(): string {
+  return buildSettingProfileOutputRules("goldenFinger");
+}
+
+/** 地理设定专属输出规则：地理卡结构化数据 geographyProfileData（区域块 + 资源/危险）。 */
+function buildGeographyOutputRules(): string {
+  return buildSettingProfileOutputRules("geographySetting");
+}
+
+/** 地点设定专属输出规则：地点卡结构化数据 locationProfileData（空间规则 + 触发事件）。 */
+function buildLocationOutputRules(): string {
+  return buildSettingProfileOutputRules("locationsOutline");
+}
+
+/** 背景设定专属输出规则：背景卡结构化数据 backgroundProfileData（时间线 + 规则块）。 */
+function buildBackgroundOutputRules(): string {
+  return buildSettingProfileOutputRules("backgroundSetting");
+}
+
+/** 通用兜底输出规则（当分项未能匹配到专属模板时使用）。 */
+function buildSettingOutlineOutputRules(spec: SettingOutlineSpec): string {
+  const sectionLines = spec.sections
+    .map((section, index) => `${index + 1}. ${section.heading}：${section.hint}`)
+    .join("\n");
   return [
-    `请按「AI大纲生成工作流」生成「${title}」。`,
+    "【载体】必须同时产出三部分，缺一不可：",
+    `(1) MD 正文：${spec.title}的文本版；`,
+    "(2) 一个 ```json 围栏，顶层字段为 settingOutlineData，结构如下：",
+    '{"title":"' + spec.title + '","intro":"一句话概述","chips":["关键统计"],"cards":[{"badge":"定位/类别","title":"对象名称","subtitle":"一句话","tags":["标签"],"sections":[{"heading":"分区名","items":[{"label":"字段名","text":"内容"}]}]}]}',
+    "    —— 每个对象一张 card；每张 card 必须写满下面列出的全部 sections；每条 item 尽量带 label（无字段名时用纯文本条目）。",
+    "(3) outlineSaveRequest（content 为 MD 正文即可，fileType 用对应类型）。",
+    "**不要自己写 HTML/CSS/标签**——软件会读取技能目录下的 setting-cards/template.html 自动渲染卡片流。",
     "",
-    "## 本次意图",
-    "generate_outline",
+    "【本类建议分区（每张 card 必须写全）】",
+    sectionLines,
     "",
-    "## PRD 3.1 主流程要求",
-    "1. 提取请求关键词：确认用户要生成的大纲分项、范围和已有约束。",
-    "2. 识别用户意图：本次是生成/完善大纲正文，不是审稿报告、工具报告或分析说明。",
-    "3. 读取资料：优先读取用户 @ 引用、已有大纲、章节、记忆、推演和历史会话。",
-    "4. 提取对小说创作有用的关键内容：章节目标、冲突、伏笔、人物动机、设定限制、时间线承接和结尾钩子。",
-    "5. 结合用户要用的 skill + soul.md 约束，生成可直接保存的大纲正文。",
-    "6. 结果强约束收敛：最终回复只输出大纲标题和大纲正文。",
+    "【完整性硬要求】",
+    "1. 每个对象必须写满上面列出的所有分区，一个都不能少；",
+    "2. 内容必须具体可执行，禁止出现「…」「等等」「略」「参考上文」「其余同理」「此处省略」等缩写写法；",
+    "3. 若一次生成多个对象（多人 / 多组织 / 多能力），每个对象一张 card，内容互不重复；",
     "",
-    "## 禁止输出",
-    "禁止输出工具调用报告、分析过程、完成报告、下一步行动、等待工具结果、已读取资料清单、泛泛建议。",
-    "",
-    "## 本分项内容要求",
-    requestHint,
-    getOutlineSectionOutputRules(title),
-    "",
-    "如果资料不足以完整生成，请只问一个最关键的澄清问题；如果资料足够，直接输出完整正文。",
+    "【输出顺序】先写 MD 正文，再写 ```json 的 settingOutlineData，最后写 outlineSaveRequest。",
   ].join("\n");
+}
+
+function renderOutlineCommandText(text: string) {
+  const match = text.match(/^(\/[^\s]+)([\s\S]*)$/);
+  if (!match || !OUTLINE_SECTION_GENERATION_CONFIGS.some((config) => `/${config.title}` === match[1])) {
+    return text;
+  }
+  return (
+    <>
+      <span className="ui-test-outline-command">{match[1]}</span>
+      {match[2]}
+    </>
+  );
 }
 
 function buildGenerationPrompt(
@@ -587,11 +1180,26 @@ function buildGenerationPrompt(
   outputMode?: "per_chapter" | "per_item" | "single",
   originalRequest?: string,
 ): string {
-  const outputModeInstruction = outputMode === "per_chapter"
+  const isVolumeOutline = title.includes("卷纲");
+  const isChapterOutline = title.includes("章节细纲") || title.includes("章纲") || title.includes("细纲");
+  /*
+   * 八类设定（人物小传 / 势力 / 力量 / 金手指 / 背景 / 地理 / 地点 / 伏笔）同样是
+   * 结构化-only。这里必须自己判一次，不能只靠分项输出规则：`outputModeInstruction`
+   * 排在那些规则**之后**，末尾一句「按可保存的大纲正文输出」会把它们整个盖掉
+   * （模型倾向于听最后一句），结果又把 MD 写一遍 —— 正好是这次要省掉的那一半钱。
+   */
+  const isStructuredOnlySetting = Boolean(resolveSettingSpecByTitle(title));
+  const outputModeInstruction = isVolumeOutline
+    ? "本次为卷纲：只产出 (1) ```json 围栏的 volumeOutlineData（10 故事 × 10 环节全写满）；(2) outlineSaveRequest（content 留空字符串，软件会用它自动生成 MD 与 HTML）。不要再手写 MD 正文、不要自己写 HTML——重复写一遍等于让用户多付一倍钱。"
+    : isChapterOutline
+    ? "本次为章纲（分批）：只写第 1 批 3 章，只产出一个 ```json 围栏的 chapterOutlineBatch（story 骨架 + 本批章节的 17 节数据）；**不要写 MD 正文**（软件会用数据生成 MD 与 HTML 卡片流），本批不要输出 outlineSaveRequest——软件会自动继续下一批，并在最后一批之后合并渲染与统一保存。不要自己写 HTML，不要省略。"
+    : outputMode === "per_chapter"
     ? "每个章节必须输出独立的 outlineSaveRequest，每个对应一个独立 .md 文件，文件名格式：第N章-章节标题.md。禁止将多个章节写入同一文件。"
     : outputMode === "per_item"
-    ? "每个角色/势力/体系必须输出独立的 outlineSaveRequest，每个对应一个独立 .md 文件，文件名格式：名称.md。禁止将多个角色/势力写入同一文件。"
-    : "按可保存的大纲正文输出：标题清楚、条目完整、能直接指导后续小说写作。";
+    ? "每个角色/势力/体系必须输出独立的 outlineSaveRequest，每个对应一个独立 .md 文件，文件名格式：名称.md。禁止将多个角色/势力写入同一文件。每个文件都会由软件套该分项专属模板额外渲染同名 HTML 卡（保存时可选择 HTML/MD），你无需自己写 HTML 或 MD。\n【单次体量硬限制】本次回复最多完整生成 1 个对象（结构化 JSON 与 outlineSaveRequest 都必须完整，content 留空字符串；禁止为省篇幅缩水）。若待生成对象超过 1 个，只输出第 1 个，并在回复结尾用一行注明「未完成：对象A、对象B、…」；用户回复「继续」后按同样规则生成下一批。宁可分批，不可截断。"
+    : isStructuredOnlySetting
+    ? "本次为设定分项：只产出一个 ```json 围栏的结构化数据（分区按上面的契约写全）与 outlineSaveRequest（content 留空字符串）。**不要写 MD 正文**、不要自己写 HTML/CSS——软件会把结构化数据一个字段不落地还原成 .md 并套专属模板渲染同名 HTML 卡；重复写一遍等于让用户多付一倍钱。"
+    : "按可保存的大纲正文输出：标题清楚、条目完整、能直接指导后续小说写作。该分项会由软件套其专属模板额外渲染同名 HTML 卡（保存时可选择 HTML/MD），你无需自己写 HTML。";
 
   return [
     `请按「AI大纲生成工作流」生成「${title}」。`,
@@ -611,6 +1219,29 @@ function buildGenerationPrompt(
     "",
     "如果资料足够，直接输出完整正文。",
     buildNextStepPromptSuffix(),
+  ].join("\n");
+}
+
+/** 共创模式的开场 prompt：先讨论清楚要怎么写，定稿前不出正文。 */
+function buildOutlineDiscussionPrompt(
+  title: string,
+  requestHint: string,
+  originalRequest?: string,
+): string {
+  return [
+    `本轮进入共创讨论，目标是和我一起把「${title}」讨论清楚，先不要交付正文。`,
+    originalRequest ? `\n## 我的原始请求\n${originalRequest}\n` : "",
+    "## 本轮要做的事",
+    "1. 读取相关大纲、章节、设定和记忆，说明你实际看到了什么。",
+    "2. 给出你对当前素材的关键判断：哪里够用、哪里有矛盾或缺口，各自的依据是什么。",
+    "3. 抛出 1-3 个需要我拍板的具体分歧点，每个都给可选方案、你的倾向和理由。",
+    "4. 最后给一句下一步建议。",
+    "",
+    "## 本分项内容要求（讨论时用来判断缺口，不是本轮的输出格式）",
+    requestHint,
+    getOutlineSectionOutputRules(title),
+    "",
+    "在我明确说定稿或开始生成之前，不要输出完整正文，也不要输出保存请求。",
   ].join("\n");
 }
 
@@ -679,6 +1310,52 @@ function outlineToolCallsToSources(
   return Array.from(new Set(sources.filter((source) => !source.endsWith(":"))));
 }
 
+/**
+ * 卷纲「自动补全」的提示词。
+ *
+ * ⚠️ 必须复用**卷纲契约本身**（getOutlineSectionOutputRules），不能手写一份精简版要求。
+ *
+ * 实测故障（2026-10-09）：这里原先手写了一份要求清单，只要 pay / p / link /
+ * position / roles / …，却漏掉了 stage / who / use / range / deliver / gift /
+ * hook / climax / beats / line —— 而紧接着的校验器（validateVolumeOutlineData）
+ * 恰恰要求这些。于是「自动补全」被要求产出的东西**永远不可能通过校验**：
+ * 补一轮 → 仍报同样的问题 → 用户看到「卷纲内容仍不完整（138 项）」。
+ * 这不是模型不听话，是提示词与校验器各说各话。
+ *
+ * 导出给测试用：防止将来又有人把这段改回手写清单。
+ */
+export function buildVolumeOutlineRepairPrompt(options: {
+  fileName: string;
+  problemsText: string;
+}): string {
+  return [
+    "系统检测到上一轮卷纲内容不完整，无法渲染折叠树，问题如下：",
+    `- ${options.fileName}：${options.problemsText}`,
+    "请按下面的卷纲契约**完整重出这一卷**（是重新产出完整内容，不是解释、不是摘要、不是只补缺的那几项）：",
+    getOutlineSectionOutputRules("卷纲"),
+    "上一轮已经写对的部分也要一并重出，保证本卷能独立成文。禁止任何省略写法。",
+  ].join("\n");
+}
+
+/**
+ * 把保存前校验的问题挂到消息上，渲染在该条生成结果的下方。
+ *
+ * 背景：卷纲/章纲的结构化校验不阻止保存（用户仍可「保存当前内容」），
+ * 但原先只弹一个持久 toast，把 100+ 条问题塞进一个带滚动条的小浮层里，
+ * 既和生成结果脱节、又读不完。改为挂在消息上，明细可就地展开。
+ */
+function attachOutlineSaveReport(
+  conversationId: string,
+  messageId: string | undefined,
+  report: OutlineSaveReport | null,
+): void {
+  if (!messageId) return;
+  updateOutlineAssistantMessage(conversationId, messageId, (message) => ({
+    ...message,
+    outlineSaveReport: report ?? undefined,
+  }));
+}
+
 function updateOutlineAssistantMessage(
   conversationId: string,
   messageId: string,
@@ -689,9 +1366,13 @@ function updateOutlineAssistantMessage(
       if (conversation.id !== conversationId) return conversation;
       return {
         ...conversation,
-        messages: conversation.messages.map((message) =>
-          message.id === messageId ? updater(message) : message,
-        ),
+        messages: conversation.messages.map((message) => {
+          if (message.id !== messageId) return message
+          const next = updater(message)
+          return next.isAgentRunning === false && message.generationTiming && !message.generationTiming.finishedAt
+            ? { ...next, generationTiming: { ...message.generationTiming, finishedAt: Date.now() } }
+            : next
+        }),
       };
     }),
   }));
@@ -802,25 +1483,6 @@ function formatOutlineConversationDate(timestamp: number): string {
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-export async function getUniqueOutlinePath(
-  outlinesDir: string,
-  fileName: string,
-): Promise<string> {
-  const normalizedFileName = fileName.toLowerCase().endsWith(".md")
-    ? fileName
-    : `${fileName}.md`;
-  const firstPath = `${outlinesDir}/${normalizedFileName}`;
-  if (!(await fileExists(firstPath))) return firstPath;
-  const extensionIndex = normalizedFileName.lastIndexOf(".");
-  const stem = extensionIndex > 0 ? normalizedFileName.slice(0, extensionIndex) : normalizedFileName;
-  const extension = extensionIndex > 0 ? normalizedFileName.slice(extensionIndex) : "";
-  for (let i = 2; i <= 99; i++) {
-    const candidate = `${outlinesDir}/${stem}-${i}${extension}`;
-    if (!(await fileExists(candidate))) return candidate;
-  }
-  return `${outlinesDir}/${stem}-${Date.now()}${extension}`;
-}
-
 function buildFallbackCharacterDraftsFromRequests(
   requests: OutlineSaveRequest[],
 ): CharacterSaveDraft[] {
@@ -840,6 +1502,65 @@ function buildFallbackCharacterDraftsFromRequests(
       confidence: "low",
     };
   });
+}
+
+/**
+ * 给人物草稿补上角色卡 HTML：优先匹配 AI 原文里的 characterProfileData/characterProfiles，
+ * 匹配不到再从该草稿自己的 MD 正文解析（多 Agent 只出 MD 的场景）。
+ * 这样「人物小传」的结构化契约才真正落到最终保存的 .html 上。
+ */
+function enrichCharacterDraftsWithHtml(
+  drafts: CharacterSaveDraft[],
+  sourceText?: string | null,
+): CharacterSaveDraft[] {
+  const profiles = extractCharacterProfiles(sourceText ?? "");
+  return drafts.map((draft) => {
+    if (draft.htmlContent?.trim()) return draft;
+    const htmlContent = buildCharacterProfileHtmlForDraft({
+      name: draft.characterName,
+      content: draft.content,
+      fileName: draft.fileName,
+      profiles,
+    });
+    return htmlContent ? { ...draft, htmlContent } : draft;
+  });
+}
+
+/** 识别 AI 输出中的 ```html 围栏（卷纲折叠树素材），默认折叠展示避免刷屏 */
+function unwrapHtmlFence(children: ReactNode): { codeText: string } | null {
+  if (!isValidElement(children)) return null;
+  const props = children.props as { className?: string; children?: ReactNode };
+  if (typeof props?.className !== "string" || !props.className.includes("language-html")) {
+    return null;
+  }
+  return { codeText: String(props.children ?? "").replace(/\n$/, "") };
+}
+
+function HtmlFenceBlock({ codeText }: { codeText: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="my-2 overflow-hidden rounded-md border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center justify-between gap-2 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent"
+      >
+        <span className="flex items-center gap-1.5">
+          <span className="font-medium text-foreground">HTML 版本已生成</span>
+          <span>（保存时可选择 HTML 格式）</span>
+        </span>
+        <span>{open ? "收起" : "展开源码"}</span>
+      </button>
+      {open ? (
+        <pre dir="ltr" className="overflow-x-auto bg-background/50 p-2 text-xs" style={{ textAlign: "left" }}>
+          <code
+            className="code-highlight"
+            dangerouslySetInnerHTML={{ __html: highlightCode(codeText, "html") }}
+          />
+        </pre>
+      ) : null}
+    </div>
+  );
 }
 
 function OutlineMarkdownContent({
@@ -911,6 +1632,8 @@ function OutlineMarkdownContent({
           pre: ({ children, ...props }) => {
             const mermaid = unwrapMermaidPre(children);
             if (mermaid) return <>{mermaid}</>;
+            const htmlFence = unwrapHtmlFence(children);
+            if (htmlFence) return <HtmlFenceBlock codeText={htmlFence.codeText} />;
             return (
               <pre
                 dir="ltr"
@@ -968,12 +1691,20 @@ function OutlineAssistantMessage({
   onRejectTool,
   onSendMessage,
   onContinueIntentGeneration,
+  onSubmitPlanAnswers,
+  onConfirmPlan,
+  onCancelPlan,
+  onSubmitDiscussAnswers,
+  onConfirmDiscuss,
   onResumeMultiAgent,
+  onContinueStopped,
+  onContinueFailed,
   resumeMultiAgentDisabled,
   nextStepDisabled,
   nextStepDisabledReason,
   generationContext,
   onFocusInput,
+  hasEventOutline,
 }: {
   msg: import("@/stores/outline-chat-store").OutlineChatMessage;
   index: number;
@@ -989,12 +1720,47 @@ function OutlineAssistantMessage({
   onRejectTool: (call: ToolCallRecord & { preview?: string }) => void;
   onSendMessage: (text: string, options?: { intentPhase?: "intent_analysis" | "generation" | "waiting_user_input"; scope?: string }) => Promise<boolean>;
   onContinueIntentGeneration: (messageId: string, result: IntentClarityResult) => Promise<void>;
+  onSubmitPlanAnswers: (
+    messageId: string,
+    protocol: OutlinePlanProtocol,
+    answers: OutlinePlanAnswer[],
+  ) => Promise<boolean>;
+  onConfirmPlan: (
+    messageId: string,
+    protocol: OutlinePlanProtocol,
+    planText: string,
+  ) => Promise<boolean>;
+  onCancelPlan: (messageId: string) => void;
+  onSubmitDiscussAnswers: (
+    messageId: string,
+    protocol: OutlineDiscussProtocol,
+    answers: OutlineDiscussAnswer[],
+  ) => Promise<boolean>;
+  onConfirmDiscuss: (messageId: string, protocol: OutlineDiscussProtocol) => Promise<boolean>;
   onResumeMultiAgent: (messageId: string) => Promise<void>;
+  /**
+   * 「继续」：上一条大纲回复被用户手动停止后，保留已生成内容接着往下写。
+   * 与「重试」（onRegenerate，整条重发）配套，两个按钮由
+   * novel/stopped-generation-actions 统一渲染。
+   */
+  onContinueStopped?: () => void;
+  /**
+   * 「继续」：上一条大纲回复**生成失败**后，保留已生成内容接着往下写。
+   * 与停止那枚的区别只在提示词（失败有一种"什么都没产出"的形态）；
+   * 显示条件来自 lib/novel/failed-generation.ts，两个面板共用同一判定。
+   */
+  onContinueFailed?: () => void;
   resumeMultiAgentDisabled: boolean;
   nextStepDisabled: boolean;
   nextStepDisabledReason?: string;
   generationContext: boolean;
   onFocusInput: () => void;
+  /**
+   * 这条消息本身是一份事件细纲。事件细纲只作为对话消息 + 卡片存在，
+   * 不再写进 wiki/outlines/事件细纲/，所以「保存为大纲」按钮对它不渲染
+   * （值由父组件按消息 id 一次算好传入，不在本组件里重复解析）。
+   */
+  hasEventOutline: boolean;
 }) {
   const [editApplied, setEditApplied] = useState(false);
   const [editResults, setEditResults] = useState<
@@ -1002,24 +1768,75 @@ function OutlineAssistantMessage({
   >([]);
   const [editDismissed, setEditDismissed] = useState(false);
 
-  // 消息内容是唯一内容通道；运行状态提示单独渲染，绝不混入正文
-  const displayContent = msg.content;
+  // 消息内容是唯一内容通道；加载历史消息时也要防御旧版本已经落盘的
+  // Gemini 普通文本思考摘要，避免再次展示或进入手动保存。
+  const filteredDisplayContent = useMemo(
+    () => filterOutlineGeneratedContent(msg.content),
+    [msg.content],
+  );
+  const displayContent = filteredDisplayContent.reasoningOnly
+    ? ""
+    : filteredDisplayContent.content || msg.content;
   const { thinking, answer } = useMemo(
     () => separateThinking(displayContent),
     [displayContent],
   );
   const actionContent = answer || displayContent;
   const messageIsStreaming = isStreaming && index === activeMessagesLength - 1;
+  /**
+   * 上一条大纲回复是被用户手动停止的（正文结尾带着「已停止生成。」或
+   * 「⚠️ 生成已停止，以上为已生成的内容。」）。判定收在
+   * lib/novel/stopped-generation.ts 里，章节面板用的是同一份，两侧不会分歧。
+   *
+   * 只在最后一条、且这一轮已经跑完时成立：流式当中正文还没有收尾提示，
+   * 翻出来的历史停止消息也不该再长出这两个按钮。
+   */
+  const isStoppedGeneration = !messageIsStreaming
+    && index === activeMessagesLength - 1
+    && isStoppedGenerationMessage(msg.content);
+  /**
+   * 这条大纲回复是**生成失败**的（正文结尾是 `生成失败：…`，或保留了半截内容
+   * 之后的 `⚠️ 生成中断：…`）。判定收在 lib/novel/failed-generation.ts，
+   * 章节面板用的是同一份。
+   *
+   * 与停止同一口径：只认最后一条、且这一轮已经跑完 —— 历史里失败过的消息
+   * 不该再长出两枚"重来/接着写"的按钮，那些动作只在刚刚失败这一刻有意义。
+   */
+  const isFailedGeneration = !messageIsStreaming
+    && index === activeMessagesLength - 1
+    && !isStoppedGeneration
+    && isFailedGenerationMessage(msg.content);
+  /** 失败前是否真的写出了内容（决定「继续」可用还是禁用）。 */
+  const canContinueFailed = hasFailedGenerationPartialContent(msg.content);
+  // 轮播俏皮文案：整段生成期间始终显示，消解等待的枯燥感。
+  const waitingHint = useWaitingHint(messageIsStreaming);
+  // 文案并到闪烁光标那一行显示，不单独占一行。
+  const waitingText = composeWaitingText({
+    isStreaming: messageIsStreaming,
+    hasContent: Boolean(msg.content),
+    statusText: runStatusText,
+    hint: waitingHint,
+  });
   const intentProtocol = useMemo(
     () => parseIntentClarityProtocol(answer || displayContent),
     [answer, displayContent],
   );
   const intentProtocolError = !messageIsStreaming
-    ? msg.intentProtocolError ?? (intentProtocol.kind === "invalid"
-      ? `意图分析格式无效，尚未开始生成：${intentProtocol.error}`
+    ? msg.intentProtocolError ?? (intentProtocol.kind === "invalid" && !msg.intentClarityResult
+      // 补协议成功时消息上已有 intentClarityResult，这里不能再按"原始文本解析失败"补一条假错误。
+      ? `意图分析格式无效：${intentProtocol.error}。回复内容已保留。`
       : undefined)
     : undefined;
-  const canUseAsOutlineContent = intentProtocol.kind === "none" && !intentProtocolError;
+  const planProtocol = msg.outlinePlanProtocol ?? null;
+  const planDecided = Boolean(msg.outlinePlanDecision);
+  const isPlanProtocolMessage = Boolean(planProtocol) || Boolean(msg.outlinePlanPhase);
+  const discussProtocol = msg.outlineDiscussProtocol ?? null;
+  const discussDecided = Boolean(msg.outlineDiscussDecision);
+  const isDiscussProtocolMessage = Boolean(discussProtocol) || Boolean(msg.outlineDiscussPhase);
+  const canUseAsOutlineContent = intentProtocol.kind === "none"
+    && !intentProtocolError
+    && !isPlanProtocolMessage
+    && !isDiscussProtocolMessage;
   const historicalClearIntent = !msg.intentClarityResult
     && !msg.intentProtocolError
     && msg.intentPhase !== "generation"
@@ -1036,10 +1853,23 @@ function OutlineAssistantMessage({
   }>({ textContent: "", edits: [], hasEdits: false });
   const renderedMarkdownContent = useMemo(() => {
     const rawContent = parsed.textContent || answer;
+    // 计划模式的协议块只用卡片渲染，气泡里不能漏出 JSON
+    if (isPlanProtocolMessage || isDiscussProtocolMessage) return stripStructuredMarkers(rawContent);
     if (intentProtocol.kind === "valid") return stripStructuredMarkers(rawContent);
-    if (intentProtocol.kind === "invalid" || msg.intentProtocolError) return "";
-    return prepareOutlineSaveSourceContent(rawContent);
-  }, [answer, intentProtocol, msg.intentProtocolError, parsed.textContent]);
+    // 协议坏了也要把正文给用户（剥掉标记即可）：清空气泡等于把这一轮回复藏起来。
+    if (intentProtocol.kind === "invalid" || msg.intentProtocolError) return stripStructuredMarkers(rawContent);
+    const prepared = prepareOutlineSaveSourceContent(rawContent);
+    /*
+     * 只有结构化数据的回复（卷纲/章纲不再重复写 MD）不能让气泡空着，
+     * 也不能让「已生成…」一句交代语顶掉统计交代。
+     *
+     * 顺序是刻意的：**先**判 prepared 是不是真正文，只有「空 / 只是一句交代语」
+     * 时才去解析 JSON 算统计。反过来写（无条件先算 summary）会让每条历史消息
+     * 都跑一遍围栏扫描 + JSON.parse，一条两万字的回复也照跑 —— 纯浪费。
+     */
+    if (prepared.trim() && !looksLikeOutlineDeliveryNote(prepared)) return prepared;
+    return describeStructuredOnlyAnswer(rawContent) || prepared;
+  }, [answer, intentProtocol, isDiscussProtocolMessage, isPlanProtocolMessage, msg.intentProtocolError, parsed.textContent]);
   useEffect(() => {
     if (!answer) {
       setParsed({ textContent: "", edits: [], hasEdits: false });
@@ -1073,6 +1903,21 @@ function OutlineAssistantMessage({
     intentPhase: msg.intentPhase,
     hasMultiAgentRun: Boolean(msg.multiAgentRun),
   });
+  const contextHubDetails = !isStreaming && currentContextHubSnapshot ? (
+    <ContextHubDetails reference={currentContextHubSnapshot} timing={msg.generationTiming} />
+  ) : null;
+  const sourceDetails = msg.sources && msg.sources.length > 0 && !isStreaming ? (
+    <details className="relative">
+      <summary className="inline-flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground" title={`引用资料（${msg.sources.length}）`} aria-label={`引用资料（${msg.sources.length}）`}>
+        <FileText className="h-3.5 w-3.5" />
+      </summary>
+      <ul className="absolute bottom-full left-0 z-30 mb-2 w-56 rounded-lg border bg-background p-2 shadow-md space-y-0.5 text-xs text-muted-foreground">
+        {msg.sources.map((src, si) => (
+          <li key={si}>• {src}</li>
+        ))}
+      </ul>
+    </details>
+  ) : null;
 
   return (
     <>
@@ -1082,7 +1927,7 @@ function OutlineAssistantMessage({
         onResume={() => { void onResumeMultiAgent(msg.id) }}
         resumeDisabled={resumeMultiAgentDisabled}
       />
-      {msg.multiAgentRun ? null : useStandardWorkflowCard ? (
+      {msg.multiAgentRun || !shouldShowOutlineToolCalls(msg.intentPhase) ? null : useStandardWorkflowCard ? (
         <OutlineStandardWorkflowPanel
           intentPhase={msg.intentPhase}
           isRunning={Boolean(msg.isAgentRunning)}
@@ -1101,27 +1946,58 @@ function OutlineAssistantMessage({
           onReject={onRejectTool}
         />
       )}
-      {messageIsStreaming && !msg.content && runStatusText ? (
-        <div className="mb-1 whitespace-pre-wrap text-xs text-muted-foreground">
-          {runStatusText}
-        </div>
-      ) : null}
+      {<UiTestAiAuthor running={messageIsStreaming} />}
       {intentProtocolError ? (
         <div role="alert" className="mb-2 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {intentProtocolError}
         </div>
       ) : null}
+      {msg.outlinePlanNotice && !messageIsStreaming ? (
+        <div className="mb-2 rounded border border-amber-500/40 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+          {msg.outlinePlanNotice}
+        </div>
+      ) : null}
+      {msg.outlinePlanError && !messageIsStreaming ? (
+        <div role="alert" className="mb-2 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {msg.outlinePlanError}
+        </div>
+      ) : null}
+      {msg.outlineDiscussNotice && !messageIsStreaming ? (
+        <div className="mb-2 rounded border border-amber-500/40 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+          已按现有内容给出卡片：{msg.outlineDiscussNotice}
+        </div>
+      ) : null}
+      {msg.outlineDiscussError && !messageIsStreaming ? (
+        <div role="alert" className="mb-2 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {msg.outlineDiscussError}
+        </div>
+      ) : null}
       <StreamingMarkdown
         content={renderedMarkdownContent}
         isStreaming={messageIsStreaming}
+        cursorSuffix={waitingText || undefined}
         renderCommitted={(text) => (
           <OutlineMarkdownContent content={text} projectPath={projectPath} />
         )}
       />
-      {currentContextHubSnapshot ? (
-        <ContextHubDetails
-          reference={currentContextHubSnapshot}
-          projectPath={projectPath}
+      {/*
+        * 保存前校验的问题清单：紧贴在**生成结果下方**。
+        * 这类问题不阻止保存，所以不该只弹一个和内容脱节的持久浮层 ——
+        * 用户要能看到「这段结果到底缺哪几项」，再决定补全还是照样保存。
+        */}
+      {msg.outlineSaveReport && !messageIsStreaming ? (
+        <OutlineSaveReportPanel report={msg.outlineSaveReport} />
+      ) : null}
+      {/*
+        * 停止生成之后的补救动作，紧贴在「已停止生成」那句提示的下方。
+        * 用户停止生成常常是想换个模型再试，所以停下之后必须当场给出
+        * 「重试」和「继续」；按钮与章节面板共用同一个组件，行为与外观一致。
+        */}
+      {isStoppedGeneration ? (
+        <StoppedGenerationActions
+          className="mt-2"
+          onRetry={() => void onRegenerate(index)}
+          onContinue={onContinueStopped}
         />
       ) : null}
       {/* File edit preview */}
@@ -1134,42 +2010,62 @@ function OutlineAssistantMessage({
           results={editResults}
         />
       ) : null}
-      {/* Sources */}
-      {msg.sources && msg.sources.length > 0 && !isStreaming ? (
-        <details className="mt-2 border-t pt-2">
-          <summary className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-            <FileText className="h-3 w-3" />
-            引用资料（{msg.sources.length}）
-          </summary>
-          <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
-            {msg.sources.map((src, si) => (
-              <li key={si}>• {src}</li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
       {/* Action buttons */}
       {actionContent && canUseAsOutlineContent && !isStreaming ? (
-        <div className="mt-2 flex gap-2 border-t pt-2">
-          <button
-            onClick={() => void onSaveAsOutline(actionContent)}
-            className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs hover:bg-accent"
-          >
-            <Save className="h-3 w-3" /> 保存为大纲
-          </button>
+        <div className="mt-2 flex w-full items-center gap-1">
+          {/*
+            * 事件细纲不进大纲列表（只作消息 + 卡片存在），所以这一类消息上不出现
+            * 「保存为大纲」；复制 / 重新生成等其余按钮照旧。
+            */}
+          {!hasEventOutline ? (
+            <button
+              onClick={() => void onSaveAsOutline(actionContent)}
+              data-guide="outline.save"
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent"
+              title="保存为大纲"
+              aria-label="保存为大纲"
+            >
+              <Save className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
           <button
             onClick={() => onCopy(actionContent, msg.id)}
-            className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs hover:bg-accent"
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent"
+            title={copied === msg.id ? "已复制" : "复制"}
+            aria-label={copied === msg.id ? "已复制" : "复制"}
           >
-            <Copy className="h-3 w-3" /> {copied === msg.id ? "已复制" : "复制"}
+            {copied === msg.id ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
           </button>
-          <button
-            onClick={() => void onRegenerate(index)}
-            disabled={isStreaming}
-            className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs hover:bg-accent disabled:opacity-50"
-          >
-            <RefreshCw className="h-3 w-3" /> 重新生成
-          </button>
+          {/*
+            * 生成失败的消息：把「重试 / 继续」放在原本「重新生成」那一格，
+            * 于是这一排读起来是 保存 → 复制 → 重试 → 继续 → 引用资料，
+            * 与章节面板完全一致（两边共用 FailedGenerationActions）。
+            */}
+          {isFailedGeneration ? (
+            <FailedGenerationActions
+              onRetry={() => void onRegenerate(index)}
+              onContinue={onContinueFailed}
+              continueDisabled={!canContinueFailed}
+            />
+          ) : null}
+          {/*
+            * 停止生成的消息不再单出一枚「重新生成」：上方那对按钮里的「重试」
+            * 就是同一个动作，并排出现只会让人猜哪个才是"换模型重来"。
+            * 失败消息同理 —— 「重试」接的正是 onRegenerate。
+            */}
+          {!isStoppedGeneration && !isFailedGeneration ? (
+            <button
+              onClick={() => void onRegenerate(index)}
+              disabled={isStreaming}
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent disabled:opacity-50"
+              title="重新生成"
+              aria-label="重新生成"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+          {sourceDetails}
+          {<div className="ml-auto">{contextHubDetails}</div>}
         </div>
       ) : null}
       {historicalClearIntent && !isStreaming ? (
@@ -1183,18 +2079,40 @@ function OutlineAssistantMessage({
           </button>
         </div>
       ) : null}
-      {/* 意图不清晰时的推荐选项 */}
-      {msg.intentClarityResult?.clarity === "needs_input" && !isStreaming ? (
-        <IntentOptionsCard
-          result={msg.intentClarityResult}
-          onSelectOption={(optionId, label, description) => {
-            if (optionId === "D") {
-              onFocusInput();
-            } else {
-              const scope = label + (description ? `：${description}` : "");
-              onSendMessage(scope, { intentPhase: "generation", scope });
-            }
-          }}
+      {/* 计划模式：要素缺口追问 */}
+      {planProtocol?.status === "needs_input" && !isStreaming ? (
+        <OutlineClarifyCard
+          protocol={planProtocol}
+          onSubmitAnswers={(answers) => onSubmitPlanAnswers(msg.id, planProtocol, answers)}
+          disabled={nextStepDisabled || planDecided}
+          disabledReason={planDecided
+            ? "该轮追问已提交，请在最新消息里继续。"
+            : nextStepDisabledReason}
+        />
+      ) : null}
+      {/* 计划模式：生成计划确认 */}
+      {planProtocol?.status === "ready" && !isStreaming ? (
+        <OutlinePlanCard
+          protocol={planProtocol}
+          onConfirm={(planText) => onConfirmPlan(msg.id, planProtocol, planText)}
+          onSupplement={onFocusInput}
+          onCancel={() => onCancelPlan(msg.id)}
+          disabled={nextStepDisabled || planDecided}
+          disabledReason={planDecided
+            ? "该计划已处理过，请在下方继续对话。"
+            : nextStepDisabledReason}
+        />
+      ) : null}
+      {discussProtocol && !isStreaming ? (
+        <OutlineDiscussCard
+          protocol={discussProtocol}
+          onSubmitAnswers={(answers) => onSubmitDiscussAnswers(msg.id, discussProtocol, answers)}
+          onConfirm={() => onConfirmDiscuss(msg.id, discussProtocol)}
+          onContinue={onFocusInput}
+          disabled={nextStepDisabled || discussDecided}
+          disabledReason={discussDecided
+            ? "该轮讨论已处理过，请在最新消息里继续。"
+            : nextStepDisabledReason}
         />
       ) : null}
       {/* 下一步推荐 */}
@@ -1214,41 +2132,60 @@ function OutlineAssistantMessage({
 
 function OutlineGenerationMenu({
   disabled,
-  onGenerate,
+  open,
+  onOpenChange,
+  onSelect,
 }: {
   disabled: boolean;
-  onGenerate: (title: string, requestHint: string) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  onSelect: (title: string, requestHint: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isOpen = open ?? internalOpen;
+  const setMenuOpen = (next: boolean) => {
+    setInternalOpen(next);
+    onOpenChange?.(next);
+  };
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 });
+  const generationButtonRef = useRef<HTMLButtonElement>(null);
+  useUiTestAiMenuFocus(isOpen, menuRef, generationButtonRef, setMenuOpen);
+  const [menuPosition, setMenuPosition] = useState<CSSProperties>({ left: 0, top: 0 });
 
   useEffect(() => {
-    if (!open) return;
+    if (!isOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (
         !rootRef.current?.contains(target) &&
         !menuRef.current?.contains(target)
       ) {
-        setOpen(false);
+        setMenuOpen(false);
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") setMenuOpen(false);
     };
+    const updateMenu = () => {
+      const rect = generationButtonRef.current?.getBoundingClientRect();
+      if (rect) setMenuPosition(getUiTestAiMenuStyle(rect, 320, true));
+    };
+    updateMenu();
+    window.addEventListener("resize", updateMenu);
     document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
     return () => {
+      window.removeEventListener("resize", updateMenu);
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open]);
+  }, [isOpen]);
 
   return (
     <div ref={rootRef} className="relative shrink-0">
       <button
+        ref={generationButtonRef}
         type="button"
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
@@ -1262,35 +2199,40 @@ function OutlineGenerationMenu({
             ),
             top: rect.top,
           });
-          setOpen((value) => !value);
+          setMenuOpen(!isOpen);
         }}
         disabled={disabled}
-        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-accent/50 text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+        /*
+         * 尺寸 `h-7 w-7`（28px），不是 32px：用户反馈图标之间隔得太远。
+         * 28px 与同一行里本来就是 28px 的「上下文用量」圆环、@ 按钮统一，
+         * 配合左组 `gap-0.5`（见 ReferenceInput.tsx）把墨迹间距从约 25px 收到约 16px。
+         * 章节写作区里对应位置的按钮（计划开关）用同一组数值，两边必须一致 ——
+         * 用户明确要求「大纲当中的间距也一样」。
+         */
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md border-0 bg-transparent text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
         title="生成大纲模块"
         aria-label="生成大纲模块"
+        data-guide="outline.modules"
         aria-haspopup="menu"
-        aria-expanded={open}
+        aria-expanded={isOpen}
       >
         <ListPlus className="h-4 w-4" />
       </button>
-      {open ? (
+      {isOpen ? createPortal(
         <div
           ref={menuRef}
           className="qmai-outline-generation-menu fixed z-50 w-56 overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg"
-          style={{
-            left: menuPosition.left,
-            top: menuPosition.top,
-            transform: "translateY(calc(-100% - 8px))",
-          }}
+          style={{ ...menuPosition, zIndex: 9999 }}
           role="menu"
+          data-ui-ai-menu="generation"
         >
           {OUTLINE_SECTION_GENERATION_CONFIGS.map((config) => (
             <button
               key={config.key}
               type="button"
               onClick={() => {
-                setOpen(false);
-                onGenerate(config.title, config.requestHint);
+                setMenuOpen(false);
+                onSelect(config.title, config.requestHint);
               }}
               disabled={disabled}
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
@@ -1301,14 +2243,79 @@ function OutlineGenerationMenu({
               <span className="min-w-0 truncate">{config.title}</span>
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
 }
 
+/**
+ * 大纲/细纲引用弹窗里「技能库」分类的全部条目（丁-3），含角色灵魂（丁-4）。
+ *
+ * ⚠️ **故意不产出 `subtype: "style"`（文风）条目**：本面板的 `buildAgentConfig`
+ * 调用从不提供 `runDeepChapterGeneration` / `getWritingStyleIdOverride`，
+ * 所以 `run_chapter_workflow` 这个工具根本不会被注册，`@` 一条文风在
+ * **生成链上没有任何消费者** —— 加进来就是一个「看着接上、其实断开」的死条目，
+ * 正是丁-3 存在的理由。大纲/细纲不写正文，文风覆盖对它也没有语义。
+ * ⇒ 文风条目只在 `chat-panel.tsx` 的 getter 里注入（那里有覆盖通道的产出端）。
+ *
+ * ⚠️ **与文风相反，角色灵魂在这里有消费者**（丁-4）：`contextPack.characterAuras`
+ * → `buildContextHubSystemContent` 与 `buildScopedOutlineSubAgentContext`，
+ * 所以**必须**产出灵魂条目。注意「产出条目」≠「已绑定」：
+ * 真正写盘那一步在 `handleSend` 里、用户确认之后（见 `message-scoped-soul-binding`）。
+ *
+ * 为什么抽成**具名导出**（而不是留成组件里的内联 getter）：这样「这里永远没有文风条目」
+ * 才是一条**可被行为断言**的性质（`outline-chat-panel.spec.tsx` 直接调它、只看产出）。
+ * 之前它只能靠对源码文本做正则来钉 —— 那既会因为**改注释**而假红，
+ * 又会因为**冒号空格 / 别名导入 / 中转变量**等排版变化而假绿（实测过）。
+ */
+export function buildOutlineReferenceSkillEntries(
+  deAiSkillConfig: DeAiSkillConfig | null,
+  writingSkills: UserSkill[],
+  characterSouls: CharacterSoulOption[],
+): SkillSummary[] {
+  const deAiSkills: SkillSummary[] = deAiSkillConfig
+    ? resolveAvailableDeAiSkills(deAiSkillConfig).map((skill) => ({
+        id: skill.id,
+        name: skill.name,
+        subtype: "deai" as const,
+      }))
+    : [];
+  const writingSkillList: SkillSummary[] = writingSkills.map((skill) => ({
+    id: skill.id,
+    name: skill.name,
+    displayName: skill.displayName,
+    subtype: "writing" as const,
+    kind: skill.kind,
+    stages: skill.stages,
+    modes: skill.modes,
+  }));
+  const soulEntries = characterSouls.map((soul) => ({
+    id: soul.id,
+    name: soul.name,
+    subtype: SOUL_SKILL_SUBTYPE,
+  }));
+  return [...deAiSkills, ...writingSkillList, ...soulEntries];
+}
+
 export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const project = useWikiStore((s) => s.project);
+  // 卷纲 / 章纲 / 设定卡片流模板与卷纲真骨架：项目变化时预加载（项目目录覆盖 → 程序 skills 目录 → 内置模板）
+  useEffect(() => {
+    void primeVolumeOutlineTemplate(project?.path ?? null);
+    void primeChapterOutlineTemplate(project?.path ?? null);
+    void primeSettingOutlineTemplate(project?.path ?? null);
+    void primeCharacterProfileTemplate(project?.path ?? null);
+    void primeFactionProfileTemplate(project?.path ?? null);
+    void primePowerProfileTemplate(project?.path ?? null);
+    void primeForeshadowingProfileTemplate(project?.path ?? null);
+    void primeGoldenFingerProfileTemplate(project?.path ?? null);
+    void primeGeographyProfileTemplate(project?.path ?? null);
+    void primeLocationProfileTemplate(project?.path ?? null);
+    void primeBackgroundProfileTemplate(project?.path ?? null);
+    void primeVolumeSkeletonReference(project?.path ?? null);
+  }, [project?.path]);
   const llmConfig = useWikiStore((s) => s.llmConfig);
   const novelConfig = useWikiStore((s) => s.novelConfig);
   const providerConfigs = useWikiStore((s) => s.providerConfigs);
@@ -1316,11 +2323,12 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const aiOutlineModel = useWikiStore((s) => s.aiOutlineModel);
   const defaultLlmModel = useWikiStore((s) => s.defaultLlmModel);
   const setAiOutlineModel = useWikiStore((s) => s.setAiOutlineModel);
+  const aiOutlineReasoningDepth = useWikiStore((s) => s.aiOutlineReasoningDepth);
+  const setAiOutlineReasoningDepth = useWikiStore((s) => s.setAiOutlineReasoningDepth);
   const outlineWorkflowMode = resolveOutlineWorkflowMode(
     useWikiStore((s) => s.outlineWorkflowMode),
   );
   const setOutlineWorkflowMode = useWikiStore((s) => s.setOutlineWorkflowMode);
-  const isOutlineFastMode = outlineWorkflowMode === "fast";
   const chatConversations = useChatStore((s) => s.conversations);
 
   const conversations = useOutlineChatStore((s) => s.conversations);
@@ -1362,6 +2370,25 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
 
   const activeConv = conversations.find((c) => c.id === activeConversationId);
   const activeMessages = activeConv?.messages ?? [];
+  /**
+   * 每条助手消息解析出的事件细纲（纯函数，按帧现算）。
+   *
+   * 一次算好给两处共用：气泡下方的卡片，以及「保存为大纲」按钮的显示条件。
+   * 后者必须知道这条消息是不是事件细纲 —— 事件细纲不再进大纲列表，
+   * 那个按钮对它就没有意义了（丙-1 堵住的手动保存通道）。
+   */
+  const eventOutlinesByMessageId = useMemo(() => {
+    const outlines = new Map<string, EventOutlineData | null>();
+    for (const message of activeMessages) {
+      outlines.set(
+        message.id,
+        message.role === "assistant"
+          ? extractEventOutlineData(message.content, requirementFor(message))
+          : null,
+      );
+    }
+    return outlines;
+  }, [activeMessages]);
   const hasSentUserMessage =
     activeConv?.messages.some((message) => message.role === "user") ?? false;
   const canCreateConversation = canCreateNewConversation(
@@ -1381,6 +2408,10 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     [activeConversationId, conversations, isWorkingConversation],
   );
   const historyCount = historyConversations.length;
+  // 当前 UI 用历史下拉统一承载会话切换，隐藏了顶栏 chips；因此下拉必须列出全部会话，
+  // 否则当天新建的非当前会话既不在（隐藏的）chips 里，也不在历史里，导致不可达。
+  const menuConversations = conversations;
+  const menuConversationCount = menuConversations.length;
 
   const hasAvailableModels = useMemo(
     () => hasConfiguredModels(providerConfigs),
@@ -1421,6 +2452,15 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     return getEffectiveMaxContextSize(config);
   }, [effectiveOutlineModelId, llmConfig, novelConfig, providerConfigs]);
 
+  /** The config the thinking-depth slider steers, or null to hide the slider. */
+  const reasoningDepthTargetConfig = useMemo(() => {
+    let config = resolveNovelModel(llmConfig, novelConfig, "writing");
+    if (effectiveOutlineModelId) {
+      config = resolveModelConfig(effectiveOutlineModelId, config, providerConfigs);
+    }
+    return config;
+  }, [effectiveOutlineModelId, llmConfig, novelConfig, providerConfigs]);
+
   const [inputValue, setInputValue] = useState("");
   const deferredInputValue = useDeferredValue(inputValue);
   const liveContextUsage = useMemo(() => {
@@ -1430,6 +2470,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     );
     return composeLiveContextUsage(activeConv?.lastContextUsage, {
       windowTokens: effectiveOutlineContextWindow,
+      softwareRules: buildOutlineAgentSystemPrompt({ projectName: project?.name ?? "", mode: outlineWorkflowMode }),
       sessionSummaryText: activeConv?.contextSummary?.text ?? "",
       historyTexts: historyMessages.map((message) => message.content),
       currentInput: deferredInputValue,
@@ -1440,6 +2481,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     activeMessages,
     deferredInputValue,
     effectiveOutlineContextWindow,
+    outlineWorkflowMode,
+    project?.name,
   ]);
   const [outlineReferenceTokens, setOutlineReferenceTokens] = useState<
     ReferenceToken[]
@@ -1448,6 +2491,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const [forceRefreshNext, setForceRefreshNext] = useState(false);
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   const [outlineWizardOpen, setOutlineWizardOpen] = useState(false);
+  const [generationMenuOpen, setGenerationMenuOpen] = useState(false);
   const [localModelId, setLocalModelId] = useState(effectiveOutlineModelId);
   const insertReferenceTokensRef = useRef<InsertReferenceTokens>(null);
   const [hoveredConversationId, setHoveredConversationId] = useState<string | null>(null);
@@ -1462,6 +2506,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const historyButtonRef = useRef<HTMLButtonElement | null>(null);
   const historyDropdownRef = useRef<HTMLDivElement | null>(null);
   const [historyDropdownStyle, setHistoryDropdownStyle] = useState<CSSProperties | null>(null);
+  useUiTestAiMenuFocus(historyOpen && Boolean(historyDropdownStyle), historyDropdownRef, historyButtonRef, setHistoryOpen);
+  useUiTestAiMenuFocus(workflowModeDropdownOpen && Boolean(workflowModeDropdownStyle), workflowModeDropdownRef, workflowModeTriggerRef, setWorkflowModeDropdownOpen);
   const [deAiSkillConfig, setDeAiSkillConfig] = useState<DeAiSkillConfig | null>(null);
   const [writingSkills, setWritingSkills] = useState<UserSkill[]>([]);
   const intentContextsRef = useRef<Record<string, {
@@ -1482,6 +2528,22 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     return routed.length > 0 ? routed : writingSkills;
   }, [writingSkills]);
 
+  /*
+   * 丁-4：角色灵魂引用。
+   *
+   * ⚠️ 与「文风」相反，本面板**有**灵魂的消费者：`contextHub.prepare` 建出的
+   * `contextPack.characterAuras` 会进 `buildContextHubSystemContent`，
+   * 也会进 `buildScopedOutlineSubAgentContext` 的 `character` 分支
+   * （那一支题名就是「角色气质」）。所以「@ 一条灵魂」在这里不是死条目，
+   * 它真的会改变本次大纲/细纲生成看到的东西 —— 代价是它同样会带上
+   * `portablePersonalities` 的 fail-closed 断言（见确认弹窗里的说明）。
+   */
+  const {
+    souls: characterSouls,
+    requestSoulBindingTarget,
+    soulBindingDialog,
+  } = useCharacterSoulReference({ projectPath: project?.path ?? undefined });
+
   useEffect(() => {
     if (pendingReferenceTokens.length === 0) return;
     const tokens = consumePendingReferenceTokens();
@@ -1494,24 +2556,12 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       memoryProvider,
       outlineProvider,
       deductionProvider,
-      createSkillProvider(() => {
-        const deAiSkills = deAiSkillConfig
-          ? resolveAvailableDeAiSkills(deAiSkillConfig).map((skill) => ({
-              id: skill.id,
-              name: skill.name,
-              subtype: "deai" as const,
-            }))
-          : []
-        const writingSkillList = outlineWritingSkills.map((skill) => ({
-          id: skill.id,
-          name: skill.name,
-          subtype: "writing" as const,
-          kind: skill.kind,
-          stages: skill.stages,
-          modes: skill.modes,
-        }))
-        return [...deAiSkills, ...writingSkillList]
-      }),
+      /*
+       * 技能库条目（丁-3 抽出具名函数 + 丁-4 的角色灵魂）：
+       * - **故意不**产出「文风」条目（见 `buildOutlineReferenceSkillEntries` 的说明）；
+       * - 角色灵魂**必须**产出 —— 它在本面板确有消费者。
+       */
+      createSkillProvider(() => buildOutlineReferenceSkillEntries(deAiSkillConfig, outlineWritingSkills, characterSouls)),
       createChatHistoryProvider(() =>
         chatConversations.map((conversation) => ({
           id: conversation.id,
@@ -1525,7 +2575,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         })),
       ),
     ],
-    [chatConversations, conversations, deAiSkillConfig, outlineWritingSkills],
+    [characterSouls, chatConversations, conversations, deAiSkillConfig, outlineWritingSkills],
   );
 
   // 加载持久化的历史记录
@@ -1623,24 +2673,10 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       setHistoryDropdownStyle(null);
       return;
     }
-    const panelWidth = 288;
-    const gap = 6;
     function updatePosition() {
       const rect = historyButtonRef.current?.getBoundingClientRect();
       if (!rect) return;
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-      const left = Math.min(
-        Math.max(gap, rect.right - panelWidth),
-        Math.max(gap, viewportWidth - panelWidth - gap),
-      );
-      const availableBelow = viewportHeight - rect.bottom;
-      const availableAbove = rect.top;
-      const maxHeight = Math.min(360, Math.max(160, Math.max(availableBelow, availableAbove) - gap));
-      const top = availableBelow >= 160 || availableBelow >= availableAbove
-        ? rect.bottom + gap
-        : Math.max(gap, rect.top - maxHeight - gap);
-      setHistoryDropdownStyle({ left, top, width: panelWidth, maxHeight });
+      setHistoryDropdownStyle(getUiTestAiMenuStyle(rect));
     }
     const raf = requestAnimationFrame(updatePosition);
     window.addEventListener("resize", updatePosition);
@@ -1662,12 +2698,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     function updatePosition() {
       const rect = workflowModeTriggerRef.current?.getBoundingClientRect();
       if (!rect) return;
-      setWorkflowModeDropdownStyle({
-        left: rect.left,
-        top: rect.top - 8,
-        width: Math.max(rect.width, 320),
-        transform: "translateY(-100%)",
-      });
+      setWorkflowModeDropdownStyle({ ...getUiTestAiMenuStyle(rect, 320, true), maxHeight: "none" });
     }
     const raf = requestAnimationFrame(updatePosition);
     window.addEventListener("resize", updatePosition);
@@ -1694,6 +2725,16 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   const [saveConfirmState, setSaveConfirmState] = useState<SaveConfirmBatch | null>(null);
   const saveConfirmStateRef = useRef<SaveConfirmBatch | null>(null);
   const pendingSaveBatchesRef = useRef<SaveConfirmBatch[]>([]);
+  /** 大纲内容不完整时，每类任务（卷纲 / 章纲）在每个会话各最多自动修复一次（避免无限循环消耗 token） */
+  const outlineRepairAttemptsRef = useRef<Map<string, number>>(new Map());
+  /** 待触发的卷纲自动补全（由 handleSend 定义后的 effect 消费；用 state 保证 effect 可靠执行） */
+  const [pendingVolumeRepair, setPendingVolumeRepair] = useState<{ conversationId: string; prompt: string } | null>(null);
+  /** 待触发的章纲自动补全（配额与卷纲分开计数，互不挤占） */
+  const [pendingChapterRepair, setPendingChapterRepair] = useState<{ conversationId: string; prompt: string } | null>(null);
+  /** 章纲分批会话：累积每批解析出的数据与本批 MD，直到最后一批合并保存 */
+  const chapterBatchSessionsRef = useRef<Map<string, Array<{ data: ChapterOutlineData; md: string }>>>(new Map());
+  /** 待触发的下一批章纲生成 */
+  const [pendingChapterBatch, setPendingChapterBatch] = useState<{ conversationId: string; prompt: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1773,7 +2814,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     setShowScrollToBottom(false);
     container.scrollTo({
       top: container.scrollHeight,
-      behavior: "smooth",
+      behavior: "auto",
     });
   }, []);
 
@@ -1785,17 +2826,28 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       const currentScrollTop = container.scrollTop;
       const atBottom =
         container.scrollHeight - currentScrollTop - container.clientHeight < 50;
-      if (currentScrollTop < lastScrollTopRef.current - 1) {
-        userScrolledUpRef.current = true;
-      } else if (atBottom) {
+      if (atBottom) {
         userScrolledUpRef.current = false;
+      } else if (currentScrollTop < lastScrollTopRef.current - 1) {
+        userScrolledUpRef.current = true;
       }
-      setShowScrollToBottom(userScrolledUpRef.current && isStreaming);
+      setShowScrollToBottom(userScrolledUpRef.current && !atBottom);
       lastScrollTopRef.current = currentScrollTop;
     };
     container.addEventListener("scroll", handleScroll);
     return () => container.removeEventListener("scroll", handleScroll);
-  }, [isStreaming]);
+  }, [isStreaming, activeConversationId]);
+
+  useEffect(() => {
+    userScrolledUpRef.current = false;
+    lastScrollTopRef.current = 0;
+    setShowScrollToBottom(false);
+    const container = scrollRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+      lastScrollTopRef.current = container.scrollTop;
+    }
+  }, [activeConversationId]);
 
   const executeConfirmedOutlineSave = useCallback(
     async (payload: OutlineSaveConfirmPayload) => {
@@ -1815,6 +2867,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           outlineRoot: `${projectPath}/wiki/outlines`,
           confirmed: true,
           requests,
+          formats: payload.formats ?? { md: true, html: true },
           createDirectory,
           fileExists,
           readFile,
@@ -1822,8 +2875,36 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         });
         if (saveResult.saved.length > 0) {
           await refreshProjectState(projectPath);
+          // 保存成功后自动跳转到本次保存的文档预览界面：
+          // 优先选中 .md（预览面板的双格式查看器会自动挂载同名 .html 伴生文件，
+          // 默认以 HTML 卡片展示）；仅保存 HTML（未勾选 MD）时退回 .html 路径。
+          // 多文件保存（per_item 分项）时跳到第一个文件，其余可从左侧知识树进入。
+          const jumpTarget =
+            saveResult.saved.find((item) => item.path.toLowerCase().endsWith(".md"))?.path
+            ?? saveResult.saved[0]?.path;
+          if (jumpTarget) {
+            useWikiStore.getState().setSelectedFile(normalizePath(jumpTarget));
+          }
           const names = saveResult.saved.map((item) => item.fileName).join("、");
           setSaveStatus(`已保存 ${saveResult.saved.length} 个文件：${names}`);
+          // 文件已落盘：清掉该会话里过期的校验报告，避免「已保存」旁边还挂着警告。
+          const savedConvId = useOutlineChatStore.getState().activeConversationId;
+          if (savedConvId) {
+            useOutlineChatStore.setState((state) => ({
+              conversations: state.conversations.map((conversation) =>
+                conversation.id === savedConvId
+                  ? {
+                      ...conversation,
+                      messages: conversation.messages.map((message) =>
+                        message.outlineSaveReport
+                          ? { ...message, outlineSaveReport: undefined }
+                          : message,
+                      ),
+                    }
+                  : conversation,
+              ),
+            }));
+          }
           drainNextSaveBatch();
           return;
         }
@@ -1834,6 +2915,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         if (saveResult.errors.length > 0) {
           setSaveStatus(`保存失败：${saveResult.errors.slice(0, 2).join("；")}`);
         }
+        // 保存成功后刷新卷纲真骨架缓存，让紧接着生成的章纲立刻用到最新骨架
+        void primeVolumeSkeletonReference(project?.path ?? null);
       } catch (error) {
         setSaveStatus(`保存失败：${error instanceof Error ? error.message : String(error)}`);
       }
@@ -1857,22 +2940,148 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     ].filter((item): item is string => Boolean(item?.trim())).join("\n");
   }, []);
 
-  const handleAutoSaveOutlineRequests = useCallback(
-    async (conversationId: string, assistantContent: string, canApply: () => boolean) => {
-      if (!project || !canApply()) return;
-      const parsed = parseOutlineSaveRequests(assistantContent);
-      if (parsed.requests.length === 0) {
-        if (parsed.errors.length > 0) {
-          showOutlineAutoSaveError(formatOutlineSaveParseFeedback(parsed.errors));
-          return;
+  /** 有卷纲结构化数据（伴生 .json）时做「卷纲 ↔ 章纲」交叉校验，返回问题列表。 */
+  const collectVolumeCrossProblems = useCallback(
+    async (data: ChapterOutlineData): Promise<string[]> => {
+      const projectPath = project?.path;
+      if (!projectPath) return [];
+      const volumes = await loadSavedVolumeOutlineDataList(projectPath);
+      for (const volume of volumes) {
+        const cross = crossCheckChapterAgainstVolume(data, volume);
+        if (cross) return cross;
+      }
+      return [];
+    },
+    [project],
+  );
+
+  /**
+   * 章纲分批推进：本批只收集数据（不落盘），全部批次到齐后由软件合并成一份保存请求。
+   * 返回 true 表示这条回复已被分批流程接管，不应再走常规保存解析。
+   */
+  const advanceChapterOutlineBatches = useCallback(
+    async (conversationId: string, content: string): Promise<boolean> => {
+      const batch = extractChapterOutlineBatch(content);
+      if (!batch) return false;
+
+      const existing = chapterBatchSessionsRef.current.get(conversationId) ?? [];
+      // 续跑草稿可能属于另一个故事：骨架对不上就丢弃旧批次，避免把两个故事混成一份章纲
+      const sameStory = existing.length === 0
+        || (existing[0].data.story.index === batch.data.story.index
+          && existing[0].data.story.range.trim() === batch.data.story.range.trim());
+      const batches = sameStory ? [...existing, batch] : [batch];
+      chapterBatchSessionsRef.current.set(conversationId, batches);
+      const merged = mergeChapterBatches(batches.map((item) => item.data));
+      void writeChapterOutlineDraft(project?.path, {
+        conversationId,
+        title: merged.title,
+        batches,
+        updatedAt: Date.now(),
+      });
+      const next = nextChapterBatchRange(merged);
+
+      if (next) {
+        setSaveStatus(`章纲已生成 ${merged.chapters.length} 章，正在继续生成第 ${next.from}–${next.to} 章…`);
+        setPendingChapterBatch({
+          conversationId,
+          prompt: buildChapterBatchPrompt({ data: merged, batch: next }),
+        });
+        return true;
+      }
+
+      // 全部批次到齐：先做完整性校验 + 卷纲交叉校验，只重写有问题的批次
+      const problems = [
+        ...validateChapterOutlineData(merged).problems,
+        ...(await collectVolumeCrossProblems(merged)),
+      ];
+      if (problems.length > 0) {
+        const repairKey = outlineRepairAttemptsKey("chapter", conversationId);
+        const attempts = outlineRepairAttemptsRef.current.get(repairKey) ?? 0;
+        const targetChapters = collectProblemChapterNumbers(problems);
+        if (attempts < 1 && targetChapters.length > 0) {
+          outlineRepairAttemptsRef.current.set(repairKey, attempts + 1);
+          setSaveStatus("检测到章纲内容不完整，正在自动补全有问题的批次…");
+          setPendingChapterBatch({
+            conversationId,
+            prompt: buildChapterBatchPrompt({
+              data: merged,
+              batch: { from: targetChapters[0], to: targetChapters[targetChapters.length - 1] },
+              problems,
+            }),
+          });
+          return true;
         }
-        if (!isSaveableOutlineDeliverable(assistantContent)) return;
+        showOutlineAutoSaveError(
+          `章纲内容仍不完整（${problems.length} 项）：${problems[0]}已保留当前内容，可确认后写入。`,
+        );
+      }
+
+      chapterBatchSessionsRef.current.delete(conversationId);
+      void clearChapterOutlineDraft(project?.path);
+      // 正文由软件从合并后的数据生成：模型不再重复写一遍 MD（省一半输出 token）
+      const md = renderChapterOutlineMarkdown(merged);
+      presentOrQueueSaveBatch({
+        title: "请确认要保存的章纲文件",
+        mode: "normal",
+        requests: [buildChapterOutlineSaveRequest(merged, md)],
+        characterDrafts: [],
+      });
+      setSaveStatus(
+        problems.length > 0
+          ? `章纲 ${merged.chapters.length} 章已合并（有 ${problems.length} 项待修，仍可保存）。`
+          : `章纲 ${merged.chapters.length} 章已全部生成，请确认后写入。`,
+      );
+      return true;
+    },
+    [presentOrQueueSaveBatch, collectVolumeCrossProblems, project],
+  );
+
+  const handleAutoSaveOutlineRequests = useCallback(
+    async (
+      conversationId: string,
+      assistantContent: string,
+      canApply: () => boolean,
+      assistantId?: string,
+    ) => {
+      if (!project || !canApply()) return;
+      // 新一轮校验开始：先撤掉上一条报告，内容补齐后它应当自己消失。
+      attachOutlineSaveReport(conversationId, assistantId, null);
+      const filteredOutput = filterOutlineGeneratedContent(assistantContent);
+      if (filteredOutput.reasoningOnly || !filteredOutput.content) return;
+      const safeAssistantContent = filteredOutput.content;
+      // 章纲分批：本批只收集数据，全部到齐后由软件合并保存（不在此处落盘）
+      if (await advanceChapterOutlineBatches(conversationId, safeAssistantContent)) return;
+      // 降级路径：AI 未按分批输出（直接给了整份 chapterOutlineData + outlineSaveRequest）时，
+      // 仍走下面的统一校验（章节数与骨架一致、逐章 17 节、卷纲交叉校验），不会静默保存残缺章纲。
+      const parsed = parseOutlineSaveRequests(safeAssistantContent);
+      // 事件细纲只作为对话消息 + 卡片存在，不再写进 wiki/outlines/事件细纲/。
+      // 生成侧已经不再要求模型输出 outlineSaveRequest，这里是兜底闸门：
+      // 手工或计划模式绕过来的 event-outline 请求一律丢掉，既不弹确认框也不落盘。
+      const { requests: saveRequests, droppedEventOutlineCount } =
+        excludeEventOutlineSaveRequests(parsed.requests);
+      /*
+       * 闸门的判定抽在 decideOutlineAutoSaveGate（纯函数，见 lib/outline-save.ts）：
+       * 这里只负责把判定翻成可见效果。判据本身有单测直喂已分类的 event-outline，
+       * 因为「删掉这几行 return」在组件层是看不出来的（源码文本断言管不住行为）。
+       */
+      const gateAction = decideOutlineAutoSaveGate({
+        droppedEventOutlineCount,
+        keptRequestCount: saveRequests.length,
+        errors: parsed.errors,
+        eventOutlineRejectionCount: parsed.eventOutlineRejectionCount,
+      });
+      if (gateAction === "drop-event-outline") return;
+      if (gateAction === "continue" && saveRequests.length === 0) {
+        if (!isSaveableOutlineDeliverable(safeAssistantContent)) return;
         const built = buildClassifiedOutlineSaveRequest({
-          content: assistantContent,
+          content: safeAssistantContent,
           sourceIntent: "生成完成后自动保存",
           sourceHint: collectOutlineSaveSourceHint(conversationId),
         });
         if (!built || !canApply()) return;
+        // 与上面的过滤同一道闸门，只是走的是「没有保存请求、靠正文分类」这条腿：
+        // 分类结果若是事件细纲，同样不弹确认框（否则丙-1 的目标会被这条腿绕过）。
+        if (isEventOutlineSaveBlocked(built.classification.fileType)) return;
         if (built.classification.fileType === "character") {
           const extracted = extractCharacterSaveDrafts(built.draft.content);
           if (extracted.drafts.length === 0) return;
@@ -1880,7 +3089,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             title: "请确认要保存的人物角色",
             mode: "character",
             requests: [],
-            characterDrafts: extracted.drafts,
+            characterDrafts: enrichCharacterDraftsWithHtml(extracted.drafts, safeAssistantContent),
           });
           setSaveStatus("检测到人物小传，请确认要保存的人物角色。");
           return;
@@ -1894,10 +3103,29 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         setSaveStatus("检测到可保存大纲，请确认后写入。");
         return;
       }
+      /*
+       * 只有错误里**还有非事件细纲的**才弹那条「请让 AI 重新输出
+       * outlineSaveRequest」的提示。事件细纲请求在本版本里本来就要丢掉，
+       * 为它去要求模型重出一遍是自相矛盾（重出一次还是会被丢掉）。
+       */
+      if (gateAction === "surface-parse-errors") {
+        showOutlineAutoSaveError(formatOutlineSaveParseFeedback(parsed.errors));
+        return;
+      }
+      if (gateAction === "notify-event-outline-dropped") {
+        /*
+         * 这里原本调的是 setSaveStatus，而它开头就是
+         * `if (!/(失败|错误|不支持|无法)/.test(message)) return` ——
+         * 这句话四个词一个都不含，于是**什么都不会发生**：
+         * 用户看不到任何反馈，只看到「点了没反应」。改用 toast.info。
+         */
+        toast.info("事件细纲只作为对话消息保留，不写入大纲列表。");
+        return;
+      }
 
       if (!canApply()) return;
       try {
-        const split = splitConfirmRequiredSaveRequests(parsed.requests);
+        const split = splitConfirmRequiredSaveRequests(saveRequests);
         const characterRequests = split.confirmRequired.filter(
           (request) => request.fileType === "character",
         );
@@ -1905,14 +3133,111 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           (request) => request.fileType !== "character",
         );
 
+        // 卷纲结构化数据校验（零 token）：数据不完整则自动修复一次，仍失败才放行强制保存
+        const volumeRequests = normalRequests.filter(
+          (request) => request.fileType === "volume-outline",
+        );
+        const volumeValidation = volumeRequests.length > 0
+          ? (() => {
+              const data = extractVolumeOutlineData(safeAssistantContent);
+              const result = validateVolumeOutlineData(data, volumeRequests[0].content);
+              return {
+                count: result.problems.length,
+                problems: result.problems,
+                text: result.problems.join("；"),
+                fileName: volumeRequests[0].fileName,
+              };
+            })()
+          : { count: 0, problems: [] as string[], text: "", fileName: "" };
+        if (volumeValidation.count > 0) {
+          const repairKey = outlineRepairAttemptsKey("volume", conversationId);
+          const attempts = outlineRepairAttemptsRef.current.get(repairKey) ?? 0;
+          if (attempts < 1) {
+            outlineRepairAttemptsRef.current.set(repairKey, attempts + 1);
+            setSaveStatus("检测到卷纲内容不完整，正在自动补全…");
+            setPendingVolumeRepair({
+              conversationId,
+              prompt: buildVolumeOutlineRepairPrompt({
+                fileName: volumeValidation.fileName,
+                problemsText: volumeValidation.text,
+              }),
+            });
+            return;
+          }
+          const shown = volumeValidation.text.length > 120
+            ? `${volumeValidation.text.slice(0, 120)}…`
+            : volumeValidation.text;
+          // 明细挂在生成结果下方（可逐条展开），浮层只留一句指路。
+          attachOutlineSaveReport(conversationId, assistantId, {
+            fileName: volumeValidation.fileName,
+            fileType: "volume-outline",
+            problems: volumeValidation.problems,
+            repairAttempted: true,
+          });
+          showOutlineAutoSaveError(
+            `卷纲内容仍不完整（${volumeValidation.count} 项）：${shown}。明细已列在该条消息下方；可保存当前内容，或让 AI 重新生成。`,
+          );
+        }
+
+        // 章纲结构化数据校验（零 token）：与卷纲同机制，不完整则自动补全一次
+        const chapterRequests = normalRequests.filter(
+          (request) => request.fileType === "chapter-outline",
+        );
+        const chapterValidation = chapterRequests.length > 0
+          ? await (async () => {
+              const data = extractChapterOutlineData(safeAssistantContent);
+              const problems = [...validateChapterOutlineData(data).problems];
+              // 有卷纲结构化数据（伴生 .json）时，做「卷纲 ↔ 章纲」交叉校验
+              if (data) problems.push(...(await collectVolumeCrossProblems(data)));
+              return {
+                count: problems.length,
+                problems,
+                text: problems.join("；"),
+                fileName: chapterRequests[0].fileName,
+              };
+            })()
+          : { count: 0, problems: [] as string[], text: "", fileName: "" };
+        if (chapterValidation.count > 0) {
+          const repairKey = outlineRepairAttemptsKey("chapter", conversationId);
+          const attempts = outlineRepairAttemptsRef.current.get(repairKey) ?? 0;
+          if (attempts < 1) {
+            outlineRepairAttemptsRef.current.set(repairKey, attempts + 1);
+            setSaveStatus("检测到章纲内容不完整，正在自动补全…");
+            setPendingChapterRepair({
+              conversationId,
+              prompt: [
+                "系统检测到上一轮章纲内容不完整，无法渲染章纲卡片流，问题如下：",
+                `- ${chapterValidation.fileName}：${chapterValidation.text}`,
+                "请重新输出完整章纲：只输出一个 ```json 围栏的 chapterOutlineData（**不要写 MD 正文**，正文与卡片流由软件从数据生成）—— story 骨架（index/name/range/beats）必须与卷纲一致；chapters 必须写满该故事每一章，每章写满 17 节（§1~§17），并带对齐字段 stage/beat/expect/time/place/seedFores/payFores；§5 核心事件链 ≥6 条且每条含 what/cause/action/result/use；§6 必要条件 enter/trigger/interact/result 四类齐全；§8 moodCurve 写满 4 节点；§10 expand 至少 1 条且含 info/how；§11 visual.env 与 visual.memory 必须有内容；§13 castChanges 至少 1 条；§14 worldUpdate 至少一项有内容；§17 checks 覆盖 10 条固定项；各章节拍必须与 story.beats 逐字一致；第 N 章 handover.nextStart 必须与第 N+1 章 carry.hook 呼应；payFores 必须在更早章节的 seedFores 出现过；再输出 outlineSaveRequest（content 留空字符串，文件名「章纲-第XX–XX章.md」，不要写 HTML）。禁止任何省略写法。",
+              ].join("\n"),
+            });
+            return;
+          }
+          const shown = chapterValidation.text.length > 120
+            ? `${chapterValidation.text.slice(0, 120)}…`
+            : chapterValidation.text;
+          attachOutlineSaveReport(conversationId, assistantId, {
+            fileName: chapterValidation.fileName,
+            fileType: "chapter-outline",
+            problems: chapterValidation.problems,
+            repairAttempted: true,
+          });
+          showOutlineAutoSaveError(
+            `章纲内容仍不完整（${chapterValidation.count} 项）：${shown}。明细已列在该条消息下方；可保存当前内容，或让 AI 重新生成。`,
+          );
+        }
+
         if (characterRequests.length > 0) {
           const characterContent = characterRequests
             .map((request) => request.content)
             .join("\n\n");
           const extracted = extractCharacterSaveDrafts(characterContent);
-          const characterDrafts = extracted.drafts.length > 0
-            ? extracted.drafts
-            : buildFallbackCharacterDraftsFromRequests(characterRequests);
+          const characterDrafts = enrichCharacterDraftsWithHtml(
+            extracted.drafts.length > 0
+              ? extracted.drafts
+              : buildFallbackCharacterDraftsFromRequests(characterRequests),
+            safeAssistantContent,
+          );
           const characterBatch: SaveConfirmBatch = {
             title: "请确认要保存的人物角色",
             mode: "character",
@@ -1965,7 +3290,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         showOutlineAutoSaveError(error instanceof Error ? error.message : String(error));
       }
     },
-    [collectOutlineSaveSourceHint, presentOrQueueSaveBatch, project],
+    [collectOutlineSaveSourceHint, presentOrQueueSaveBatch, project, advanceChapterOutlineBatches, collectVolumeCrossProblems],
   );
 
   const handleSend = useCallback(
@@ -1980,13 +3305,24 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         conversationId?: string;
         clearDraft?: boolean;
         intentPhase?: "intent_analysis" | "generation" | "waiting_user_input";
+        /** 计划模式的要素盘点轮；正文生成腿仍复用 intentPhase: "generation"。 */
+        planPhase?: OutlinePlanPhase;
+        planModule?: string;
         novelGenerationRequest?: NovelGenerationRequestPackage;
         systemGenerated?: boolean;
         userMessageVisibility?: "visible" | "internal";
         userDisplayText?: string;
+        /**
+         * 事件细纲的硬要求。挂在**这一轮创建的助手消息**上，
+         * 让卡片渲染时不必依赖模型把要求回抄进 JSON（见 outline-chat-store 的同名字段）。
+         *
+         * 事件细纲向导已删（丙-2c），当前只有「继续」这条重发路径会传进来
+         * —— `handleContinueStopped` 从被停止的那条消息上把它抄过来。
+         */
+        eventOutlineRequirement?: string;
       } = {},
     ): Promise<OutlineSendResult> => {
-      const prompt = inputText.trim();
+      let prompt = inputText.trim();
       if (!prompt || !project) return { started: false, sent: false };
       const requestedConversationId = options.conversationId ?? activeConversationId;
       const requestedRunState = requestedConversationId
@@ -1995,6 +3331,21 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       if (requestedRunState?.status === "running") return { started: false, sent: false };
       let convId = requestedConversationId;
       if (!convId) convId = createConversation();
+      // 章纲分批续跑：第 1 批的生成腿若发现上次未完成的草稿，就不从第 1 批重写，
+      // 直接把提示词换成「继续生成下一批」，并把草稿批次放回本会话，省掉重复生成。
+      if (prompt.includes(CHAPTER_OUTLINE_FIRST_BATCH_MARKER)) {
+        const draft = await readChapterOutlineDraft(project.path);
+        if (draft && draft.conversationId === convId) {
+          const resumePrompt = buildChapterOutlineResumePrompt(draft);
+          if (resumePrompt) {
+            chapterBatchSessionsRef.current.set(convId, draft.batches);
+            prompt = resumePrompt;
+            setSaveStatus(`检测到未完成的章纲草稿（已完成 ${mergeChapterBatches(draft.batches.map((item) => item.data)).chapters.length} 章），正在继续生成…`);
+          } else {
+            void clearChapterOutlineDraft(project.path);
+          }
+        }
+      }
       let effectiveLlmConfig = resolveNovelModel(
         llmConfig,
         novelConfig,
@@ -2010,6 +3361,24 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           providerConfigs,
         );
       }
+      // Intent analysis and plan element-check turns are the orchestration
+      // half of the outline loop; only generation turns actually emit outline
+      // content, so only they take the footer's thinking depth. Stamping it
+      // here rather than at the request keeps the budget planner below in
+      // sync, since it derives its output floor from `config.reasoning`.
+      const outlineModeForBudget = resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode);
+      const discussPhase: OutlineDiscussPhase | undefined =
+        outlineModeForBudget === "discuss" && options.intentPhase !== "generation"
+          ? "decision"
+          : undefined;
+      const outlineBudgetStage: OutlineBudgetStage = options.intentPhase === "intent_analysis"
+        || options.planPhase !== undefined
+        || discussPhase !== undefined
+        ? "analysis"
+        : "generation";
+      if (outlineBudgetStage === "generation") {
+        effectiveLlmConfig = applyReasoningDepth(effectiveLlmConfig, aiOutlineReasoningDepth);
+      }
       const effectiveModelId = effectiveOutlineModelId || effectiveLlmConfig.model || "";
       if (!hasUsableLlm(effectiveLlmConfig, providerConfigs)) {
         addMessage(convId, {
@@ -2017,6 +3386,25 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           role: "assistant",
           content:
             "请先在设置中配置并选择一个可用的 AI 模型，或在下方模型选择器中选择模型后再试。",
+        });
+        return { started: false, sent: false };
+      }
+      /*
+       * 两种原因必须分开说（用户已经踩过）：
+       * ① 供应商那边关掉了 Function Calling —— 这不是「模型不支持」，
+       *    而是用户自己的开关，提示必须指向那个开关；
+       * ② 模型确实在黑名单里。
+       *
+       * 为什么关掉开关也不能让大纲对话照跑：它的产出全靠 write_outline_node
+       * 落到 wiki/outlines，没有工具时模型只会回一段没人保存的文本
+       * （界面看着像成功了，文件却没变），比直接拦下更误导。
+       */
+      if (!isFunctionCallingEnabled(effectiveLlmConfig)) {
+        addMessage(convId, {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content:
+            "当前供应商已关闭「启用 Function Calling」，AI 大纲需要工具调用才能把结果写入大纲文件。请到设置 → 模型设置中打开该开关，或更换支持工具调用的模型。",
         });
         return { started: false, sent: false };
       }
@@ -2044,6 +3432,31 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         if (!isCurrentRun()) return { started: true, sent: false };
         setOutlineWorkflowStages((stages) => setOutlineSessionValue(stages, capturedConvId, stage));
       };
+      // 沿允许的转移链推进阶段，链路走不通就停在最后一个合法阶段
+      const advanceCapturedWorkflowStages = (targets: OutlineWorkflowStage[]) => {
+        if (!isCurrentRun()) return;
+        setOutlineWorkflowStages((stages) => {
+          let stage = stages[capturedConvId] ?? "idle";
+          for (const target of targets) {
+            if (stage === target) continue;
+            if (!canTransitionOutlineWorkflow(stage, target)) break;
+            stage = target;
+          }
+          return setOutlineSessionValue(stages, capturedConvId, stage);
+        });
+      };
+      // 计划模式的停机态要留在界面上等用户操作，不能被收尾复位成 idle
+      const resetCapturedWorkflowStageToIdle = () => {
+        if (!isCurrentRun()) return;
+        setOutlineWorkflowStages((stages) => {
+          const stage = stages[capturedConvId] ?? "idle";
+          if (stage === "collecting_requirements" || stage === "waiting_user_confirm") return stages;
+          return setOutlineSessionValue(stages, capturedConvId, "idle");
+        });
+      };
+      if (discussPhase) {
+        advanceCapturedWorkflowStages(["collecting_requirements"]);
+      }
       if (shouldClearOutlineDraft({
         clearDraft: options.clearDraft !== false,
         invocationConversationId: capturedConvId,
@@ -2062,8 +3475,14 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       const hasPriorAssistantAnswer = historyBeforeSend.some(
         (message) => message.role === "assistant" && message.content.trim(),
       );
-      const outlineMode = resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode);
-      const enableMultiAgent = Boolean(options.enableMultiAgent) && outlineMode !== "fast";
+      const outlineMode = outlineModeForBudget;
+      // 共创模式靠自然语言来回讨论推进，多 Agent 编排会直接产出成品，绕过讨论
+      const enableMultiAgent = Boolean(options.enableMultiAgent)
+        && outlineMode !== "fast"
+        && outlineMode !== "discuss";
+      const planTargetModule = options.planModule
+        ?? intentContextsRef.current[capturedConvId]?.title
+        ?? "大纲";
       const forceRefresh = options.forceRefresh === true || forceRefreshNext;
       const contextDecision = planOutlineContextReuse({
         hasPriorAssistantAnswer,
@@ -2074,6 +3493,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         systemGenerated: options.systemGenerated,
         workflowMode: outlineMode,
         intentPhase: options.intentPhase,
+        planPhase: options.planPhase,
+        discussPhase,
       });
       const cachedSummary =
         contextDecision.mode === "reuse"
@@ -2088,10 +3509,72 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         cachedSummary,
         workflowMode: outlineMode,
         intentPhase: options.intentPhase,
+        planPhase: options.planPhase,
+        discussPhase,
         enableMultiAgent,
       });
       if (forceRefreshNext) {
         setForceRefreshNext(false);
+      }
+      /*
+       * 丁-4：本条消息 `@` 引用的**角色灵魂** → 本条消息的临时绑定。
+       *
+       * ⚠️ 位置是本段的关键：必须在 `addMessage(convId, userMsg)` **之前**。
+       * 确认弹窗可能在用户取消时结束，那时一条消息都还没落地 ——
+       * 若放在消息之后，取消会留下「有提问、没有回复」的残局。
+       *
+       * 顺序：先问（`requestSoulBindingTarget`）→ 再写（`beginMessageScopedSoulBinding`）
+       * → 再走下面真正读盘组装上下文的 `contextHub.prepare`。
+       * 写盘晚于 `contextHub.prepare` 是无效的：那个调用就是读
+       * `.qmai/character-aura.json` 的地方，晚一步这条灵魂进不了本次上下文。
+       *
+       * 释放统一放在本函数的 `finally`（覆盖成功、抛错、中止），不去逐条 return 打补丁。
+       */
+      const referencedSoulAuraIds = collectReferencedSoulAuraIds(tokens);
+      if (referencedSoulAuraIds.length > 1) {
+        toast.info(
+          `一条消息只能引用一条角色灵魂（本次引用了 ${referencedSoulAuraIds.length} 条）。请删掉多余的灵魂引用再发送。`,
+          { dedupeKey: `outline-soul-multi:${capturedConvId}` },
+        );
+        return { started: false, sent: false };
+      }
+      let messageSoulBinding: MessageScopedSoulBinding | null = null;
+      const releaseMessageSoulBinding = async () => {
+        const binding = messageSoulBinding;
+        messageSoulBinding = null;
+        if (!binding) return;
+        try {
+          await releaseMessageScopedSoulBinding(normalizePath(project.path), binding);
+          // 绑定表没有 zustand 镜像，界面只能靠 dataVersion 触发重新读盘。
+          useWikiStore.getState().bumpDataVersion();
+        } catch (error) {
+          // 没还回去是用户必须知道的状态，不静默吞。
+          toast.error(
+            error instanceof Error && error.message ? error.message : "还原临时角色灵魂绑定失败",
+            { title: "临时角色灵魂绑定未还原", persistent: true, dedupeKey: `outline-soul-release:${capturedConvId}` },
+          );
+        }
+      };
+      if (referencedSoulAuraIds.length === 1) {
+        const referencedAuraId = referencedSoulAuraIds[0];
+        const targetCharacterName = await requestSoulBindingTarget(referencedAuraId);
+        // `null` = 用户取消：直接中止，绝不用默认人物顶上。
+        if (!targetCharacterName) return { started: false, sent: false };
+        try {
+          messageSoulBinding = await beginMessageScopedSoulBinding(normalizePath(project.path), {
+            auraId: referencedAuraId,
+            characterName: targetCharacterName,
+          });
+        } catch (error) {
+          // 「请先在大纲中添加人物小传或人物设定，再绑定角色灵魂」这类原话原样转达。
+          toast.error(
+            error instanceof Error && error.message ? error.message : "绑定角色灵魂失败，请稍后重试",
+            { title: "角色灵魂绑定失败", persistent: true, dedupeKey: `outline-soul-bind:${capturedConvId}` },
+          );
+          return { started: false, sent: false };
+        }
+        // 角色灵魂列表随项目内容变化：绑定后让弹窗列表重新读盘。
+        useWikiStore.getState().bumpDataVersion();
       }
       const userMsg: OutlineChatMessage = {
         id: crypto.randomUUID(),
@@ -2124,6 +3607,13 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         showThinkingProcess: historyPlan.showThinkingProcess,
         isAgentRunning: true,
         intentPhase: options.intentPhase,
+        outlinePlanPhase: options.planPhase,
+        outlineDiscussPhase: discussPhase,
+        generationTiming: { startedAt: Date.now() },
+        // 与消息在同一个对象字面量里落地：要求不会与它所属的那条回复错配。
+        ...(options.eventOutlineRequirement?.trim()
+          ? { eventOutlineRequirement: options.eventOutlineRequirement.trim() }
+          : {}),
       });
       clearStreamingContent(capturedConvId);
       userScrolledUpRef.current = false;
@@ -2144,9 +3634,6 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       // 避免整段结果被静默丢弃。
       let bestGeneratedText = "";
       let deliverableTruncated = false;
-      const outlineBudgetStage: OutlineBudgetStage = options.intentPhase === "intent_analysis"
-        ? "analysis"
-        : "generation";
       const outlineRequestBudget = planOutlineRequestBudget({
         maxContextSize: effectiveLlmConfig.maxContextSize,
         stage: outlineBudgetStage,
@@ -2190,6 +3677,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             summaryInSystem: true,
             workflowMode: outlineMode,
             intentPhase: options.intentPhase,
+            discussPhase,
             enableMultiAgent,
           });
         }
@@ -2215,15 +3703,21 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           (): DeAiSkillConfig | null => null,
         );
         const soulDoc = await readSoulDoc(project.path).catch(() => "");
+        const planModule = options.planPhase ? planTargetModule : undefined;
+        const discussModule = discussPhase ? planTargetModule : undefined;
         const baseSystemPrompt = buildOutlineAgentSystemPrompt({
           projectName: project.name,
           mode: outlineMode,
+          planModule,
+          discussModule,
         });
         const legacySystemPrompt = buildOutlineAgentSystemPrompt({
           projectName: project.name,
           webResearchContext: webResearchMarkdown,
           soulDoc,
           mode: outlineMode,
+          planModule,
+          discussModule,
         }) + `\n\n## 本轮上下文策略\n${contextDecision.instruction}\n\n${historyPlan.instruction}`;
         const commonDynamicParts = [
           webResearchMarkdown ? `## 本轮联网资料\n${webResearchMarkdown}` : "",
@@ -2370,80 +3864,108 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
               ? { ...message, content: appendSystemRules(message.content, selectedSkillsPrompt) }
               : message)
             : messages;
-          let runText = "";
-          let runReasoningContent = "";
-          const agentErrorBox: { current: Error | null } = { current: null };
           if (optionsForRun.statusText) {
             if (isCurrentRun()) setStreamingContent(capturedConvId, optionsForRun.statusText);
           }
-          const record = await new AgentRunner().run(
+          return runOutlineAttemptWithReasoningRetry(
             agentConfig,
-            registry,
-            runMessages,
-            {
-              onText: (chunk) => {
-                runText += chunk;
-                if (optionsForRun.streamToUser) {
-                  result += chunk;
-                  bestGeneratedText = result;
-                  if (isCurrentRun()) {
+            async (requestOverrides) => {
+              let runText = "";
+              let runReasoningContent = "";
+              const agentErrorBox: { current: Error | null } = { current: null };
+              const record = await new AgentRunner().run(
+                { ...agentConfig, requestOverrides },
+                registry,
+                runMessages,
+                {
+                  onText: (chunk) => {
+                    runText += chunk;
+                    if (optionsForRun.streamToUser) {
+                      result = runText;
+                      bestGeneratedText = result;
+                      if (isCurrentRun()) {
+                        updateOutlineAssistantMessage(convId, assistantId, (message) => ({
+                          ...message,
+                          content: result,
+                        }));
+                      }
+                    }
+                  },
+                  onReasoningToken: (chunk) => {
+                    runReasoningContent += chunk;
+                    accumulatedReasoningContent += chunk;
+                  },
+                  onToolCall: () => {},
+                  onToolResult: () => {},
+                  onToolError: () => {},
+                  onToolEvent: (event) => {
+                    if (!isCurrentRun()) return;
+                    if (!historyPlan.showToolProcess) {
+                      hiddenToolCalls = applyAgentToolEvent(hiddenToolCalls, event);
+                      return;
+                    }
                     updateOutlineAssistantMessage(convId, assistantId, (message) => ({
                       ...message,
-                      content: result,
+                      agentToolCalls: applyAgentToolEvent(
+                        message.agentToolCalls,
+                        event,
+                      ),
                     }));
-                  }
-                }
-              },
-              onReasoningToken: (chunk) => {
-                runReasoningContent += chunk;
-                accumulatedReasoningContent += chunk;
-              },
-              onToolCall: () => {},
-              onToolResult: () => {},
-              onToolError: () => {},
-              onToolEvent: (event) => {
-                if (!isCurrentRun()) return;
-                if (!historyPlan.showToolProcess) {
-                  hiddenToolCalls = applyAgentToolEvent(hiddenToolCalls, event);
-                  return;
-                }
+                  },
+                  onDone: () => {},
+                  onRequestTrace: requestTraceCollector.record,
+                  onError: (error) => {
+                    agentErrorBox.current = error;
+                  },
+                },
+                controller.signal,
+              );
+              providerUsage = addLlmUsage(providerUsage, record.usage);
+              lastProviderUsage = record.lastRequestUsage ?? record.usage ?? lastProviderUsage;
+              if (record.providerRequestCountAvailable === false) {
+                providerRequestCountAvailable = false;
+              } else {
+                llmRequestCount += Math.max(1, record.roundsUsed || 1);
+              }
+              if (memoryDecision === undefined && record.userMemoryDecision !== undefined) {
+                memoryDecision = record.userMemoryDecision;
+              }
+              allToolCalls.push(...record.toolCalls);
+              const agentError = agentErrorBox.current;
+              const errMsg = agentError?.message ?? "";
+              const isLengthTruncated = errMsg.includes("输出被截断") || errMsg.includes("最大输出 token");
+              if (
+                agentError
+                && !isLengthTruncated
+                && !isReasoningOnlyResponseError(agentError)
+              ) {
+                throw agentError;
+              }
+              return {
+                text: runText || record.finalText,
+                record,
+                error: agentError ?? undefined,
+                reasoning_content: runReasoningContent,
+              };
+            },
+            (thoughtText) => {
+              if (controller.signal.aborted || !isCurrentRun()) throw new Error("aborted");
+              if (thoughtText.trim()) {
+                accumulatedReasoningContent = [accumulatedReasoningContent, thoughtText]
+                  .filter((item) => item.trim())
+                  .join("\n\n");
+              }
+              if (optionsForRun.streamToUser) {
+                result = "";
+                bestGeneratedText = "";
                 updateOutlineAssistantMessage(convId, assistantId, (message) => ({
                   ...message,
-                  agentToolCalls: applyAgentToolEvent(
-                    message.agentToolCalls,
-                    event,
-                  ),
+                  content: "",
                 }));
-              },
-              onDone: () => {},
-              onRequestTrace: requestTraceCollector.record,
-              onError: (error) => {
-                agentErrorBox.current = error;
-              },
+              }
+              setStreamingContent(capturedConvId, "模型仅返回思考过程，正在关闭 reasoning 重试...");
             },
-            controller.signal,
           );
-          providerUsage = addLlmUsage(providerUsage, record.usage);
-          lastProviderUsage = record.lastRequestUsage ?? record.usage ?? lastProviderUsage;
-          if (record.providerRequestCountAvailable === false) {
-            providerRequestCountAvailable = false;
-          } else {
-            llmRequestCount += Math.max(1, record.roundsUsed || 1);
-          }
-          if (memoryDecision === undefined && record.userMemoryDecision !== undefined) {
-            memoryDecision = record.userMemoryDecision;
-          }
-          allToolCalls.push(...record.toolCalls);
-          const capturedAgentError = agentErrorBox.current;
-          const errMsg = capturedAgentError?.message ?? "";
-          const isLengthTruncated = errMsg.includes("输出被截断") || errMsg.includes("最大输出 token");
-          if (capturedAgentError && !isLengthTruncated) throw capturedAgentError;
-          return {
-            text: runText || record.finalText,
-            record,
-            error: capturedAgentError ?? undefined,
-            reasoning_content: runReasoningContent,
-          };
         };
 
         const runSingleAgentFallback = async () => {
@@ -2849,6 +4371,11 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           finalText = await runSingleAgentFallback();
         }
 
+        const filteredFinalText = filterOutlineGeneratedContent(finalText);
+        if (filteredFinalText.reasoningOnly) {
+          throw new Error(OUTLINE_REASONING_ONLY_ERROR_MESSAGE);
+        }
+        finalText = filteredFinalText.content;
         if (finalText.trim()) bestGeneratedText = finalText;
         if (!isCurrentRun()) {
           // run 已被停止或替换：跳过后续处理，但已生成的内容仍要写入消息，
@@ -2916,7 +4443,58 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             ...[...missingSkillNames].map((name) => `Skill 缺失（未强制启用）: ${name}`),
           ]),
         );
-        const rawFinalContent = finalText || result || "AI大纲未返回内容。";
+        const filteredRawFinalContent = filterOutlineGeneratedContent(finalText || result);
+        if (filteredRawFinalContent.reasoningOnly) {
+          throw new Error(OUTLINE_REASONING_ONLY_ERROR_MESSAGE);
+        }
+        const rawFinalContent = filteredRawFinalContent.content || "AI大纲未返回内容。";
+        /*
+         * 计划模式：与共创同一套容错 —— 协议不合格先补一轮，仍不行就降级成追问，
+         * 绝不把"已经写好的计划"整轮作废（用户口径 2026-10-21）。
+         */
+        const planGate = options.planPhase
+          ? await resolveOutlinePlanProtocol({
+            text: rawFinalContent,
+            module: planTargetModule,
+            required: getOutlinePlanRequiredElements(planTargetModule),
+            llmConfig: effectiveLlmConfig,
+            signal: controller.signal,
+          })
+          : null;
+        const planValidation = planGate?.validation ?? null;
+        const planProtocolNotice = options.planPhase ? planGate?.notice || undefined : undefined;
+        const planProtocolError = options.planPhase && planValidation?.kind === "invalid"
+          ? `计划协议不满足计划模式要求：${planValidation.error}。回复内容已保留，可补一句更具体的需求后重发。`
+          : undefined;
+        // 共创讨论轮里模型有时会直接交付完整大纲而不是讨论协议。命中「已交付」时
+        // 按生成轮处理：不要求 outline_discuss、正文照常显示、结构化数据进保存链路
+        // （提取折叠树 + 弹保存确认），而不是把整轮判成「未返回协议块」连内容一起丢掉。
+        const discussDeliveredOutline = discussPhase
+          ? isDiscussDeliveredOutline(rawFinalContent)
+          : false;
+        const discussProtocolRequired = discussPhase && !discussDeliveredOutline;
+        /*
+         * 共创讨论轮：解析 + 「一次重试 + 降级放行」，统一走 resolveOutlineDiscussProtocol。
+         *
+         * 改造前这里只处理"完全没给协议块"（补协议一轮），校验不过仍然整轮作废 ——
+         * 用户实测：前面问了很多问题，最后因为某个可选项缺失/倾向悬空就报「共创协议格式无效」，
+         * 内容全丢。现在校验不过会再「补齐」一轮；仍不过就把已解析的分歧原样放行，
+         * 只留一句说明，绝不把讨论作废。
+         */
+        const discussGate = discussProtocolRequired
+          ? await resolveOutlineDiscussProtocol({
+            text: rawFinalContent,
+            module: discussModule || "大纲",
+            llmConfig: effectiveLlmConfig,
+            signal: controller.signal,
+          })
+          : { protocol: null, notice: "", error: "" };
+        /** 最终放行的协议：可能是补齐后的，也可能是降级放行的原始协议。 */
+        const discussFinalProtocol = discussGate.protocol;
+        const discussProtocolError = discussProtocolRequired && discussGate.error
+          ? `共创协议格式无效，尚未开始生成：${discussGate.error}`
+          : undefined;
+        const discussProtocolNotice = discussProtocolRequired ? discussGate.notice || undefined : undefined;
         const rawIntentProtocol = parseIntentClarityProtocol(rawFinalContent);
         const nextStepExtraction = extractNextStep(rawFinalContent, {
           allowFallback: options.intentPhase === "generation",
@@ -2945,9 +4523,22 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           },
         );
         if (finalContent.trim()) bestGeneratedText = finalContent;
-        const intentProtocol = rawIntentProtocol.kind !== "none"
+        let intentProtocol = rawIntentProtocol.kind !== "none"
           ? rawIntentProtocol
           : parseIntentClarityProtocol(finalContent);
+        /*
+         * 意图分析：协议缺失或坏掉时先补一轮（转写已有判断）。补不出来就照旧报错，
+         * 但不会再清空气泡 —— 正文由 renderedMarkdownContent 剥掉标记后展示。
+         */
+        if (options.intentPhase === "intent_analysis" && intentProtocol.kind !== "valid") {
+          const intentGate = await resolveIntentClarityProtocol({
+            text: finalContent,
+            module: intentContextsRef.current[capturedConvId]?.title || "",
+            llmConfig: effectiveLlmConfig,
+            signal: controller.signal,
+          });
+          if (intentGate.outcome.kind === "valid") intentProtocol = intentGate.outcome;
+        }
         const intentProtocolError = options.intentPhase === "intent_analysis"
           ? intentProtocol.kind === "invalid"
             ? `意图分析格式无效，尚未开始生成：${intentProtocol.error}`
@@ -2980,12 +4571,51 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
               )
             : [],
           isAgentRunning: false,
-          nextStepRecommendation: intentProtocolError ? null : nextStepExtraction.recommendation,
+          nextStepRecommendation: intentProtocolError || options.planPhase || discussProtocolRequired
+            ? null
+            : nextStepExtraction.recommendation,
           intentProtocolError,
+          // 直接交付了大纲的共创轮按生成轮处理：不带讨论标，正文走正常显示路径。
+          outlineDiscussPhase: discussProtocolRequired ? discussPhase : undefined,
+          outlinePlanProtocol: planValidation && planValidation.kind !== "invalid"
+            ? planValidation.protocol
+            : null,
+          outlinePlanError: planProtocolError,
+          outlinePlanNotice: planProtocolNotice,
+          // 降级放行的协议（校验没过但内容在）同样要出卡片，所以这里不再二次过闸。
+          outlineDiscussProtocol: discussFinalProtocol,
+          outlineDiscussError: discussProtocolError,
+          outlineDiscussNotice: discussProtocolNotice,
         }));
         if (!isCurrentRun()) {
           void useOutlineChatStore.getState().saveToDisk();
           return { started: true, sent: false };
+        }
+
+        // 计划模式阶段机：追问停在 collecting_requirements，计划停在 waiting_user_confirm
+        if (options.planPhase && planValidation) {
+          if (planValidation.kind === "needs_input") {
+            advanceCapturedWorkflowStages(["collecting_requirements"]);
+          } else if (planValidation.kind === "ready") {
+            advanceCapturedWorkflowStages([
+              "sufficiency_check",
+              "generation_plan",
+              "waiting_user_confirm",
+            ]);
+          }
+        }
+        if (discussProtocolRequired && discussFinalProtocol) {
+          // 按协议自报的 status 推进：降级放行时 validate 的结果可能是 invalid，
+          // 但那只是"某一项不达标"，阶段机器不该因此卡死在原地。
+          if (discussFinalProtocol.status === "needs_decision") {
+            advanceCapturedWorkflowStages(["collecting_requirements"]);
+          } else if (discussFinalProtocol.status === "ready") {
+            advanceCapturedWorkflowStages([
+              "sufficiency_check",
+              "generation_plan",
+              "waiting_user_confirm",
+            ]);
+          }
         }
 
         // 解析意图清晰度结果
@@ -3062,8 +4692,18 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             sessionKey: capturedConvId,
           });
         }
-        if (intentProtocol.kind === "none" && !intentProtocolError && !deliverableTruncated) {
-          await handleAutoSaveOutlineRequests(capturedConvId, finalContent, isCurrentRun);
+        // 计划盘点轮、以及「只做讨论」的共创轮只产出协议块，没有可保存正文，不能进保存链路。
+        // 但共创轮若其实直接交付了大纲（discussDeliveredOutline），必须放行——
+        // 否则那份卷纲/章纲的结构化数据既不会被提取成折叠树，也弹不出保存确认，
+        // 用户只能在气泡里看到一坨源码。
+        if (
+          intentProtocol.kind === "none"
+          && !intentProtocolError
+          && !deliverableTruncated
+          && !options.planPhase
+          && !discussProtocolRequired
+        ) {
+          await handleAutoSaveOutlineRequests(capturedConvId, finalContent, isCurrentRun, assistantId);
         }
         if (!isCurrentRun()) return { started: true, sent: false };
         const firstUser = useOutlineChatStore
@@ -3076,16 +4716,14 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
               conversation.id === convId
                 ? {
                     ...conversation,
-                    title:
-                      firstUser.content.slice(0, 20) +
-                      (firstUser.content.length > 20 ? "..." : ""),
+                    title: firstUser.content.slice(0, 50),
                   }
                 : conversation,
             ),
           }));
         }
         void useOutlineChatStore.getState().saveToDisk();
-        setCapturedWorkflowStage("idle");
+        resetCapturedWorkflowStageToIdle();
         finishConversationRun(
           capturedConvId,
           useOutlineChatStore.getState().activeConversationId,
@@ -3099,17 +4737,17 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             systemGenerated: true,
             userMessageVisibility: "internal",
             preferredSkillNames: intentContextsRef.current[capturedConvId]?.skillNames,
-            forceRefresh: true,
           });
         }
         return { started: true, sent: true };
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
+        const errorMsg = friendlyLlmErrorMessage(err instanceof Error ? err.message : String(err));
         const aborted = controller.signal.aborted || errorMsg.toLowerCase().includes("aborted");
         // streamingContents 只承载状态提示，不再存内容；可保留内容唯一来源
         // 是 bestGeneratedText。无论中断原因如何，已生成的内容都必须落进
         // 消息，绝不静默删除整条回复。
-        const partial = bestGeneratedText.trim() ? bestGeneratedText : "";
+        const filteredPartial = filterOutlineGeneratedContent(bestGeneratedText);
+        const partial = filteredPartial.content;
         const reasoningOnlyFailure =
           err instanceof Error && isReasoningOnlyResponseError(err) && Boolean(accumulatedReasoningContent.trim());
         updateOutlineAssistantMessage(convId, assistantId, (message) => ({
@@ -3119,7 +4757,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
               ? `${partial}\n\n---\n\n⚠️ 生成已停止，以上为已生成的内容。`
               : `${partial}\n\n---\n\n⚠️ 生成中断：${errorMsg || "未知错误"}`
             : aborted
-              ? message.content || "已停止生成。"
+              ? filterOutlineGeneratedContent(message.content).content || "已停止生成。"
               : `生成失败：${errorMsg || "未知错误"}`,
           reasoning_content: accumulatedReasoningContent,
           // 模型只输出思考没输出正文时，强制展示思考过程，
@@ -3151,7 +4789,14 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         return { started: true, sent: false };
       } finally {
         outlineConversationRunRegistry.remove(capturedConvId, controller);
-        if (isCurrentRun()) setCapturedWorkflowStage("idle");
+        resetCapturedWorkflowStageToIdle();
+        /*
+         * 丁-4：本轮大纲生成无论成功、抛错还是被中止，都要还原临时角色灵魂绑定。
+         * 绑定是在本 try **之前**写入的，所以必须在这里兜底 —— 漏掉这一句，
+         * 一条「只对这一条消息生效」的绑定会永久留在项目里，静默改变之后所有章节的上下文。
+         * `releaseMessageSoulBinding` 幂等（先把引用置空再动盘），重复调用无害。
+         */
+        await releaseMessageSoulBinding();
       }
     },
     [
@@ -3161,6 +4806,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       novelConfig,
       providerConfigs,
       effectiveOutlineModelId,
+      aiOutlineReasoningDepth,
       activeConv,
       activeConversationId,
       createConversation,
@@ -3175,14 +4821,102 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       finishConversationRun,
       failConversationRun,
       outlineWorkflowStage,
+      requestSoulBindingTarget,
     ],
   );
 
+  // 卷纲内容不完整时的自动补全：由 state 驱动 effect，避免 auto-save 回调与 handleSend 循环引用
+  useEffect(() => {
+    if (!pendingVolumeRepair) return;
+    const repair = pendingVolumeRepair;
+    setPendingVolumeRepair(null);
+    void handleSend(repair.prompt, [], {
+      conversationId: repair.conversationId,
+      systemGenerated: true,
+      userMessageVisibility: "internal",
+      userDisplayText: "（系统提示：卷纲内容不完整，正在自动补全）",
+    });
+  }, [pendingVolumeRepair, handleSend]);
+
+  // 章纲内容不完整时的自动补全：与卷纲同机制，由 state 驱动 effect
+  useEffect(() => {
+    if (!pendingChapterRepair) return;
+    const repair = pendingChapterRepair;
+    setPendingChapterRepair(null);
+    void handleSend(repair.prompt, [], {
+      conversationId: repair.conversationId,
+      systemGenerated: true,
+      userMessageVisibility: "internal",
+      userDisplayText: "（系统提示：章纲内容不完整，正在自动补全）",
+    });
+  }, [pendingChapterRepair, handleSend]);
+
+  // 章纲分批：自动继续生成下一批（每批 3 章）
+  useEffect(() => {
+    if (!pendingChapterBatch) return;
+    const batch = pendingChapterBatch;
+    setPendingChapterBatch(null);
+    void handleSend(batch.prompt, [], {
+      conversationId: batch.conversationId,
+      systemGenerated: true,
+      userMessageVisibility: "internal",
+      userDisplayText: "（系统提示：继续生成下一批章纲）",
+    });
+  }, [pendingChapterBatch, handleSend]);
+
+  // 计划模式统一入口：先把会话推进到要素盘点，再让模型按 outline_plan 协议盘点缺口
+  const startOutlinePlanElementCheck = useCallback(
+    (conversationId: string, input: {
+      module: string;
+      requestHint: string;
+      originalRequest?: string;
+      references?: ReferenceToken[];
+      userDisplayText?: string;
+      clearDraft?: boolean;
+    }) => {
+      if (canTransitionOutlineWorkflow(
+        outlineWorkflowStages[conversationId] ?? "idle",
+        "collecting_requirements",
+      )) {
+        setOutlineWorkflowStages((stages) => (
+          setOutlineSessionValue(stages, conversationId, "collecting_requirements")
+        ));
+      }
+      return handleSend(
+        buildOutlinePlanElementCheckPrompt({
+          module: input.module,
+          requestHint: input.requestHint,
+          originalRequest: input.originalRequest,
+        }),
+        input.references ?? [],
+        {
+          conversationId,
+          planPhase: "element_check",
+          planModule: input.module,
+          systemGenerated: true,
+          clearDraft: input.clearDraft,
+          userDisplayText: input.userDisplayText,
+          preferredSkillNames: getOutlineSkillNames(input.module || input.requestHint),
+        },
+      );
+    },
+    [handleSend, outlineWorkflowStages],
+  );
+
+  const insertOutlineGenerationCommand = useCallback((title: string) => {
+    setInputValue((current) => {
+      const withoutSlash = current.endsWith("/") ? current.slice(0, -1) : current;
+      const separator = withoutSlash && !/\s$/.test(withoutSlash) ? " " : "";
+      return `${withoutSlash}${separator}/${title} `;
+    });
+  }, []);
+
   const handleGenerateSection = useCallback(
-    (title: string, requestHint: string) => {
+    (title: string, requestHint: string, displayText?: string) => {
       const capturedConvId = activeConversationId ?? createConversation();
       const config = OUTLINE_SECTION_GENERATION_CONFIGS.find(c => c.title === title);
-      const fastMode = resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode) === "fast";
+      const outlineMode = resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode);
+      const fastMode = outlineMode === "fast";
       intentContextsRef.current = setOutlineSessionValue(intentContextsRef.current, capturedConvId, {
         title,
         hint: requestHint,
@@ -3194,7 +4928,24 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           conversationId: capturedConvId,
           intentPhase: "generation",
           systemGenerated: true,
-          userDisplayText: `生成${title}`,
+          userDisplayText: displayText ?? `生成${title}`,
+        });
+        return;
+      }
+      if (outlineMode === "discuss") {
+        void handleSend(buildOutlineDiscussionPrompt(title, requestHint), [], {
+          conversationId: capturedConvId,
+          systemGenerated: true,
+          userDisplayText: displayText ?? `讨论${title}`,
+          preferredSkillNames: getOutlineSkillNames(title),
+        });
+        return;
+      }
+      if (outlineMode === "plan") {
+        void startOutlinePlanElementCheck(capturedConvId, {
+          module: title,
+          requestHint,
+          userDisplayText: displayText ?? `生成${title}`,
         });
         return;
       }
@@ -3206,18 +4957,63 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         conversationId: capturedConvId,
         intentPhase: "intent_analysis",
         systemGenerated: true,
-        forceRefresh: true,
-        userDisplayText: `生成${title}`,
+        userDisplayText: displayText ?? `生成${title}`,
       });
     },
-    [activeConversationId, createConversation, handleSend, outlineWorkflowStages],
+    [
+      activeConversationId,
+      createConversation,
+      handleSend,
+      outlineWorkflowStages,
+      startOutlinePlanElementCheck,
+    ],
   );
 
   const handleDirectSubmit = useCallback(
     async (text: string, references: ReferenceToken[] = []) => {
-      if (resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode) === "fast") {
+      const command = text.trim().match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/);
+      const commandConfig = command
+        ? OUTLINE_SECTION_GENERATION_CONFIGS.find((config) => config.title === command[1])
+        : undefined;
+      if (commandConfig) {
+        const userIdea = command?.[2]?.trim() ?? "";
+        const request = [commandConfig.requestHint, userIdea ? `用户补充想法：${userIdea}` : ""]
+          .filter(Boolean)
+          .join("\n");
+        return handleGenerateSection(commandConfig.title, request, text.trim());
+      }
+      const outlineMode = resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode);
+      // 共创模式不进意图分析和要素盘点：讨论轮自动上 discussPhase，短确认句走定稿生成
+      if (outlineMode === "fast") {
         return handleSend(text, references);
       }
+      if (outlineMode === "discuss") {
+        if (isOutlineDiscussFinalizeRequest(text)) {
+          const conversation = useOutlineChatStore.getState().conversations
+            .find((item) => item.id === (activeConversationId ?? ""));
+          const latest = conversation
+            ? findLatestOutlineDiscussProtocol(conversation.messages)
+            : null;
+          return handleSend(
+            latest
+              ? buildOutlineDiscussExecutionPrompt({
+                module: latest.module,
+                judgment: latest.judgment,
+                agreed: latest.agreed,
+              })
+              : text,
+            references,
+            {
+              intentPhase: "generation",
+              systemGenerated: Boolean(latest),
+              userDisplayText: text,
+              userMessageVisibility: latest ? "internal" : "visible",
+            },
+          );
+        }
+        return handleSend(text, references);
+      }
+      // 非生成类输入在计划模式下也照旧直接问答，不进要素盘点
       const directRequest = classifyDirectOutlineGenerationRequest(text);
       if (!directRequest) return handleSend(text, references);
 
@@ -3229,6 +5025,15 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         references: [...references],
         skillNames: getOutlineSkillNames(directRequest.module || text),
       });
+      if (outlineMode === "plan") {
+        return startOutlinePlanElementCheck(capturedConvId, {
+          module: directRequest.module,
+          requestHint: text.trim(),
+          originalRequest: text.trim(),
+          references,
+          userDisplayText: text,
+        });
+      }
       if (canTransitionOutlineWorkflow(outlineWorkflowStages[capturedConvId] ?? "idle", "intent_analysis")) {
         setOutlineWorkflowStages((stages) => setOutlineSessionValue(stages, capturedConvId, "intent_analysis"));
       }
@@ -3237,7 +5042,14 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         intentPhase: "intent_analysis",
       });
     },
-    [activeConversationId, createConversation, handleSend, outlineWorkflowStages],
+    [
+      activeConversationId,
+      createConversation,
+      handleGenerateSection,
+      handleSend,
+      outlineWorkflowStages,
+      startOutlinePlanElementCheck,
+    ],
   );
 
   const handleContinueIntentGeneration = useCallback(
@@ -3273,15 +5085,204 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           systemGenerated: true,
           userMessageVisibility: "internal",
           preferredSkillNames: context.skillNames,
-          forceRefresh: true,
         },
       );
     },
     [activeConversationId, canStartConversationRun, handleSend],
   );
 
+  const markOutlinePlanDecision = useCallback(
+    (
+      conversationId: string,
+      messageId: string,
+      decision: NonNullable<OutlineChatMessage["outlinePlanDecision"]>,
+    ) => {
+      updateOutlineAssistantMessage(conversationId, messageId, (message) => ({
+        ...message,
+        outlinePlanDecision: decision,
+      }));
+      void useOutlineChatStore.getState().saveToDisk();
+    },
+    [],
+  );
+
+  // 追问答案回填：走内部消息重跑要素盘点，累计要素靠对话历史传递
+  const handleSubmitOutlinePlanAnswers = useCallback(
+    async (messageId: string, protocol: OutlinePlanProtocol, answers: OutlinePlanAnswer[]) => {
+      const capturedConvId = activeConversationId;
+      if (!capturedConvId || !canStartConversationRun(capturedConvId)) {
+        toast.info("当前会话正在生成，请等待生成完成后再补充信息。", {
+          dedupeKey: "outline-plan:busy",
+        });
+        return false;
+      }
+      markOutlinePlanDecision(capturedConvId, messageId, "answered");
+      const result = await handleSend(
+        buildOutlinePlanClarifyAnswerPrompt({
+          module: protocol.module,
+          answers,
+          collected: protocol.elements,
+        }),
+        [],
+        {
+          conversationId: capturedConvId,
+          planPhase: "element_check",
+          planModule: protocol.module,
+          systemGenerated: true,
+          clearDraft: false,
+          userMessageVisibility: "internal",
+        },
+      );
+      return result.sent;
+    },
+    [activeConversationId, canStartConversationRun, handleSend, markOutlinePlanDecision],
+  );
+
+  // 确认计划：复用既有 generation 腿，markdown 修复与保存确认零改动
+  const handleConfirmOutlinePlan = useCallback(
+    async (messageId: string, protocol: OutlinePlanProtocol, planText: string) => {
+      const capturedConvId = activeConversationId;
+      if (!capturedConvId || !canStartConversationRun(capturedConvId)) {
+        toast.info("当前会话正在生成，请等待生成完成后再确认计划。", {
+          dedupeKey: "outline-plan:busy",
+        });
+        return false;
+      }
+      markOutlinePlanDecision(capturedConvId, messageId, "confirmed");
+      setOutlineWorkflowStages((stages) => setOutlineSessionValue(stages, capturedConvId, "idle"));
+      const intentContext = intentContextsRef.current[capturedConvId];
+      // 计划模式的正文生成提示默认不含分项输出规则；设定类分项补上，
+      // 让 AI 一并产出该分项的结构化数据与专属 HTML 契约（卷纲/章纲有各自的 JSON 契约与分批规则，追加会冲突，故不在此补）。
+      const planModuleRules = resolveSettingSpecByTitle(protocol.module)
+        ? getOutlineSectionOutputRules(protocol.module)
+        : "";
+      const result = await handleSend(
+        [
+          buildOutlinePlanExecutionPrompt({
+            module: protocol.module,
+            planText,
+            elements: protocol.elements,
+          }),
+          planModuleRules,
+        ].filter(Boolean).join("\n"),
+        intentContext?.references ?? [],
+        {
+          conversationId: capturedConvId,
+          intentPhase: "generation",
+          systemGenerated: true,
+          clearDraft: false,
+          userMessageVisibility: "internal",
+          enableMultiAgent: (protocol.plan?.files.length ?? 0) > 1,
+          preferredSkillNames: intentContext?.skillNames
+            ?? getOutlineSkillNames(protocol.module),
+        },
+      );
+      return result.sent;
+    },
+    [activeConversationId, canStartConversationRun, handleSend, markOutlinePlanDecision],
+  );
+
+  const handleCancelOutlinePlan = useCallback(
+    (messageId: string) => {
+      const capturedConvId = activeConversationId;
+      if (!capturedConvId) return;
+      markOutlinePlanDecision(capturedConvId, messageId, "cancelled");
+      setOutlineWorkflowStages((stages) => setOutlineSessionValue(stages, capturedConvId, "idle"));
+    },
+    [activeConversationId, markOutlinePlanDecision],
+  );
+
+  const markOutlineDiscussDecision = useCallback(
+    (
+      conversationId: string,
+      messageId: string,
+      decision: NonNullable<OutlineChatMessage["outlineDiscussDecision"]>,
+    ) => {
+      updateOutlineAssistantMessage(conversationId, messageId, (message) => ({
+        ...message,
+        outlineDiscussDecision: decision,
+      }));
+      void useOutlineChatStore.getState().saveToDisk();
+    },
+    [],
+  );
+
+  const handleSubmitOutlineDiscussAnswers = useCallback(
+    async (messageId: string, protocol: OutlineDiscussProtocol, answers: OutlineDiscussAnswer[]) => {
+      const capturedConvId = activeConversationId;
+      if (!capturedConvId || !canStartConversationRun(capturedConvId)) {
+        toast.info("当前会话正在生成，请等待生成完成后再拍板。", {
+          dedupeKey: "outline-discuss:busy",
+        });
+        return false;
+      }
+      markOutlineDiscussDecision(capturedConvId, messageId, "answered");
+      const result = await handleSend(
+        buildOutlineDiscussAnswerPrompt({
+          module: protocol.module,
+          answers,
+          agreed: protocol.agreed,
+        }),
+        [],
+        {
+          conversationId: capturedConvId,
+          systemGenerated: true,
+          clearDraft: false,
+          userMessageVisibility: "internal",
+        },
+      );
+      return result.sent;
+    },
+    [activeConversationId, canStartConversationRun, handleSend, markOutlineDiscussDecision],
+  );
+
+  const handleConfirmOutlineDiscuss = useCallback(
+    async (messageId: string, protocol: OutlineDiscussProtocol) => {
+      const capturedConvId = activeConversationId;
+      if (!capturedConvId || !canStartConversationRun(capturedConvId)) {
+        toast.info("当前会话正在生成，请等待生成完成后再确认定稿。", {
+          dedupeKey: "outline-discuss:busy",
+        });
+        return false;
+      }
+      markOutlineDiscussDecision(capturedConvId, messageId, "confirmed");
+      setOutlineWorkflowStages((stages) => setOutlineSessionValue(stages, capturedConvId, "idle"));
+      const intentContext = intentContextsRef.current[capturedConvId];
+      const result = await handleSend(
+        buildOutlineDiscussExecutionPrompt({
+          module: protocol.module,
+          judgment: protocol.judgment,
+          agreed: protocol.agreed,
+        }),
+        intentContext?.references ?? [],
+        {
+          conversationId: capturedConvId,
+          intentPhase: "generation",
+          systemGenerated: true,
+          clearDraft: false,
+          userMessageVisibility: "internal",
+          preferredSkillNames: intentContext?.skillNames
+            ?? getOutlineSkillNames(protocol.module),
+        },
+      );
+      return result.sent;
+    },
+    [activeConversationId, canStartConversationRun, handleSend, markOutlineDiscussDecision],
+  );
+
   const handleSendMessage = useCallback(
-    async (text: string, options?: { intentPhase?: "intent_analysis" | "generation" | "waiting_user_input"; scope?: string }) => {
+    async (text: string, options?: {
+      intentPhase?: "intent_analysis" | "generation" | "waiting_user_input"
+      scope?: string
+      /**
+       * 「继续」重发时要跟着带过去的事件细纲要求。
+       *
+       * 与「重新生成」同一个理由：要求存在消息上，新消息不会自动继承。
+       * 模型续写时若不再回抄 requirement，扩写提示词里就会缺掉
+       * 「## 用户对本章的要求」—— 用户填的硬要求悄悄失效。
+       */
+      eventOutlineRequirement?: string
+    }) => {
       const capturedConvId = activeConversationId;
       if (!capturedConvId) {
         toast.info("当前没有可用的大纲会话，请先新建会话。", { dedupeKey: "outline-next-step:no-conversation" });
@@ -3321,7 +5322,6 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             systemGenerated: true,
             userMessageVisibility: "internal",
             preferredSkillNames: intentContext.skillNames ?? getOutlineSkillNames(intentContext.title || scope),
-            forceRefresh: true,
           });
           if (result.sent) {
             if (shouldClearOutlineReferences({
@@ -3337,7 +5337,14 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           }
         } else {
           const references = outlineReferenceTokens;
-          const result = await handleSend(text, references, { conversationId: capturedConvId, intentPhase: options?.intentPhase, clearDraft: false });
+          const result = await handleSend(text, references, {
+            conversationId: capturedConvId,
+            intentPhase: options?.intentPhase,
+            clearDraft: false,
+            ...(options?.eventOutlineRequirement
+              ? { eventOutlineRequirement: options.eventOutlineRequirement }
+              : {}),
+          });
           if (result.sent) {
             if (shouldClearOutlineReferences({
               invocationConversationId: capturedConvId,
@@ -3378,6 +5385,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       if (effectiveOutlineModelId) {
         effectiveLlmConfig = resolveModelConfig(effectiveOutlineModelId, effectiveLlmConfig, providerConfigs);
       }
+      // Resuming picks up a generation run, so it takes the footer depth.
+      effectiveLlmConfig = applyReasoningDepth(effectiveLlmConfig, aiOutlineReasoningDepth);
       const effectiveModelId = effectiveOutlineModelId || effectiveLlmConfig.model || "";
       if (!hasUsableLlm(effectiveLlmConfig, providerConfigs)) {
         toast.error("请先在设置中配置并选择一个可用的 AI 模型。");
@@ -3505,7 +5514,6 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             registry: r,
           };
         };
-
         // 更新状态为续传运行中
         updateOutlineMultiAgentRun(capturedConvId, messageId, (run) => run ? ({
           ...run,
@@ -3719,7 +5727,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         clearStreamingContent(capturedConvId);
       }
     },
-    [project, activeConversationId, llmConfig, novelConfig, effectiveOutlineModelId, providerConfigs, outlineWritingSkills, startConversationRun, stopConversationRun, clearStreamingContent, setConversationContextSummary],
+    [project, activeConversationId, llmConfig, novelConfig, effectiveOutlineModelId, aiOutlineReasoningDepth, providerConfigs, outlineWritingSkills, startConversationRun, stopConversationRun, clearStreamingContent, setConversationContextSummary],
   );
 
   const handleFocusInput = useCallback(() => {
@@ -3732,8 +5740,179 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
   }, []);
 
   const handleSubmitOutlineWizard = useCallback(
-    (request: OutlineWizardRequest) => {
-      const fastMode = resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode) === "fast";
+    async (request: OutlineWizardRequest) => {
+      /*
+       * 新手引导：走**本地示例大纲**，完全不请求模型。
+       *
+       * 引导要让一个还没拿到 API 密钥的人也能跑完「提交需求 → 得到大纲 → 保存」。
+       * 所以这里在调用任何模型之前短路：把内置的一份完整卷纲 Markdown 当成
+       * assistant 消息写进当前会话，后续的展示、保存、校验全部复用真实链路
+       * （用户点的「保存为大纲」仍然会真的写文件）。
+       *
+       * 只判定「引导进行中」，不判定别的条件：正式写作时即使用户没配模型，
+       * 也应该看到真实的报错，而不是悄悄塞一份假大纲。
+       */
+      if (useGuideStore.getState().status === "running") {
+        const novel = readGuideDemoNovel() ?? pickGuideDemoNovel()
+        rememberGuideDemoNovel(novel)
+        const conversationId = activeConversationId ?? createConversation()
+        const now = Date.now()
+        const userText = request.inspiration.trim() || `按示例需求生成一版《${novel.name}》的完整大纲`
+        addMessage(conversationId, {
+          id: `guide-demo-user-${now}`,
+          role: "user",
+          content: userText,
+          timestamp: now,
+        })
+        addMessage(conversationId, {
+          id: `guide-demo-outline-${now}`,
+          role: "assistant",
+          content: [
+            buildGuideDemoOutlineMarkdown(novel),
+            "",
+            "---",
+            "",
+            "> 这份大纲来自**引导内置内容**，没有调用模型、没有消耗 Token。",
+            "> 点下方的「保存为大纲」就会真正写进这本书的 `wiki/outlines/`；想改成自己的故事，直接在这段文字上改。",
+          ].join("\n"),
+          timestamp: now + 1,
+        })
+        setSaveStatus("已生成示例大纲（未调用模型）。点消息下方的「保存为大纲」写入小说。")
+        void useOutlineChatStore.getState().saveToDisk()
+        return
+      }
+      // 同人创作先把原作素材编译成持久正典：超长原作会被分片压缩成证据包，
+      // 而不是把几十万字原样塞进提示词。编译后的正典同时落盘到
+      // .novel/fanfic-canon.md，供后续正文生成的上下文包按固定路径读取。
+      if (isFanficRequest(request)) {
+        const fanficProjectPath = project?.path ? normalizePath(project.path) : "";
+        const material = (request.fanficSourceMaterial ?? "").trim();
+        if (request.fanficReuseCanon && !material) {
+          // 复用已落盘正典：不再跑一遍分片编译，直接读文件喂给提示词。
+          // 这是持久化正典的主要收益——第二次生成大纲不必重贴几十万字、
+          // 也不必再付一次几十次 LLM 调用。
+          try {
+            // 注意用 loadFanficCanon + strip 而不是 loadFanficCanonBody：
+            // 后者会截到 8000 字给上下文包用，大纲提示词要完整的正典正文。
+            const existing = stripFanficCanonFrontmatter(
+              await loadFanficCanon(fanficProjectPath),
+            );
+            if (!existing) {
+              toast.error("没有找到可复用的原作正典，请粘贴原作素材后重试。", {
+                dedupeKey: "outline-fanfic-canon-reuse:missing",
+              });
+              return;
+            }
+            request = { ...request, fanficSourceMaterial: existing };
+            toast.success("已复用项目里已有的原作正典。", {
+              dedupeKey: "outline-fanfic-canon-reuse:done",
+            });
+          } catch (error) {
+            toast.error(
+              error instanceof Error ? error.message : "复用原作正典失败，请重试。",
+              { dedupeKey: "outline-fanfic-canon-reuse:error" },
+            );
+            return;
+          }
+        } else if (fanficProjectPath) {
+          toast.info("正在编译原作正典…", {
+            dedupeKey: "outline-fanfic-canon-compile:start",
+          });
+          try {
+            const compiled = await compileFanficCanon({
+              projectPath: fanficProjectPath,
+              sourceMaterial: request.fanficSourceMaterial ?? "",
+              sourceName: (request.fanficSourceName ?? "").trim(),
+              mode: resolveFanficMode(request),
+              allowedDeviations: resolveFanficDeviations(request),
+              // 分片编译可能持续很久，把进度透出给用户；每条进度只提示一次。
+              onProgress: (message) => {
+                toast.info(message, { dedupeKey: `outline-fanfic-canon-compile:${message}` });
+              },
+            });
+            // 用编译后的正典替换原始素材：提示词只带证据包，不带原文。
+            request = {
+              ...request,
+              fanficSourceMaterial: stripFanficCanonFrontmatter(compiled.document),
+            };
+            toast.success(
+              compiled.compiled
+                ? `原作正典已编译（${compiled.chunkCount} 个片段）并保存到 .novel/fanfic-canon.md`
+                : "原作正典已编译并保存到 .novel/fanfic-canon.md",
+              { dedupeKey: "outline-fanfic-canon-compile:done" },
+            );
+          } catch (error) {
+            toast.error(
+              error instanceof Error ? error.message : "原作正典编译失败，请重试。",
+              { dedupeKey: "outline-fanfic-canon-compile:error" },
+            );
+            return;
+          }
+        }
+      }
+      const outlineMode = resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode);
+      const fastMode = outlineMode === "fast";
+      // 原创作品如果还留着上一轮同人创作的正典，它仍会参与正文生成，
+      // 让模型把一部外部原作当成权威。这里只提示、不擅自删文件。
+      if (!isFanficRequest(request) && project?.path) {
+        const canonPath = fanficCanonPath(normalizePath(project.path));
+        try {
+          if (await fileExists(canonPath)) {
+            toast.info(
+              `本项目已存在同人正典，它仍会参与正文生成。若本作是原创作品，请删除 ${canonPath}`,
+              { dedupeKey: "outline-stale-fanfic-canon" },
+            );
+          }
+        } catch {
+          // 探测失败不影响生成
+        }
+      }
+      if (outlineMode === "discuss") {
+        // 共创模式把向导需求当讨论起点：先对齐方案再产出，不直接开写
+        const capturedConvId = activeConversationId ?? createConversation();
+        const wizardPrompt = buildOutlineWizardPrompt(request, { mode: "standard" });
+        const module = request.targets[0] || "完整新书规划";
+        intentContextsRef.current = setOutlineSessionValue(intentContextsRef.current, capturedConvId, {
+          title: module,
+          hint: wizardPrompt,
+          originalRequest: request.inspiration.trim(),
+          references: [...outlineReferenceTokensRef.current],
+          skillNames: getOutlineWizardSkillNames(request),
+        });
+        void handleSend(
+          buildOutlineDiscussionPrompt(module, wizardPrompt, request.inspiration.trim()),
+          outlineReferenceTokensRef.current,
+          {
+            conversationId: capturedConvId,
+            disableWriteTools: true,
+            preferredSkillNames: getOutlineWizardSkillNames(request),
+            systemGenerated: true,
+            userDisplayText: createNovelGenerationRequestPackage(request, wizardPrompt).summary,
+          },
+        );
+        return;
+      }
+      if (outlineMode === "plan") {
+        // 计划模式不直接短路到生成：向导需求先当作要素输入做盘点
+        const capturedConvId = activeConversationId ?? createConversation();
+        const wizardPrompt = buildOutlineWizardPrompt(request, { mode: "standard" });
+        const module = request.targets[0] || "完整新书规划";
+        intentContextsRef.current = setOutlineSessionValue(intentContextsRef.current, capturedConvId, {
+          title: module,
+          hint: wizardPrompt,
+          originalRequest: request.inspiration.trim(),
+          references: [...outlineReferenceTokensRef.current],
+          skillNames: getOutlineWizardSkillNames(request),
+        });
+        void startOutlinePlanElementCheck(capturedConvId, {
+          module,
+          requestHint: wizardPrompt,
+          originalRequest: request.inspiration.trim(),
+          references: outlineReferenceTokensRef.current,
+          userDisplayText: createNovelGenerationRequestPackage(request, wizardPrompt).summary,
+        });
+        return;
+      }
       const modelContent = fastMode
         ? buildOutlineWizardPrompt(request, { mode: "fast" })
         : buildOutlineWizardMultiAgentPrompt(request);
@@ -3746,7 +5925,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         systemGenerated: true,
       });
     },
-    [handleSend],
+    [activeConversationId, addMessage, createConversation, handleSend, startOutlinePlanElementCheck, project],
   );
 
   const handleStop = useCallback(() => {
@@ -3765,6 +5944,40 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     stopConversationRun,
   ]);
 
+  /**
+   * 「继续」：上一条大纲回复被用户手动停止后，保留已生成的内容接着往下写。
+   *
+   * 与「重试」（handleRegenerate，会从这条消息起整条重发）的分工：
+   * 继续不动已有内容，只是把"接着写"作为新一轮用户请求发出去，
+   * 模型在会话历史里看得到已经生成的那半截，于是从断点续写。
+   * 提示词与章节面板共用同一个常量，两侧「继续」的含义一致。
+   *
+   * 要求（eventOutlineRequirement）必须从被停止的那条消息上取过来：
+   * 它挂在消息本身，新一轮不会自动继承。若续写时模型不再回抄 requirement，
+   * 卡片后续的「用这份细纲写这一章」就会缺掉「## 用户对本章的要求」——
+   * 与「重新生成」修的是同一个洞，两条重发路径都要堵。
+   */
+  const handleContinueStopped = useCallback(async (eventOutlineRequirement?: string) => {
+    if (isStreaming) return;
+    await handleSendMessage(CONTINUE_STOPPED_GENERATION_PROMPT, {
+      ...(eventOutlineRequirement ? { eventOutlineRequirement } : {}),
+    });
+  }, [handleSendMessage, isStreaming]);
+
+  /**
+   * 「继续」：上一条大纲回复**生成失败**后，保留已生成的内容接着往下写。
+   *
+   * 与 handleContinueStopped 的差别只有提示词（失败有一种"一个字都没产出"
+   * 的形态，那时要整份重来而不是接着写）。eventOutlineRequirement 同样要从
+   * 失败的那条消息上抄过来，否则续写出来的细纲卡片会缺掉「用户对本章的要求」。
+   */
+  const handleContinueFailed = useCallback(async (eventOutlineRequirement?: string) => {
+    if (isStreaming) return;
+    await handleSendMessage(FAILED_GENERATION_CONTINUE_PROMPT, {
+      ...(eventOutlineRequirement ? { eventOutlineRequirement } : {}),
+    });
+  }, [handleSendMessage, isStreaming]);
+
   const handleRegenerate = useCallback(
     async (msgIndex: number) => {
       if (!project || isStreaming || !activeConversationId) return;
@@ -3781,6 +5994,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           providerConfigs,
         );
       }
+      // Regenerating replays a generation turn, so it takes the footer depth.
+      effectiveLlmConfig = applyReasoningDepth(effectiveLlmConfig, aiOutlineReasoningDepth);
       const effectiveModelId = effectiveOutlineModelId || effectiveLlmConfig.model || "";
       if (!hasUsableLlm(effectiveLlmConfig, providerConfigs)) {
         addMessage(activeConversationId, {
@@ -3788,6 +6003,17 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           role: "assistant",
           content:
             "请先在设置中配置并选择一个可用的 AI 模型，或在下方模型选择器中选择模型后再试。",
+        });
+        return;
+      }
+      // 与上面首次发送同一套判定（重试/续写同样不能在无工具时跑，
+      // 否则会把上一轮"看起来成功、文件没变"的状态再复制一遍）。
+      if (!isFunctionCallingEnabled(effectiveLlmConfig)) {
+        addMessage(activeConversationId, {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content:
+            "当前供应商已关闭「启用 Function Calling」，AI 大纲需要工具调用才能把结果写入大纲文件。请到设置 → 模型设置中打开该开关，或更换支持工具调用的模型。",
         });
         return;
       }
@@ -3823,7 +6049,9 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       if (
         regenerateAsIntentAnalysis
         && precedingUserMessage
-        && resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode) !== "fast"
+        && !["fast", "discuss"].includes(
+          resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode),
+        )
       ) {
         const precedingUserContent = getOutlineMessageModelContent(precedingUserMessage);
         const directRequest = classifyDirectOutlineGenerationRequest(precedingUserContent);
@@ -3844,11 +6072,15 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           conversationId: capturedConvId,
           clearDraft: false,
           intentPhase: "intent_analysis",
-          forceRefresh: true,
         });
         return;
       }
       const regenerationIntentPhase = targetAssistantMessage?.intentPhase;
+      const regenerationOutlineMode = resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode);
+      const regenerationDiscussPhase: OutlineDiscussPhase | undefined =
+        regenerationOutlineMode === "discuss" && regenerationIntentPhase !== "generation"
+          ? "decision"
+          : undefined;
       const runId = crypto.randomUUID();
       if (!startConversationRun(capturedConvId, runId)) return;
       const controller = new AbortController();
@@ -3923,6 +6155,12 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           isAgentRunning: true,
           contextHubSnapshot,
           intentPhase: regenerationIntentPhase,
+          outlineDiscussPhase: regenerationDiscussPhase,
+          // 重发的是同一条请求：要求跟着新消息走，否则「重新生成」之后
+          // 扩写提示词里就再也不会出现「## 用户对本章的要求」。
+          ...(targetAssistantMessage?.eventOutlineRequirement
+            ? { eventOutlineRequirement: targetAssistantMessage.eventOutlineRequirement }
+            : {}),
         });
         assistantAdded = true;
 
@@ -3931,14 +6169,19 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         );
         const soulDoc = await readSoulDoc(project.path).catch(() => "");
         const registry = new ToolRegistry();
+        const regenerationDiscussModule = regenerationDiscussPhase
+          ? (intentContextsRef.current[capturedConvId]?.title || "大纲")
+          : undefined;
         const baseSystemPrompt = buildOutlineAgentSystemPrompt({
           projectName: project.name,
-          mode: resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode),
+          mode: regenerationOutlineMode,
+          discussModule: regenerationDiscussModule,
         });
         const legacySystemPrompt = buildOutlineAgentSystemPrompt({
           projectName: project.name,
-          mode: resolveOutlineWorkflowMode(useWikiStore.getState().outlineWorkflowMode),
+          mode: regenerationOutlineMode,
           soulDoc,
+          discussModule: regenerationDiscussModule,
         });
         const regenerationPhaseRules = buildIntentPhaseSystemRules(regenerationIntentPhase);
         const regenerationContext = intentContextsRef.current[capturedConvId];
@@ -4001,71 +6244,110 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           userMemoryProjectKey: normalizePath(project.path),
           userMemorySessionKey: capturedConvId,
         };
-        let agentError: Error | null = null;
-        const record = await new AgentRunner().run(
+        const regenerationMessages: AgentMessage[] = [
+          { role: "system", content: systemContent },
+          ...historyMessages,
+          { role: "user", content: lastUserRequest },
+        ];
+        const regenerationRecords: AgentRunRecord[] = [];
+        const regenerationRun = await runOutlineAttemptWithReasoningRetry(
           agentConfig,
-          registry,
-          [
-            { role: "system", content: systemContent },
-            ...historyMessages,
-            { role: "user", content: lastUserRequest },
-          ],
-          {
-            onText: (chunk) => {
-              result += chunk;
-              if (isCurrentRun()) {
-                updateOutlineAssistantMessage(
-                  capturedConvId,
-                  assistantId,
-                  (message) => ({
-                    ...message,
-                    content: result,
-                  }),
-                );
-              }
-            },
-            onReasoningToken: (chunk) => {
-              accumulatedReasoningContent += chunk;
-            },
-            onToolCall: () => {},
-            onToolResult: () => {},
-            onToolError: () => {},
-            onToolEvent: (event) => {
-              if (!isCurrentRun()) return;
-              updateOutlineAssistantMessage(
-                capturedConvId,
-                assistantId,
-                (message) => ({
-                  ...message,
-                  agentToolCalls: applyAgentToolEvent(
-                    message.agentToolCalls,
-                    event,
-                  ),
-                }),
-              );
-            },
-            onDone: () => {
-              if (!isCurrentRun()) return;
-              updateOutlineAssistantMessage(
-                capturedConvId,
-                assistantId,
-                (message) => ({
-                  ...message,
-                  reasoning_content: accumulatedReasoningContent,
-                  agentToolCalls: settleRunningAgentToolCalls(
-                    message.agentToolCalls,
-                  ),
-                  isAgentRunning: false,
-                }),
-              );
-            },
-            onError: (error) => {
-              agentError = error;
-            },
+          async (requestOverrides) => {
+            let runText = "";
+            const agentErrorBox: { current: Error | null } = { current: null };
+            const attemptRecord = await new AgentRunner().run(
+              { ...agentConfig, requestOverrides },
+              registry,
+              regenerationMessages,
+              {
+                onText: (chunk) => {
+                  runText += chunk;
+                  result = runText;
+                  if (isCurrentRun()) {
+                    updateOutlineAssistantMessage(
+                      capturedConvId,
+                      assistantId,
+                      (message) => ({
+                        ...message,
+                        content: result,
+                      }),
+                    );
+                  }
+                },
+                onReasoningToken: (chunk) => {
+                  accumulatedReasoningContent += chunk;
+                },
+                onToolCall: () => {},
+                onToolResult: () => {},
+                onToolError: () => {},
+                onToolEvent: (event) => {
+                  if (!isCurrentRun()) return;
+                  updateOutlineAssistantMessage(
+                    capturedConvId,
+                    assistantId,
+                    (message) => ({
+                      ...message,
+                      agentToolCalls: applyAgentToolEvent(
+                        message.agentToolCalls,
+                        event,
+                      ),
+                    }),
+                  );
+                },
+                onDone: () => {},
+                onError: (error) => {
+                  agentErrorBox.current = error;
+                },
+              },
+              controller.signal,
+            );
+            regenerationRecords.push(attemptRecord);
+            const agentError = agentErrorBox.current;
+            if (agentError && !isReasoningOnlyResponseError(agentError)) throw agentError;
+            return {
+              text: runText || attemptRecord.finalText,
+              record: attemptRecord,
+              error: agentError ?? undefined,
+            };
           },
-          controller.signal,
+          (thoughtText) => {
+            if (controller.signal.aborted || !isCurrentRun()) throw new Error("aborted");
+            if (thoughtText.trim()) {
+              accumulatedReasoningContent = [accumulatedReasoningContent, thoughtText]
+                .filter((item) => item.trim())
+                .join("\n\n");
+            }
+            result = "";
+            updateOutlineAssistantMessage(capturedConvId, assistantId, (message) => ({
+              ...message,
+              content: "",
+              isAgentRunning: true,
+            }));
+            setStreamingContent(capturedConvId, "模型仅返回思考过程，正在关闭 reasoning 重试...");
+          },
         );
-        if (agentError) throw agentError;
+        if (regenerationRun.error) throw regenerationRun.error;
+        const record: AgentRunRecord = {
+          ...regenerationRun.record,
+          finalText: regenerationRun.text,
+          usage: regenerationRecords.reduce<LlmUsage | undefined>(
+            (usage, item) => addLlmUsage(usage, item.usage),
+            undefined,
+          ),
+          roundsUsed: regenerationRecords.reduce((total, item) => total + Math.max(1, item.roundsUsed || 1), 0),
+          toolCalls: regenerationRecords.flatMap((item) => item.toolCalls),
+          requestTraces: regenerationRecords.flatMap((item) => item.requestTraces ?? []),
+          omittedRequestTraceCount: regenerationRecords.reduce(
+            (total, item) => total + (item.omittedRequestTraceCount ?? 0),
+            0,
+          ),
+          providerRequestCountAvailable: regenerationRecords.every(
+            (item) => item.providerRequestCountAvailable !== false,
+          ),
+          userMemoryDecision: regenerationRecords.find(
+            (item) => item.userMemoryDecision !== undefined,
+          )?.userMemoryDecision,
+        };
         if (!isCurrentRun()) return;
         if (contextHubResult && (record.usage || record.requestTraces?.length)) {
           try {
@@ -4114,7 +6396,34 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           ...outlineToolCallsToSources(record.toolCalls),
           ...regenerationSkills.missingNames.map((name) => `Skill 缺失（未强制启用）: ${name}`),
         ];
-        const rawRegenerationContent = result || record.finalText || "AI大纲未返回内容。";
+        const filteredRegenerationContent = filterOutlineGeneratedContent(
+          regenerationRun.text || result || record.finalText,
+        );
+        if (filteredRegenerationContent.reasoningOnly) {
+          throw new Error(OUTLINE_REASONING_ONLY_ERROR_MESSAGE);
+        }
+        const rawRegenerationContent = filteredRegenerationContent.content || "AI大纲未返回内容。";
+        // 与首轮一致：共创轮若直接交付了完整大纲，按已交付处理，不要求讨论协议。
+        const regenerationDeliveredOutline = regenerationDiscussPhase
+          ? isDiscussDeliveredOutline(rawRegenerationContent)
+          : false;
+        const regenerationProtocolRequired = regenerationDiscussPhase && !regenerationDeliveredOutline;
+        // 与首轮一致：换一批 / 续跑同样走「一次重试 + 降级放行」。
+        const regenerationDiscussGate = regenerationProtocolRequired
+          ? await resolveOutlineDiscussProtocol({
+            text: rawRegenerationContent,
+            module: regenerationDiscussModule || "大纲",
+            llmConfig: effectiveLlmConfig,
+            signal: controller.signal,
+          })
+          : { protocol: null, notice: "", error: "" };
+        const regenerationFinalProtocol = regenerationDiscussGate.protocol;
+        const regenerationDiscussError = regenerationProtocolRequired && regenerationDiscussGate.error
+          ? `共创协议格式无效，尚未开始生成：${regenerationDiscussGate.error}`
+          : undefined;
+        const regenerationDiscussNotice = regenerationProtocolRequired
+          ? regenerationDiscussGate.notice || undefined
+          : undefined;
         const rawRegenerationIntentProtocol = parseIntentClarityProtocol(rawRegenerationContent);
         const nextStepExtraction = extractNextStep(
           rawRegenerationContent,
@@ -4134,9 +6443,19 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           }),
         });
         if (!isCurrentRun()) return;
-        const regenerationIntentProtocol = rawRegenerationIntentProtocol.kind !== "none"
+        let regenerationIntentProtocol = rawRegenerationIntentProtocol.kind !== "none"
           ? rawRegenerationIntentProtocol
           : parseIntentClarityProtocol(finalContent);
+        // 与首轮一致：意图协议缺失/损坏时先补一轮再判错（正文不再被清空）。
+        if (regenerationIntentPhase === "intent_analysis" && regenerationIntentProtocol.kind !== "valid") {
+          const intentGate = await resolveIntentClarityProtocol({
+            text: finalContent,
+            module: "",
+            llmConfig: effectiveLlmConfig,
+            signal: controller.signal,
+          });
+          if (intentGate.outcome.kind === "valid") regenerationIntentProtocol = intentGate.outcome;
+        }
         const regenerationIntentProtocolError = regenerationIntentPhase === "generation"
           && regenerationIntentProtocol.kind !== "none"
           ? "正文生成阶段返回了 intent_clarity，已阻止重复意图分析和自动循环。"
@@ -4154,8 +6473,16 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             sources,
             agentToolCalls: settleRunningAgentToolCalls(record.toolCalls.length ? record.toolCalls : message.agentToolCalls),
             isAgentRunning: false,
-            nextStepRecommendation: regenerationIntentProtocolError ? null : nextStepExtraction.recommendation,
+            nextStepRecommendation: regenerationIntentProtocolError || regenerationProtocolRequired
+              ? null
+              : nextStepExtraction.recommendation,
             intentProtocolError: regenerationIntentProtocolError,
+            // 直接交付了大纲的共创轮按生成轮处理：不带讨论标，正文走正常显示路径。
+            outlineDiscussPhase: regenerationProtocolRequired ? regenerationDiscussPhase : undefined,
+            // 降级放行的协议也照常出卡片（见首轮同名注释）。
+            outlineDiscussProtocol: regenerationFinalProtocol,
+            outlineDiscussError: regenerationDiscussError,
+            outlineDiscussNotice: regenerationDiscussNotice,
           }),
         );
         setConversationContextSummary(capturedConvId, buildSessionContextSummary({
@@ -4167,8 +6494,12 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           dependencyFingerprint: contextHubResult?.dependencyStamp.fingerprint ?? "",
         }));
         if (!isCurrentRun()) return;
-        if (regenerationIntentProtocol.kind === "none" && !regenerationIntentProtocolError) {
-          await handleAutoSaveOutlineRequests(capturedConvId, finalContent, isCurrentRun);
+        if (
+          regenerationIntentProtocol.kind === "none"
+          && !regenerationIntentProtocolError
+          && !regenerationProtocolRequired
+        ) {
+          await handleAutoSaveOutlineRequests(capturedConvId, finalContent, isCurrentRun, assistantId);
         }
         if (!isCurrentRun()) return;
         clearStreamingContent(capturedConvId);
@@ -4179,17 +6510,17 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         );
         void useOutlineChatStore.getState().saveToDisk();
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
+        const errorMsg = friendlyLlmErrorMessage(err instanceof Error ? err.message : String(err));
         const aborted = controller.signal.aborted || errorMsg.toLowerCase().includes("aborted");
         // 内容唯一存在于消息里（onText 直接写入）。这里只负责收尾：
         // 保留已生成内容、补错误/停止占位、结束消息运行态，绝不删除内容。
         if (assistantAdded) {
           updateOutlineAssistantMessage(capturedConvId, assistantId, (message) => ({
             ...message,
-            content: message.content.trim()
+            content: filterOutlineGeneratedContent(message.content).content.trim()
               ? aborted
-                ? `${message.content}\n\n---\n\n⚠️ 生成已停止，以上为已生成的内容。`
-                : `${message.content}\n\n---\n\n⚠️ 生成中断：${errorMsg || "未知错误"}`
+                ? `${filterOutlineGeneratedContent(message.content).content}\n\n---\n\n⚠️ 生成已停止，以上为已生成的内容。`
+                : `${filterOutlineGeneratedContent(message.content).content}\n\n---\n\n⚠️ 生成中断：${errorMsg || "未知错误"}`
               : aborted
                 ? "已停止生成。"
                 : `生成失败：${errorMsg || "未知错误"}`,
@@ -4231,6 +6562,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       novelConfig,
       providerConfigs,
       effectiveOutlineModelId,
+      aiOutlineReasoningDepth,
       activeConv,
       activeConversationId,
       addMessage,
@@ -4268,8 +6600,13 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
       const capturedConvId = activeConversationId;
       setSaveStatus("");
       try {
+        const filteredOutput = filterOutlineGeneratedContent(content);
+        if (filteredOutput.reasoningOnly || !filteredOutput.content) {
+          toast.error("内容仅包含模型思考过程，无法保存为大纲");
+          return;
+        }
         const built = buildClassifiedOutlineSaveRequest({
-          content,
+          content: filteredOutput.content,
           sourceIntent: "手动保存 AI 大纲结果",
           sourceHint: collectOutlineSaveSourceHint(capturedConvId),
         });
@@ -4282,22 +6619,61 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
         const lastAssistantMsg = [...(currentConv?.messages ?? [])].reverse().find((m) => m.role === "assistant");
         const characterResults = lastAssistantMsg?.characterMultiAgentResults;
 
+        /*
+         * 手动通道的咽喉闸门。必须放在这里，而不是只靠「藏起保存按钮」：
+         * 按钮是靠 extractEventOutlineData 解析成功才隐藏的，而**JSON 围栏被截断时
+         * 解析结果是 null** —— 于是按钮照样显示，用户点下去，这条消息里那个提示词
+         * 强制的「# 事件细纲 · 第N章 …」一级标题正好命中 EVENT_TYPE_MARK，
+         * 最终写进 wiki/outlines/事件细纲/。也就是说：越是在 JSON 坏掉的时候，
+         * 越容易从手动通道漏进去 —— 这恰恰是丙-1 要防的那件事。
+         *
+         * 为什么合法的 17 节章纲在实践中不会被误拦：**只有一条**保护 ——
+         * canonical 的章纲模板里**没有**事件标记
+         * （chapter-outline-template.ts 里 grep 不到「事件细纲/事件清单/事件序列」），
+         * 于是 inferFileTypeFromContent 的事件标记判定不命中，落到章/卷判定。
+         *
+         * ⚠️ 订正一处曾经的误述：这里**不是**「标题 hint 先于正文」。分类链
+         * （outline-save-classifier.ts:187-194）里 `inferFileTypeFromHint(title)`
+         * 是**第 5** 条通道；真正给标题带「章纲」的文档定型的是**第 3** 条
+         * `resolveChapterOrVolumeType(extractDocumentSubject(title, content))`
+         * （它把标题与首个 H1 一起看）。对本例这类标题（如「第一次冷处理」），
+         * 标题通道什么都推不出来（inferFileTypeFromHint 对它返回 null）。
+         *
+         * ⚠️ 这是**当前模板的巧合**，不是结构性保证：`inferFileTypeFromContent` 的
+         * 事件标记判定排在章/卷标记**之前**，所以一份正文里真出现「事件序列」的
+         * 17 节章纲仍会被定型成 event-outline，然后在这里被静默拒掉
+         * —— 正因如此，被拒时必须给出可见反馈（下面的 toast.info），
+         * 不能让用户遇到「点了没反应」。这是已知的假阳性路径，记在实施计划里。
+         */
+        if (isEventOutlineSaveBlocked(built.classification.fileType)) {
+          toast.info("事件细纲只作为对话消息保留，不写入大纲列表。");
+          return;
+        }
+
         if (built.classification.fileType === "character") {
           if (characterResults && characterResults.length > 0) {
-            const characterDrafts: CharacterSaveDraft[] = characterResults.map((r) => ({
-              id: `${r.plan.roleType}:${r.plan.characterName}`,
-              characterName: r.plan.characterName,
-              roleType: r.plan.roleType,
-              fileName: r.fileName,
-              content: r.content,
-              selected: true,
-              confidence: "high",
-            }));
+            const characterDrafts: CharacterSaveDraft[] = characterResults.flatMap((r) => {
+              const filteredCharacter = filterOutlineGeneratedContent(r.content);
+              if (!filteredCharacter.content || filteredCharacter.reasoningOnly) return [];
+              return [{
+                id: `${r.plan.roleType}:${r.plan.characterName}`,
+                characterName: r.plan.characterName,
+                roleType: r.plan.roleType,
+                fileName: r.fileName,
+                content: filteredCharacter.content,
+                selected: true,
+                confidence: "high" as const,
+              }];
+            });
+            if (characterDrafts.length === 0) {
+              toast.error("人物小传仅包含模型思考过程，无法保存");
+              return;
+            }
             presentOrQueueSaveBatch({
               title: "请确认要保存的人物角色",
               mode: "character",
               requests: [],
-              characterDrafts,
+              characterDrafts: enrichCharacterDraftsWithHtml(characterDrafts, filteredOutput.content),
             });
             return;
           }
@@ -4311,7 +6687,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             title: "请确认要保存的人物角色",
             mode: "character",
             requests: [],
-            characterDrafts: extracted.drafts,
+            characterDrafts: enrichCharacterDraftsWithHtml(extracted.drafts, filteredOutput.content),
           });
           return;
         }
@@ -4434,35 +6810,44 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
     ? "大纲 AI 会话最多同时运行 3 个任务，请等待任一任务结束后再发送。"
     : undefined;
 
+  // 需求分析浮层：只认最新一条「需要用户定范围」的助手消息。
+  // 用户选中后会追加新消息，最新一条随之改变，浮层自然收起。
+  const latestMessage = activeMessages[activeMessages.length - 1];
+  const pendingIntentPrompt = !isStreaming
+    && latestMessage?.role === "assistant"
+    && latestMessage.intentClarityResult?.clarity === "needs_input"
+    ? { id: latestMessage.id, result: latestMessage.intentClarityResult }
+    : null;
+  // 关闭状态记在 store 里（按消息 ID）：面板会随功能切换卸载重建，
+  // 组件内 state 会丢，导致「关过了又弹回来」或「误关后彻底不再出现」。
+  const dismissedIntentPromptIds = useOutlineChatStore((s) => s.dismissedIntentPromptIds);
+  const dismissIntentPrompt = useOutlineChatStore((s) => s.dismissIntentPrompt);
+  const [intentOptionEntries, setIntentOptionEntries] = useState<OutlineListEntry[]>([]);
+  const pendingIntentMessageId = pendingIntentPrompt?.id ?? null;
+  // 兜底候选取自磁盘上真实存在的大纲文档；读盘失败就退回缺失项候选，不阻塞浮层。
+  useEffect(() => {
+    if (!pendingIntentMessageId || !project?.path) return;
+    let cancelled = false;
+    void listOutlineEntries(`${normalizePath(project.path)}/wiki/outlines`)
+      .then((entries) => {
+        if (!cancelled) setIntentOptionEntries(entries);
+      })
+      .catch(() => {
+        if (!cancelled) setIntentOptionEntries([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingIntentMessageId, project?.path]);
+
   return (
-    <div className="flex h-full flex-col overflow-hidden border-border bg-background">
+    <div
+      className="relative flex h-full flex-col overflow-hidden border-border bg-background"
+      data-ui-ai-panel="outline"
+    >
       {/* Header with conversation tabs */}
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b bg-muted/20 px-2">
-        <span
-          className="inline-flex shrink-0"
-          title={!canCreateConversation ? EMPTY_CONVERSATION_CREATE_REASON : undefined}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              createConversation();
-            }}
-            className="qmai-new-conversation-button flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-accent/60 text-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
-            disabled={!canCreateConversation}
-            title={canCreateConversation ? "新建大纲对话" : EMPTY_CONVERSATION_CREATE_REASON}
-            aria-label="新建大纲对话"
-            aria-describedby={!canCreateConversation
-              ? "outline-new-conversation-disabled-reason"
-              : undefined}
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </button>
-          {!canCreateConversation && (
-            <span id="outline-new-conversation-disabled-reason" className="sr-only">
-              {EMPTY_CONVERSATION_CREATE_REASON}
-            </span>
-          )}
-        </span>
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b bg-muted/20 px-2" data-ui-ai-header>
+        {<UiTestAiIdentity conversationTitle={activeConv?.title || "大纲对话"} status={<ConversationRunStatusIcon state={runStates[activeConversationId ?? ""]} />} />}
         <div className="flex min-w-0 flex-1 items-center overflow-hidden">
           {topConversations.length > 0 ? (
             <div className="flex min-w-0 flex-1 gap-1.5 overflow-hidden">
@@ -4487,8 +6872,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                     >
                       <ConversationRunStatusIcon state={runStates[conv.id]} />
                       <span className="max-w-[140px] truncate font-medium">{getConversationTabTitle(conv.title, 10)}</span>
-                      <span className="text-[10px] opacity-70">{conv.messages.length}</span>
-                      <span className="text-[10px] opacity-70">{formatOutlineConversationDate(conv.updatedAt)}</span>
+                      <span className="text-[0.625rem] opacity-70">{conv.messages.length}</span>
+                      <span className="text-[0.625rem] opacity-70">{formatOutlineConversationDate(conv.updatedAt)}</span>
                     </button>
                     {hoveredConversationId === conv.id ? (
                       <button
@@ -4504,9 +6889,13 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                 );
               })}
               {outlineWorkflowStage !== "idle" && outlineWorkflowStage !== "saved" ? (
-                <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[0.6875rem] text-muted-foreground">
                   {outlineWorkflowStage === "intent_analysis" ? "意图分析中" :
                    outlineWorkflowStage === "waiting_user_input" ? "等待选择" :
+                   outlineWorkflowStage === "collecting_requirements"
+                     ? outlineWorkflowMode === "discuss" ? "等待拍板" : "收集要素" :
+                   outlineWorkflowStage === "waiting_user_confirm"
+                     ? outlineWorkflowMode === "discuss" ? "等待定稿" : "等待确认计划" :
                    outlineWorkflowStage === "sufficiency_check" ? "生成中" :
                    "处理中"}
                 </span>
@@ -4518,6 +6907,32 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             </span>
           )}
         </div>
+        <div className="qmai-header-actions ml-auto flex shrink-0 items-center">
+        <span
+          className="inline-flex shrink-0"
+          title={!canCreateConversation ? EMPTY_CONVERSATION_CREATE_REASON : undefined}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              createConversation();
+            }}
+            className="qmai-new-conversation-button flex h-7 w-7 shrink-0 items-center justify-center"
+            disabled={!canCreateConversation}
+            title={canCreateConversation ? "新建大纲对话" : EMPTY_CONVERSATION_CREATE_REASON}
+            aria-label="新建大纲对话"
+            aria-describedby={!canCreateConversation
+              ? "outline-new-conversation-disabled-reason"
+              : undefined}
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+          {!canCreateConversation && (
+            <span id="outline-new-conversation-disabled-reason" className="sr-only">
+              {EMPTY_CONVERSATION_CREATE_REASON}
+            </span>
+          )}
+        </span>
         <div className="relative shrink-0" ref={historyRef}>
           <button
             ref={historyButtonRef}
@@ -4529,10 +6944,10 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             aria-expanded={historyOpen}
           >
             <History className="h-3.5 w-3.5" />
-            <span>会话历史</span>
-            {historyCount > 0 ? (
-              <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary/15 px-1 text-[10px] font-medium text-primary">
-                {historyCount}
+            <span>历史大纲对话</span>
+            {menuConversationCount > 0 ? (
+              <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary/15 px-1 text-[0.625rem] font-medium text-primary">
+                {menuConversationCount}
               </span>
             ) : null}
             <ChevronDown className={`h-3 w-3 transition-transform ${historyOpen ? "rotate-180" : ""}`} />
@@ -4543,27 +6958,31 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                   ref={historyDropdownRef}
                   className="fixed z-50 max-h-[60vh] w-72 overflow-y-auto rounded-md border border-border bg-background p-1 shadow-lg"
                   style={historyDropdownStyle}
+                  data-ui-ai-menu="history"
                 >
-                  {historyCount > 0 ? (
+                  {menuConversationCount > 0 ? (
                     <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-2 py-1.5">
-                      <span className="text-xs text-muted-foreground">共 {historyCount} 条</span>
-                      <button
-                        type="button"
-                        aria-label="一键清理会话历史"
-                        onClick={requestClearHistory}
-                        className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs text-destructive hover:bg-destructive/10"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        一键清理
-                      </button>
+                      <span className="text-xs text-muted-foreground">{`全部会话 ${menuConversationCount} 条`}</span>
+                      {historyCount > 0 ? (
+                        <button
+                          type="button"
+                          aria-label="一键清理会话历史"
+                          title={`仅清理 ${historyCount} 条旧会话，保留当前和运行中的会话`}
+                          onClick={requestClearHistory}
+                          className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs text-destructive hover:bg-destructive/10"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          清理旧会话
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
-                  {historyCount === 0 ? (
+                  {menuConversationCount === 0 ? (
                     <div className="px-2 py-3 text-center text-xs text-muted-foreground">
                       暂无历史大纲对话
                     </div>
                   ) : (
-                    historyConversations.map((conv) => (
+                    menuConversations.map((conv) => (
                       <div
                         key={conv.id}
                         className="group flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -4571,8 +6990,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                         <button type="button" onClick={() => setActiveConversation(conv.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left" title={conv.title}>
                           <ConversationRunStatusIcon state={runStates[conv.id]} />
                           <span className="min-w-0 flex-1 truncate font-medium">{getConversationTabTitle(conv.title, 16)}</span>
-                          <span className="shrink-0 text-[10px] opacity-70">{conv.messages.length}</span>
-                          <span className="shrink-0 text-[10px] opacity-70">{formatOutlineConversationDate(conv.updatedAt)}</span>
+                          <span className="shrink-0 text-[0.625rem] opacity-70">{conv.messages.length}</span>
+                          <span className="shrink-0 text-[0.625rem] opacity-70">{formatOutlineConversationDate(conv.updatedAt)}</span>
                         </button>
                         <button type="button" aria-label={`删除大纲会话：${conv.title}`} onClick={() => requestDeleteConversation(conv.id)} className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-destructive">
                           <Trash2 className="h-3 w-3" />
@@ -4585,32 +7004,31 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
               )
             : null}
         </div>
-        <div className="ml-auto flex shrink-0 items-center gap-1">
           <button
             onClick={onClose}
             className="rounded p-1 text-muted-foreground hover:bg-accent"
+            aria-label="关闭大纲助手"
           >
-            <X className="h-3.5 w-3.5" />
+            <X className="h-4 w-4" />
           </button>
         </div>
       </div>
 
       {/* Messages */}
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div className="relative min-h-0 flex-1 overflow-hidden" data-chat-message-region>
         <div
+          data-chat-scroll
           ref={scrollRef}
           className="h-full w-full min-w-0 max-w-full space-y-3 overflow-x-hidden overflow-y-auto px-3 py-2"
         >
         {activeMessages.length === 0 && !isStreaming ? (
-          <p className="text-center text-xs text-muted-foreground py-8">
-            输入关于大纲的问题或指令，AI
-            会基于当前大纲和章节内容进行回答和创作。
-          </p>
+          <UiTestAiEmpty kind="outline" onGenerateOutline={() => setOutlineWizardOpen(true)} generateDisabled={submitDisabled} generateDisabledReason={submitDisabledReason} />
         ) : null}
         {activeMessages.map((msg, i) => isInternalOutlineMessage(msg) ? null : (
           <div
             key={msg.id}
-            className={`flex w-full min-w-0 max-w-full ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+            className={`flex w-full min-w-0 max-w-full ${msg.role === "user" ? "flex-col items-end" : "flex-wrap justify-start"}`}
+            data-ui-ai-message={msg.role}
           >
             <div
               className={`${msg.role === "user" ? "w-fit max-w-full lg:max-w-[50vw]" : "w-full min-w-0 max-w-full"} rounded-lg px-3 py-2 text-sm ${
@@ -4635,7 +7053,14 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                   onRejectTool={handleRejectTool}
                   onSendMessage={handleSendMessage}
                   onContinueIntentGeneration={handleContinueIntentGeneration}
+                  onSubmitPlanAnswers={handleSubmitOutlinePlanAnswers}
+                  onConfirmPlan={handleConfirmOutlinePlan}
+                  onCancelPlan={handleCancelOutlinePlan}
+                  onSubmitDiscussAnswers={handleSubmitOutlineDiscussAnswers}
+                  onConfirmDiscuss={handleConfirmOutlineDiscuss}
                   onResumeMultiAgent={handleResumeMultiAgent}
+                  onContinueStopped={isStreaming ? undefined : () => void handleContinueStopped(msg.eventOutlineRequirement)}
+                  onContinueFailed={isStreaming ? undefined : () => void handleContinueFailed(msg.eventOutlineRequirement)}
                   resumeMultiAgentDisabled={isStreaming}
                   nextStepDisabled={submitDisabled}
                   generationContext={activeMessages.slice(0, i).some((message) => message.role === "user" && Boolean(message.novelGenerationRequest))
@@ -4644,6 +7069,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                     ? "当前会话正在生成，请等待生成完成后再选择下一步。"
                     : submitDisabledReason}
                   onFocusInput={handleFocusInput}
+                  hasEventOutline={Boolean(eventOutlinesByMessageId.get(msg.id))}
                 />
               ) : (
                 <>
@@ -4651,7 +7077,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                     <NovelGenerationRequestMessage request={msg.novelGenerationRequest} />
                   ) : (
                     <span className="block whitespace-pre-wrap break-words">
-                      {msg.content}
+                      {renderOutlineCommandText(msg.content)}
                     </span>
                   )}
                   {msg.attachedReferences &&
@@ -4665,40 +7091,39 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                 </>
               )}
             </div>
+            {/* 事件细纲卡片挂在助手气泡下方：容器是 flex 行，靠 w-full + flex-wrap 换行占满整行，
+                否则会被 w-full 的气泡挤成半宽。 */}
+            {msg.role === "assistant" ? (() => {
+              const eventOutline = eventOutlinesByMessageId.get(msg.id) ?? null;
+              return eventOutline ? (
+                <div className="w-full min-w-0">
+                  <EventOutlineCard
+                    data={eventOutline}
+                    /*
+                     * 交接逻辑抽在 event-outline-handoff.ts：同一张卡片在写作助手
+                     * （chat-message.tsx）里也有一份，两处必须落在同一个输入框上。
+                     */
+                    onWriteChapter={handoffEventOutlineToProse}
+                  />
+                </div>
+              ) : null;
+            })() : null}
+            {msg.role === "user" ? <UserMessageMeta content={msg.content} timestamp={msg.timestamp} /> : null}
           </div>
         ))}
         </div>
 
-        {showScrollToBottom && (
-          <button
-            type="button"
-            onClick={handleScrollToBottom}
-            className="absolute bottom-3 right-4 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/90 shadow-md backdrop-blur-sm transition-all hover:bg-accent"
-            title="回到最新"
-          >
-            <ArrowDown className="h-4 w-4" />
-          </button>
-        )}
+        {showScrollToBottom && <ScrollToLatestButton isStreaming={isStreaming} onClick={handleScrollToBottom} />}
       </div>
 
       {/* Input */}
-      <div className="shrink-0 border-t px-3 py-2">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <p className="text-xs text-muted-foreground">
-            {isOutlineFastMode
-              ? "通过固定选项收集需求后，直接生成大纲正文"
-              : "通过固定选项生成大纲需求，再交给 AI 分析和追问"}
-          </p>
-          <button
-            type="button"
-            onClick={() => setOutlineWizardOpen(true)}
-            disabled={submitDisabled}
-            className="shrink-0 rounded-md border border-border bg-background px-3 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            选择生成你想要的小说
-          </button>
-        </div>
+      <div className="shrink-0 border-t px-3 py-2" data-ui-ai-input-area>
+        <UiTestAiComposer enabled={false}>
+        <div data-ui-ai-composer>
         <ReferenceInput
+          enableClipboardMenu
+          clipboardScope={activeConversationId}
+          renderTextOverlay={undefined}
           value={inputValue}
           tokens={outlineReferenceTokens}
           onStop={handleStop}
@@ -4708,6 +7133,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           placeholder="输入关于大纲的问题..."
           onChange={(text, tokens) => {
             setInputValue(text);
+            if (/(?:^|\s)\/$/.test(text)) setGenerationMenuOpen(true);
             outlineReferenceTokensRef.current = tokens;
             setOutlineReferenceTokens(tokens);
           }}
@@ -4724,7 +7150,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                 usage={liveContextUsage}
                 onCreateConversation={() => createConversation()}
               />
-              <div className="relative">
+              <div className="relative" data-guide="outline.mode">
                 <Button
                   ref={workflowModeTriggerRef}
                   type="button"
@@ -4733,13 +7159,18 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                   aria-haspopup="listbox"
                   aria-expanded={workflowModeDropdownOpen}
                   aria-label="AI 大纲执行模式"
-                  className="h-8 shrink-0 rounded-full border px-2.5 text-xs"
+                  className="h-8 shrink-0 border-0 bg-transparent px-1.5 text-xs shadow-none"
                   onClick={() => setWorkflowModeDropdownOpen((open) => !open)}
                 >
-                  <span className="mr-1">
+                  {/*
+                    只有文字，**没有下拉箭头**（用户要求：不需要下拉图标；
+                    章节区与大纲区必须一致）。它仍是 `aria-haspopup="listbox"`
+                    + `aria-expanded` 的按钮，点开列表的行为不变 ——
+                    去掉的只是一个视觉提示，不是这个控件的语义。
+                  */}
+                  <span>
                     {OUTLINE_WORKFLOW_MODE_OPTIONS.find((option) => option.mode === outlineWorkflowMode)?.label ?? "标准"}
                   </span>
-                  <ChevronDown className={`h-3.5 w-3.5 opacity-50 transition-transform ${workflowModeDropdownOpen ? "rotate-180" : ""}`} />
                 </Button>
                 {workflowModeDropdownOpen && workflowModeDropdownStyle
                   ? createPortal(
@@ -4753,13 +7184,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                         ref={workflowModeDropdownRef}
                         role="listbox"
                         className="fixed rounded-md border bg-popover p-1 shadow-md"
-                        style={{
-                          left: workflowModeDropdownStyle.left,
-                          top: workflowModeDropdownStyle.top,
-                          width: workflowModeDropdownStyle.width,
-                          transform: workflowModeDropdownStyle.transform,
-                          zIndex: 9999,
-                        }}
+                        style={{ ...workflowModeDropdownStyle, maxHeight: "none", overflow: "visible", zIndex: 9999 }}
+                        data-ui-ai-menu="mode"
                       >
                         {OUTLINE_WORKFLOW_MODE_OPTIONS.map(({ mode, label, description, routeDescription }) => (
                           <button
@@ -4782,7 +7208,7 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
                             <span className="min-w-0 flex-1">
                               <span className="flex items-center gap-2 text-sm font-medium">
                                 <span>{label}</span>
-                                <span className="rounded border px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">
+                                <span className="rounded border px-1.5 py-0.5 text-[0.6875rem] font-normal text-muted-foreground">
                                   {description}
                                 </span>
                               </span>
@@ -4801,25 +7227,39 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
               <TooltipProvider delay={200}>
                 <OutlineGenerationMenu
                   disabled={submitDisabled}
-                  onGenerate={handleGenerateSection}
+                  open={generationMenuOpen}
+                  onOpenChange={setGenerationMenuOpen}
+                  onSelect={(title) => insertOutlineGenerationCommand(title)}
                 />
               </TooltipProvider>
             </>
           }
           rightControls={
             hasAvailableModels ? (
-              <ChatModelSelector
-                value={localModelId}
-                onChange={(value) => {
-                  setLocalModelId(value);
-                  setAiOutlineModel(value);
-                  if (activeConversationId) {
-                    setConversationModel(activeConversationId, value);
-                  }
-                  persistOutlineModel(value);
-                }}
-                disabled={false}
-              />
+              <>
+              <UiTestAiModel enabled value={localModelId}>
+                <ReasoningDepthControl
+                  value={aiOutlineReasoningDepth}
+                  onChange={(depth) => {
+                    setAiOutlineReasoningDepth(depth);
+                    void saveAiOutlineReasoningDepth(depth);
+                  }}
+                  modelConfig={reasoningDepthTargetConfig}
+                />
+                <ChatModelSelector
+                  value={localModelId}
+                  onChange={(value) => {
+                    setLocalModelId(value);
+                    setAiOutlineModel(value);
+                    if (activeConversationId) {
+                      setConversationModel(activeConversationId, value);
+                    }
+                    persistOutlineModel(value);
+                  }}
+                  disabled={false}
+                />
+              </UiTestAiModel>
+              </>
             ) : (
               <p
                 className="max-w-48 truncate text-xs text-destructive"
@@ -4830,6 +7270,8 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
             )
           }
         />
+        </div>
+        </UiTestAiComposer>
         <ReferencePickerDialog
           open={referencePickerOpen}
           providers={referenceProviders}
@@ -4840,10 +7282,14 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           }}
           onClose={() => setReferencePickerOpen(false)}
         />
+        {/* 丁-4：`@某人灵魂` 的确认步骤。打开时 `handleSend` 正 await 它，
+            所以在这里取消就等于中止本次发送（此时一条消息都还没落地）。 */}
+        {soulBindingDialog}
         <OutlineWizardDialog
           open={outlineWizardOpen}
           onOpenChange={setOutlineWizardOpen}
           onSubmit={handleSubmitOutlineWizard}
+          projectPath={project?.path ? normalizePath(project.path) : undefined}
         />
         <ConversationDeleteConfirmDialog
           open={pendingDeleteConversationId !== null}
@@ -4868,6 +7314,26 @@ export function OutlineChatPanel({ onClose }: { onClose: () => void }) {
           />
         ) : null}
       </div>
+
+      {/* 需求分析浮层：锚定在面板底部、盖在输入区上层，宽度跟随本面板 */}
+      {pendingIntentPrompt ? (
+        <OutlineIntentDialog
+          open={!dismissedIntentPromptIds[pendingIntentPrompt.id]}
+          result={pendingIntentPrompt.result}
+          entries={intentOptionEntries}
+          onOpenChange={(next) => {
+            if (!next) dismissIntentPrompt(pendingIntentPrompt.id);
+          }}
+          onSelect={(_optionId, scope) => {
+            dismissIntentPrompt(pendingIntentPrompt.id);
+            if (!scope) {
+              handleFocusInput();
+              return;
+            }
+            void handleSendMessage(scope, { intentPhase: "generation", scope });
+          }}
+        />
+      ) : null}
     </div>
   );
 }

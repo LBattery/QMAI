@@ -1,7 +1,22 @@
 import { describe, expect, it, vi } from "vitest"
 import type { LlmConfig } from "@/stores/wiki-store"
 import type { AnalysisSkill, BookAnalysisPipelineTask } from "./analysis-pipeline-types"
+import type { StoryMap } from "./story-map-types"
 import { createStoryAnalysisAdapter } from "./story-analysis-adapter"
+
+/**
+ * 发布里会 `void scheduleVerification(...)`：真实实现会去跑审计，
+ * 在只打桩依赖的单测里会真的去碰 provider/磁盘。打桩掉，让这条用例只测桥接接线。
+ */
+vi.mock("./verification-engine", () => ({ scheduleVerification: vi.fn(async () => {}) }))
+
+/**
+ * 依赖签名直接从生产工厂的 override 参数推导，避免手抄签名抄错，
+ * 也让 vi.fn 的 calls 元组保留真实参数类型（否则会被推成空元组 []）。
+ */
+type StoryAdapterOverrides = NonNullable<Parameters<typeof createStoryAnalysisAdapter>[0]>
+type StoryCallModel = NonNullable<StoryAdapterOverrides["callModel"]>
+type StoryRecognizeCharacters = NonNullable<StoryAdapterOverrides["recognizeCharacters"]>
 
 function task(): BookAnalysisPipelineTask {
   const module = (skill: AnalysisSkill) => ({
@@ -46,7 +61,7 @@ const metadata = {
 
 describe("story analysis adapter", () => {
   it("只选故事时临时识别人物但不会发布角色结果", async () => {
-    const recognizeCharacters = vi.fn(async () => [{
+    const recognizeCharacters = vi.fn<StoryRecognizeCharacters>(async () => [{
       id: "character-1",
       name: "林远",
       aliases: ["小远"],
@@ -56,7 +71,19 @@ describe("story analysis adapter", () => {
       category: "主角" as const,
       sourceBook: "测试作品",
     }])
-    const callModel = vi.fn(async (messages) => messages[1].content)
+    const mapJson = JSON.stringify({
+      mainLineLabel: "成长主线",
+      mainSummary: "主角一路推进",
+      chapters: [{
+        id: "ch-0001",
+        order: 1,
+        title: "第一章",
+        summary: "林远推门而入",
+        mainEvents: [{ label: "夜探老宅", beats: ["潜入", "发现线索"], characters: ["林远"] }],
+        branches: [{ id: "b1", kind: "foreshadow", label: "老宅秘密", triggeredBy: "夜探老宅", events: [] }],
+      }],
+    })
+    const callModel = vi.fn<StoryCallModel>(async () => mapJson)
     const adapter = createStoryAnalysisAdapter({
       recognizeCharacters,
       callModel,
@@ -65,8 +92,10 @@ describe("story analysis adapter", () => {
       now: () => 10,
     })
     const inputTask = task()
+    const onRequestTrace = vi.fn()
     const output = await adapter.runChunk({
       task: inputTask,
+      onRequestTrace,
       skill: "story",
       bookPath: inputTask.bookPath,
       projectPath: inputTask.projectPath,
@@ -92,15 +121,49 @@ describe("story analysis adapter", () => {
     })
 
     expect(recognizeCharacters).toHaveBeenCalledTimes(1)
-    expect(callModel.mock.calls[0][0][1].content).toContain("临时人物线索")
-    expect(callModel.mock.calls[0][0][1].content).toContain("禁止输出角色 Skill")
+    const messageContent = callModel.mock.calls[0][0][1].content
+    expect(Array.isArray(messageContent)).toBe(true)
+    if (!Array.isArray(messageContent)) throw new Error("故事导图用户消息的 content 应为内容块数组")
+    const content = messageContent
+    const firstBlock = content[0]
+    expect(firstBlock).toMatchObject({ type: "text", cacheControl: true })
+    if (firstBlock.type !== "text") throw new Error("故事导图用户消息首个内容块应为文本块")
+    expect(firstBlock.text).toContain("林远推门而入")
+    expect(firstBlock.text).not.toContain("临时人物线索")
+    const text = content.map((block) => (block.type === "text" ? block.text : "")).join("")
+    expect(text).toContain("临时人物线索")
+    expect(recognizeCharacters.mock.calls[0][0].onRequestTrace).toBe(onRequestTrace)
+    expect(callModel.mock.calls[0][3]).toBe(onRequestTrace)
+    expect(text).toContain("禁止输出角色 Skill")
+    expect(output.result.map.chapters[0].id).toBe("ch-0001")
+    expect(output.result.map.chapters[0].branches[0].kind).toBe("foreshadow")
     expect(output.evidence[0].skill).toBe("story")
   })
 
   it("故事汇总只保留已完成区块的用户章节范围", async () => {
-    const callModel = vi.fn(async () => "汇总结果")
+    const mergedJson = JSON.stringify({
+      mainLineLabel: "主线",
+      chapters: [{ id: "ch-0001", order: 1, summary: "s", mainEvents: [{ label: "e" }] }],
+    })
+    const callModel = vi.fn<StoryCallModel>(async () => mergedJson)
     const adapter = createStoryAnalysisAdapter({ callModel })
     const inputTask = task()
+    const makeMap = (chapterId: string, order: number) => ({
+      schemaVersion: 1 as const,
+      bookId: inputTask.bookId,
+      bookTitle: "测试作品",
+      mainLineLabel: "主线",
+      mainSummary: "",
+      createdAt: 1,
+      chapters: [{
+        id: chapterId,
+        order,
+        title: `第${order}章`,
+        summary: "s",
+        mainEvents: [{ label: "e", beats: [], characters: [] }],
+        branches: [],
+      }],
+    })
     const result = await adapter.aggregate({
       task: inputTask,
       skill: "story",
@@ -108,13 +171,134 @@ describe("story analysis adapter", () => {
       projectPath: inputTask.projectPath,
       llmConfig: {} as LlmConfig,
       chunks: [
-        { markdown: "区块一", rangeChapterIds: ["ch-0001", "ch-0002"] },
-        { markdown: "区块二", rangeChapterIds: ["ch-0011", "ch-0012"] },
+        { map: makeMap("ch-0001", 1), rangeChapterIds: ["ch-0001", "ch-0002"] },
+        { map: makeMap("ch-0011", 11), rangeChapterIds: ["ch-0011", "ch-0012"] },
       ],
       signal: new AbortController().signal,
     })
 
     expect(result.rangeChapterIds).toEqual(["ch-0001", "ch-0002", "ch-0011", "ch-0012"])
     expect(callModel).toHaveBeenCalledTimes(1)
+    expect(result.map.chapters[0].id).toBe("ch-0001")
+  })
+
+  it("检测到旧版四段区块时明确报错，提示重新提取", async () => {
+    const adapter = createStoryAnalysisAdapter({ callModel: vi.fn(async () => "{}") })
+    const inputTask = task()
+    await expect(adapter.aggregate({
+      task: inputTask,
+      skill: "story",
+      bookPath: inputTask.bookPath,
+      projectPath: inputTask.projectPath,
+      llmConfig: {} as LlmConfig,
+      chunks: [
+        { markdown: "区块一", rangeChapterIds: ["ch-0001"] } as never,
+        { markdown: "区块二", rangeChapterIds: ["ch-0011"] } as never,
+      ],
+      signal: new AbortController().signal,
+    })).rejects.toThrow("旧版四段格式")
+  })
+
+  it("AI 输出漏掉区块最后一章时明确报错，不静默保存不完整导图", async () => {
+    const allChapters = Array.from({ length: 10 }, (_, i) => {
+      const order = 21 + i
+      const id = `ch-${String(order).padStart(4, "0")}`
+      return { id, title: `第${order}章`, order, content: `第${order}章正文。` }
+    })
+    // AI 只输出前 9 章，漏掉 ch-0030（第 30 章），模拟输出截断丢最后一章
+    const mapJson = JSON.stringify({
+      mainLineLabel: "主线",
+      mainSummary: "摘要",
+      chapters: allChapters.slice(0, 9).map((chapter) => ({
+        id: chapter.id,
+        order: chapter.order,
+        title: chapter.title,
+        summary: "s",
+        mainEvents: [{ label: "e", beats: [], characters: [] }],
+      })),
+    })
+    const adapter = createStoryAnalysisAdapter({
+      callModel: vi.fn(async () => mapJson),
+      loadMetadata: vi.fn(async () => metadata),
+      loadChapters: vi.fn(async () => allChapters),
+      recognizeCharacters: vi.fn(async () => []),
+      now: () => 10,
+    })
+    const inputTask = task()
+    await expect(adapter.runChunk({
+      task: inputTask,
+      skill: "story",
+      bookPath: inputTask.bookPath,
+      projectPath: inputTask.projectPath,
+      llmConfig: {} as LlmConfig,
+      chunk: {
+        version: 1,
+        id: "chunk-0021-0030",
+        taskId: inputTask.id,
+        skill: "story",
+        chapterIds: allChapters.map((chapter) => chapter.id),
+        startOrder: 21,
+        endOrder: 30,
+        wordCount: 1000,
+        status: "running",
+        attempts: 1,
+        resultPath: null,
+        error: null,
+        startedAt: 1,
+        completedAt: null,
+        updatedAt: 1,
+      },
+      signal: new AbortController().signal,
+    })).rejects.toThrow("缺少第 30 章")
+  })
+
+  /**
+   * 旧提取路径的发布同样要桥接：只接 workbench 那条路的话，
+   * 从这里发布的故事 skill 仍然到不了 storyFrameworkBinding（一半 = 没打通）。
+   * 入参必须是 upsertFramework 的**返回值**（bookId=book-1、now=10 → framework-book-1-10）。
+   */
+  it("发布时把归一化后的框架交给桥接函数，并把桥接用的 id 写进 resultPath", async () => {
+    const map: StoryMap = {
+      schemaVersion: 1, bookId: "book-1", bookTitle: "测试作品",
+      mainLineLabel: "成长主线", mainSummary: "主角一路推进", createdAt: 1,
+      chapters: [
+        {
+          id: "ch-0001", order: 1, title: "第一章", summary: "林远推门而入",
+          mainEvents: [{ label: "夜探老宅", beats: ["潜入"], characters: ["林远"] }],
+          branches: [{ id: "b1", kind: "foreshadow", label: "老宅秘密", triggeredBy: "夜探老宅", events: [] }],
+        },
+        {
+          id: "ch-0002", order: 2, title: "第二章", summary: "真相浮现",
+          mainEvents: [{ label: "对质", beats: ["摊牌"], characters: ["林远"], spinoff: "留下一枚木牌" }],
+          branches: [],
+        },
+      ],
+    }
+    const bridgeFramework = vi.fn(async () => ({}) as never)
+    const upsertFramework = vi.fn(async (_projectPath: string, framework: never) => framework)
+    const adapter = createStoryAnalysisAdapter({
+      loadMetadata: vi.fn(async () => metadata),
+      upsertFramework: upsertFramework as never,
+      bridgeFramework: bridgeFramework as never,
+      replaceEvidence: vi.fn(async () => ({}) as never),
+      loadManifest: vi.fn(async () => null),
+      saveManifest: vi.fn(async () => {}),
+      rebuildContextIndex: vi.fn(async () => ({}) as never),
+      writeMapFiles: vi.fn(async () => {}),
+      now: () => 10,
+    })
+    const inputTask = task()
+
+    const resultPath = await adapter.publish({
+      task: inputTask, skill: "story", bookPath: inputTask.bookPath, projectPath: inputTask.projectPath,
+      llmConfig: {} as LlmConfig, result: { map, rangeChapterIds: ["ch-0001", "ch-0002"] },
+      evidence: [], signal: new AbortController().signal,
+    })
+
+    expect(upsertFramework).toHaveBeenCalledWith("E:/Novel", expect.objectContaining({ id: "framework-book-1-10" }))
+    // 桥接拿到的必须是 upsertFramework 的返回值（id 由它派生，取错就是绑定时静默空串）。
+    expect(bridgeFramework).toHaveBeenCalledTimes(1)
+    expect(bridgeFramework).toHaveBeenCalledWith("E:/Novel", expect.objectContaining({ id: "framework-book-1-10" }))
+    expect(resultPath).toBe("plot-framework:framework-book-1-10")
   })
 })

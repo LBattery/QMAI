@@ -8,7 +8,13 @@ import type { AnalysisSkill } from "@/lib/novel/book-analysis/analysis-pipeline-
 import { normalizePath } from "@/lib/path-utils"
 
 interface BookAnalysisInputDialogProps {
+  workbenchMode?: boolean
   open: boolean
+  /**
+   * 打开时预勾选的提取项（空态能力卡点进来时用）。
+   * 只在「打开」这一刻注入：用户打开后自己改的勾选不能被 props 重渲染冲掉。
+   */
+  defaultSkills?: AnalysisSkill[]
   onOpenChange: (open: boolean) => void
   onSubmit: (files: BatchImportCandidate[], analysisSkills?: AnalysisSkill[]) => Promise<void> | void
 }
@@ -31,7 +37,9 @@ function formatFileSize(bytes: number) {
 }
 
 export function BookAnalysisInputDialog({
+  workbenchMode = false,
   open,
+  defaultSkills,
   onOpenChange,
   onSubmit,
 }: BookAnalysisInputDialogProps) {
@@ -47,6 +55,11 @@ export function BookAnalysisInputDialog({
   const sessionTokenRef = useRef(0)
   const selectionTokenRef = useRef(0)
   openRef.current = open
+
+  // 用 ref 存最新值，而不是把它写进 effect 依赖：effect 只该在 open 翻转时跑，
+  // 否则父级每次重渲染都会把用户刚改的勾选重置回默认值。
+  const defaultSkillsRef = useRef<AnalysisSkill[] | undefined>(undefined)
+  defaultSkillsRef.current = defaultSkills
 
   const replaceFiles = (
     nextFiles: BatchImportCandidate[] | ((currentFiles: BatchImportCandidate[]) => BatchImportCandidate[]),
@@ -73,6 +86,7 @@ export function BookAnalysisInputDialog({
 
   useEffect(() => {
     if (!open) resetDialogState()
+    else setAnalysisSkills(defaultSkillsRef.current ? [...defaultSkillsRef.current] : [])
 
     return () => {
       sessionTokenRef.current += 1
@@ -210,7 +224,7 @@ export function BookAnalysisInputDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="flex max-h-[85vh] flex-col sm:max-w-[640px]"
+        className={`flex max-h-[85vh] flex-col sm:max-w-[640px]${workbenchMode ? " wb-import-dialog" : ""}`}
         showCloseButton={!isBusy}
       >
         <DialogHeader>

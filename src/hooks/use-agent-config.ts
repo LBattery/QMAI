@@ -6,15 +6,12 @@ import { loadDeAiSkillConfig, type DeAiSkillConfig } from "@/lib/novel/de-ai-ski
 import { loadAllLinkedSkillsContent, loadUserSkillConfig, resolveEnabledWritingSkills } from "@/lib/novel/user-skill-store"
 import type { UserSkill } from "@/lib/novel/skill-library"
 import { resolveAgentSessionModel, resolveModelConfig } from "@/lib/novel/model-resolver"
+import { applyReasoningDepth } from "@/lib/reasoning-depth"
 import { runDeepChapterGeneration } from "@/lib/novel/deep-chapter-generation"
 import { normalizePath } from "@/lib/path-utils"
 import { ToolRegistry } from "@/lib/agent/registry"
 import { buildAgentConfig, isFunctionCallingEnabled, modelSupportsTools } from "@/lib/agent/config"
 import type { AgentConfig } from "@/lib/agent/types"
-import type { AiCapability } from "@/lib/agent/capabilities/types"
-import { buildMcpRuntime } from "@/lib/mcp/runtime"
-import { RealMcpConnector } from "@/lib/mcp/real-connector"
-
 export interface UseAgentConfigResult {
   config: AgentConfig | null
   registry: ToolRegistry
@@ -22,14 +19,13 @@ export interface UseAgentConfigResult {
   skillConfigLoaded: boolean
   skillConfig: DeAiSkillConfig | null
   writingSkills: UserSkill[]
-  mcpCapabilities: AiCapability[]
-  mcpWarnings: string[]
 }
 
 export function useAgentConfig(
   systemPrompt: string,
   getPlanBlueprint?: () => string | undefined,
   getSelectedSkillsPrompt?: () => string | undefined,
+  getWritingStyleIdOverride?: () => string | null | undefined,
 ): UseAgentConfigResult {
   const aiChatModel = useWikiStore((s) => s.aiChatModel)
   const defaultLlmModel = useWikiStore((s) => s.defaultLlmModel)
@@ -39,8 +35,8 @@ export function useAgentConfig(
   const baseLlmConfig = useWikiStore((s) => s.llmConfig)
   const providerConfigs = useWikiStore((s) => s.providerConfigs)
   const searchApiConfig = useWikiStore((s) => s.searchApiConfig)
-  const mcpConfig = useWikiStore((s) => s.mcpConfig)
   const aiWorkflowMode = useWikiStore((s) => s.aiWorkflowMode)
+  const aiChatReasoningDepth = useWikiStore((s) => s.aiChatReasoningDepth)
 
   const chatConversations = useChatStore((s) => s.conversations)
   const chatMessages = useChatStore((s) => s.messages)
@@ -114,12 +110,27 @@ export function useAgentConfig(
   )
 
   return useMemo(() => {
-    const agentLlmConfig = resolveAgentSessionModel(baseLlmConfig, novelConfig, aiWorkflowMode)
+    const agentLlmConfig = applyReasoningDepth(
+      resolveAgentSessionModel(baseLlmConfig, novelConfig, aiWorkflowMode),
+      aiChatReasoningDepth,
+    )
     const modelOk = modelSupportsTools(agentLlmConfig.model, agentLlmConfig.provider)
     const fcEnabled = isFunctionCallingEnabled(agentLlmConfig)
     const supportsTools = modelOk && fcEnabled
 
-    if (!modelOk || !projectPath || !skillConfigLoaded) {
+    /*
+     * ⚠️ 这里**不能**因为「模型不支持工具」就返回 config: null。
+     *
+     * 那样等于把「不支持工具」当成「不能用」：o1 / o3-mini / deepseek-reasoner
+     * 以及用户关闭 Function Calling 的本地模型都会被整块拒绝，
+     * 连普通对话都发不出去 —— 而设置页那个开关的说明恰恰承诺了
+     * 「关闭后请求不携带 tools/tool_choice，用于兼容不支持工具调用的本地模型」。
+     *
+     * 正确形状：照常构建 config，`buildAgentConfig` 在无工具时注册 0 个工具，
+     * `AgentRunner` 也不发 tools/tool_choice，于是这就是一次普通对话。
+     * `supportsTools` 继续如实反映「本轮会不会带工具」，供提示语使用。
+     */
+    if (!projectPath || !skillConfigLoaded) {
       return {
         config: null,
         registry: new ToolRegistry(),
@@ -127,22 +138,22 @@ export function useAgentConfig(
         skillConfigLoaded: false,
         skillConfig,
         writingSkills,
-        mcpCapabilities: [],
-        mcpWarnings: [],
       }
     }
 
-    const chapterWritingLlmConfig = resolveModelConfig(aiChatModel, baseLlmConfig, providerConfigs)
+    // The thinking-depth slider is stamped here and nowhere else. This config
+    // reaches `deep-chapter-generation` as `writingConfig` (passed through
+    // verbatim) and drives the draft, expansion, revision and local-polish
+    // calls. The orchestrating `agentLlmConfig` above, and the auxiliary
+    // `workflowConfig` the workflow re-resolves from the default model, both
+    // stay on whatever reasoning their own provider config specifies.
+    const chapterWritingLlmConfig = applyReasoningDepth(
+      resolveModelConfig(aiChatModel, baseLlmConfig, providerConfigs),
+      aiChatReasoningDepth,
+    )
     const registry = new ToolRegistry()
     const wikiPath = `${normalizePath(projectPath)}/wiki`
     const novelMode = useWikiStore.getState().novelMode
-    const realMcpConnector = fcEnabled
-      && (mcpConfig?.servers ?? []).some((server) => server.enabled && server.command)
-      ? new RealMcpConnector(mcpConfig)
-      : undefined
-    const mcpRuntime = fcEnabled
-      ? buildMcpRuntime(mcpConfig, undefined, realMcpConnector)
-      : { mcpTools: [], mcpCapabilities: [], warnings: [] as string[] }
     const config = buildAgentConfig(agentLlmConfig.model, systemPrompt, registry, {
       wikiPath,
       getSkillConfig,
@@ -150,7 +161,6 @@ export function useAgentConfig(
       getSearchApiConfig,
       getChatConversations,
       getOutlineConversations,
-      mcpTools: mcpRuntime.mcpTools,
       llmConfig: agentLlmConfig,
       maxContextSize: agentLlmConfig.maxContextSize,
       chapterWritingLlmConfig,
@@ -160,6 +170,7 @@ export function useAgentConfig(
       projectPath: normalizePath(projectPath),
       getPlanBlueprint,
       getSelectedSkillsPrompt,
+      getWritingStyleIdOverride,
       disabledTools: ["write_chapter", "write_outline_node", "write_memory"],
     })
 
@@ -170,8 +181,6 @@ export function useAgentConfig(
       skillConfigLoaded: true,
       skillConfig,
       writingSkills,
-      mcpCapabilities: mcpRuntime.mcpCapabilities,
-      mcpWarnings: mcpRuntime.warnings,
     }
   }, [
     aiChatModel,
@@ -181,8 +190,8 @@ export function useAgentConfig(
     skillConfigLoaded,
     baseLlmConfig,
     providerConfigs,
-    mcpConfig,
     aiWorkflowMode,
+    aiChatReasoningDepth,
     getSearchApiConfig,
     getUserSkills,
     systemPrompt,
@@ -192,5 +201,6 @@ export function useAgentConfig(
     getOutlineConversations,
     getPlanBlueprint,
     getSelectedSkillsPrompt,
+    getWritingStyleIdOverride,
   ])
 }

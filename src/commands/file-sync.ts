@@ -1,6 +1,5 @@
+import { isTauri } from "@/lib/platform"
 import { invoke } from "@tauri-apps/api/core"
-import type { SourceWatchConfig } from "@/stores/wiki-store"
-import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 
 export type FileChangeKind = "created" | "modified" | "deleted"
 export type FileChangeStatus = "pending" | "processing" | "done" | "failed" | "superseded"
@@ -22,73 +21,7 @@ export interface FileChangeTask {
   needsRerun: boolean
 }
 
-export interface FileChangeQueue {
-  version: number
-  tasks: FileChangeTask[]
-}
-
-export interface FileChangeRescanResult {
-  queue: FileChangeQueue
-  changedTasks: FileChangeTask[]
-}
-
-export interface FileSyncPayload {
-  projectId: string
-  tasks: FileChangeTask[]
-}
-
-const webQueue = (): FileChangeQueue => ({ version: 1, tasks: [] })
-
-export function startProjectFileWatcher(
-  projectId: string,
-  projectPath: string,
-  sourceWatchConfig?: SourceWatchConfig,
-): Promise<FileChangeQueue> {
-  if (typeof window !== "undefined" && import.meta.env.MODE !== "test") return Promise.resolve(webQueue())
-  return invoke<FileChangeQueue>("start_project_file_watcher", {
-    projectId,
-    projectPath,
-    sourceWatchConfig: normalizeSourceWatchConfig(sourceWatchConfig),
-  })
-}
-
 export function stopProjectFileWatcher(): Promise<void> {
-  if (typeof window !== "undefined" && import.meta.env.MODE !== "test") return Promise.resolve()
+  if (!isTauri() && import.meta.env.MODE !== "test") return Promise.resolve()
   return invoke<void>("stop_project_file_watcher")
-}
-
-export function rescanProjectFiles(
-  projectId: string,
-  projectPath: string,
-  sourceWatchConfig?: SourceWatchConfig,
-): Promise<FileChangeRescanResult> {
-  if (typeof window !== "undefined" && import.meta.env.MODE !== "test") return Promise.resolve({ queue: webQueue(), changedTasks: [] })
-  return invoke<FileChangeRescanResult>("rescan_project_files", {
-    projectId,
-    projectPath,
-    sourceWatchConfig: normalizeSourceWatchConfig(sourceWatchConfig),
-  })
-}
-
-export function getFileChangeQueue(projectPath: string): Promise<FileChangeQueue> {
-  if (typeof window !== "undefined" && import.meta.env.MODE !== "test") return Promise.resolve(webQueue())
-  return invoke<FileChangeQueue>("get_file_change_queue", { projectPath })
-}
-
-export function retryFileChangeTask(
-  projectId: string,
-  projectPath: string,
-  taskId: string,
-): Promise<FileChangeQueue> {
-  if (typeof window !== "undefined" && import.meta.env.MODE !== "test") return Promise.resolve(webQueue())
-  return invoke<FileChangeQueue>("retry_file_change_task", { projectId, projectPath, taskId })
-}
-
-export function ignoreFileChangeTask(
-  projectId: string,
-  projectPath: string,
-  taskId: string,
-): Promise<FileChangeQueue> {
-  if (typeof window !== "undefined" && import.meta.env.MODE !== "test") return Promise.resolve(webQueue())
-  return invoke<FileChangeQueue>("ignore_file_change_task", { projectId, projectPath, taskId })
 }

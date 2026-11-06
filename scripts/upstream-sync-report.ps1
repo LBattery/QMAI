@@ -1,7 +1,7 @@
 param(
-  [string]$Base = "master",
-  [string]$Upstream = "origin/master",
-  [string]$OutputDir = "D:\Development\project\cache-temp"
+  [string]$Base = "24229665",
+  [string]$Upstream = "upstream/main",
+  [string]$OutputDir = (Join-Path $PSScriptRoot "../cache-temp")
 )
 
 $ErrorActionPreference = "Stop"

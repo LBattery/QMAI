@@ -7,7 +7,7 @@ import {
   useState,
   forwardRef,
 } from "react";
-import { Editor, rootCtx, defaultValueCtx } from "@milkdown/kit/core";
+import { Editor, rootCtx, defaultValueCtx, editorViewCtx, editorViewOptionsCtx } from "@milkdown/kit/core";
 import { commonmark } from "@milkdown/kit/preset/commonmark";
 import { gfm } from "@milkdown/kit/preset/gfm";
 import { history } from "@milkdown/kit/plugin/history";
@@ -27,8 +27,12 @@ import {
   type ChapterSelectionAction,
 } from "@/lib/chapter-selection";
 import type { PendingEditorHighlight } from "@/stores/wiki-store";
+import { EditorContextMenu, type EditorContextAction } from "@/components/editor/editor-context-menu";
 import { TextareaFindBar } from "@/components/editor/textarea-find-bar";
 import { TextareaFindHighlights } from "@/components/editor/textarea-find-highlights";
+import { OutlineFormatToolbar } from "@/components/editor/outline-format-toolbar";
+import { outlineHiddenTitleGuardPlugin } from "@/components/editor/outline-hidden-title";
+import { outlineUnderlinePlugin, readOutlinePlainText, replaceOutlinePlainText, runOutlineToolbarAction, selectAllOutline } from "@/components/editor/outline-toolbar-actions";
 import {
   findAllMatches,
   findInitialMatchIndex,
@@ -36,10 +40,35 @@ import {
   findPrevMatchIndex,
   scrollTextareaMatchIntoView,
 } from "@/lib/textarea-find";
+import {
+  type ContinuationAnchor,
+  type PendingEditorCaret,
+} from "@/lib/novel/continuation";
+
+/**
+ * 章节正文的右键菜单项。
+ *
+ * 首位必须是「续写」—— 用户原话「右键第一个选项应该显示为续写」。
+ *
+ * 这一份**只给章节正文编辑器用**：大纲的 Milkdown 编辑器不传 `actions`，
+ * 拿到的是 editor-context-menu 里的 DEFAULT_ITEMS，那里没有「续写」。
+ */
+const CHAPTER_CONTEXT_ACTIONS: readonly EditorContextAction[] = [
+  "continue",
+  "undo",
+  "redo",
+  "copy",
+  "cut",
+  "paste",
+  "selectAll",
+  "find",
+  "replace",
+]
 
 interface WikiEditorInnerProps {
   content: string;
   onSave: (markdown: string) => void;
+  formatToolbar?: boolean;
 }
 
 /** Prefer CSS `field-sizing: content` when available; otherwise JS scrollHeight. */
@@ -61,6 +90,14 @@ interface WritingTextareaProps {
   ) => void;
   highlightRequest?: PendingEditorHighlight | null;
   onHighlightHandled?: () => void;
+  /** 续写请求：带上插入锚点与浮层要用的视口坐标。 */
+  onContinuationRequest?: (
+    anchor: ContinuationAnchor,
+    position: { x: number; y: number },
+  ) => void;
+  /** 请求把光标移到指定偏移（插入续写之后用）。 */
+  caretRequest?: PendingEditorCaret | null;
+  onCaretHandled?: () => void;
 }
 
 interface FloatingToolbarPosition {
@@ -81,6 +118,9 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
       onSelectionAction,
       highlightRequest,
       onHighlightHandled,
+      onContinuationRequest,
+      caretRequest,
+      onCaretHandled,
     },
     ref,
   ) {
@@ -96,6 +136,9 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
     const [toolbarPosition, setToolbarPosition] =
       useState<FloatingToolbarPosition | null>(null);
     const [findOpen, setFindOpen] = useState(false);
+    const [replaceOpen, setReplaceOpen] = useState(false);
+    const [replacement, setReplacement] = useState("");
+    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; start: number; end: number; text: string } | null>(null);
     const [findQuery, setFindQuery] = useState("");
     const [activeMatchIndex, setActiveMatchIndex] = useState(-1);
     const findMatches = useMemo(
@@ -228,7 +271,14 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
 
     const refreshSelection = useCallback(() => {
       const el = textareaRef.current;
-      if (!el || !onSelectionAction) {
+      /*
+       * 早退条件必须同时考虑两个入口。
+       *
+       * 原来只判断 `onSelectionAction`：只传 `onContinuationRequest` 的调用方
+       * 会觉得「续写工具栏」这个接口存在，实际却永远拿不到 selection，工具栏
+       * 静默不出现 —— 接口承诺了、行为做不到，是最难查的那种 bug。
+       */
+      if (!el || (!onSelectionAction && !onContinuationRequest)) {
         setSelection(null);
         setToolbarPosition(null);
         return;
@@ -257,7 +307,7 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
         bodySnapshot: value,
       });
       setToolbarPosition(nextPosition);
-    }, [onSelectionAction, value]);
+    }, [onContinuationRequest, onSelectionAction, value]);
 
     useEffect(() => {
       if (!highlightRequest) return;
@@ -283,7 +333,36 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
     }, [highlightRequest, onHighlightHandled, refreshSelection, value]);
 
     useEffect(() => {
-      if (!selection || !onSelectionAction) return;
+      if (!caretRequest) return;
+      const textarea = textareaRef.current;
+      if (!textarea) {
+        onCaretHandled?.();
+        return;
+      }
+      requestAnimationFrame(() => {
+        /*
+         * 夹取必须在这里做，不能提到外面按 `value` 算。
+         *
+         * 插入正文时这个 effect 会在「content 已经是新正文、但 value 还是旧值」
+         * 的那一次渲染里跑（value 要等 content 的 effect setValue 之后才更新）。
+         * 拿旧长度去夹，光标会被压回旧正文末尾 —— 那恰好也是插入点附近，看起来
+         * 像「功能生效了但光标没动」。所以按 rAF 执行那一刻的 DOM 值算。
+         */
+        const at = Math.max(0, Math.min(caretRequest.at, textarea.value.length));
+        textarea.focus();
+        textarea.setSelectionRange(at, at);
+        scrollTextareaMatchIntoView(textarea, at, at);
+        onCaretHandled?.();
+      });
+    }, [caretRequest, onCaretHandled]);
+
+    useEffect(() => {
+      /*
+       * 与 refreshSelection 的早退条件保持一致：工具栏现在也可能只由
+       * onContinuationRequest 撑着。这里若仍只认 onSelectionAction，
+       * 续写-only 调用方的工具栏会在滚动 / 缩放后挂在原位不动。
+       */
+      if (!selection || (!onSelectionAction && !onContinuationRequest)) return;
       const handleWindowChange = () => refreshSelection();
       document.addEventListener("scroll", handleWindowChange, true);
       window.addEventListener("resize", handleWindowChange);
@@ -291,7 +370,7 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
         document.removeEventListener("scroll", handleWindowChange, true);
         window.removeEventListener("resize", handleWindowChange);
       };
-    }, [selection, onSelectionAction, refreshSelection]);
+    }, [selection, onContinuationRequest, onSelectionAction, refreshSelection]);
 
     const triggerSelectionAction = useCallback(
       (action: ChapterSelectionAction) => {
@@ -301,6 +380,15 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
       },
       [selection, onSelectionAction],
     );
+
+    const triggerContinuation = useCallback(() => {
+      if (!selection || !onContinuationRequest) return
+      onContinuationRequest(
+        { at: selection.end, bodySnapshot: selection.bodySnapshot },
+        { x: toolbarPosition?.left ?? 0, y: toolbarPosition?.top ?? 0 },
+      )
+      setToolbarPosition(null)
+    }, [onContinuationRequest, selection, toolbarPosition])
 
     const applyFindMatch = useCallback(
       (matchIndex: number) => {
@@ -354,10 +442,68 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
 
     const closeFindBar = useCallback(() => {
       setFindOpen(false);
+      setReplaceOpen(false);
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
       });
     }, []);
+
+    const replaceCurrent = useCallback(() => {
+      const textarea = textareaRef.current
+      const start = findMatches[activeMatchIndex]
+      if (!textarea || start === undefined || !findQuery) return
+      const next = `${value.slice(0, start)}${replacement}${value.slice(start + findQuery.length)}`
+      setValue(next)
+      rebuild(heading, next)
+      requestAnimationFrame(() => textarea.setSelectionRange(start, start + replacement.length))
+    }, [activeMatchIndex, findMatches, findQuery, heading, rebuild, replacement, value])
+
+    const replaceAllMatches = useCallback(() => {
+      if (!findQuery) return
+      const pattern = new RegExp(findQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi")
+      const next = value.replace(pattern, replacement)
+      setValue(next)
+      rebuild(heading, next)
+    }, [findQuery, heading, rebuild, replacement, value])
+
+    const runTextAction = useCallback(async (action: EditorContextAction) => {
+      const textarea = textareaRef.current
+      if (!textarea) return
+      const start = contextMenu?.start ?? textarea.selectionStart
+      const end = contextMenu?.end ?? textarea.selectionEnd
+      if (action === "continue") {
+        if (!onContinuationRequest) return
+        // 锚点 = 选区末尾；没有选区时 start === end，end 就是光标位置。
+        onContinuationRequest(
+          { at: end, bodySnapshot: value },
+          { x: contextMenu?.x ?? 0, y: contextMenu?.y ?? 0 },
+        )
+        return
+      }
+      if (action === "undo") { document.execCommand("undo"); return }
+      if (action === "redo") { document.execCommand("redo"); return }
+      if (action === "selectAll") { textarea.focus(); textarea.setSelectionRange(0, textarea.value.length); return }
+      if (action === "copy" || action === "cut") {
+        const selected = contextMenu?.text || value.slice(start, end)
+        if (!selected) return
+        await navigator.clipboard.writeText(selected)
+        if (action === "cut") {
+          const next = `${value.slice(0, start)}${value.slice(end)}`
+          setValue(next); rebuild(heading, next)
+          requestAnimationFrame(() => textarea.setSelectionRange(start, start))
+        }
+        return
+      }
+      if (action === "paste") {
+        const pasted = await navigator.clipboard.readText()
+        const next = `${value.slice(0, start)}${pasted}${value.slice(end)}`
+        setValue(next); rebuild(heading, next)
+        requestAnimationFrame(() => { const caret = start + pasted.length; textarea.setSelectionRange(caret, caret) })
+        return
+      }
+      setReplaceOpen(action === "replace")
+      openFindBar(value.slice(start, end))
+    }, [contextMenu, heading, onContinuationRequest, openFindBar, rebuild, value])
 
     const goToNextMatch = useCallback(() => {
       if (!findQuery || findMatches.length === 0) {
@@ -442,14 +588,18 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
         <TextareaFindBar
           open={findOpen}
           query={findQuery}
+          replacement={replacement}
           activeMatchIndex={activeMatchIndex}
           matchCount={findMatches.length}
           onQueryChange={setFindQuery}
+          onReplacementChange={replaceOpen ? setReplacement : undefined}
+          onReplace={replaceCurrent}
+          onReplaceAll={replaceAllMatches}
           onNext={goToNextMatch}
           onPrevious={goToPreviousMatch}
           onClose={closeFindBar}
         />
-        {selection && toolbarPosition && onSelectionAction ? (
+        {selection && toolbarPosition && (onSelectionAction || onContinuationRequest) ? (
           <div
             data-selection-toolbar="true"
             className="fixed z-30 flex items-center gap-1 rounded-full border border-border/80 bg-background/95 px-2 py-1 shadow-lg backdrop-blur"
@@ -459,22 +609,36 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
               transform: "translate(-50%, -100%)",
             }}
           >
-            <button
-              type="button"
-              className="rounded-full px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => triggerSelectionAction("polish")}
-            >
-              AI润色
-            </button>
-            <button
-              type="button"
-              className="rounded-full px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => triggerSelectionAction("de-ai")}
-            >
-              去AI味
-            </button>
+            {onContinuationRequest ? (
+              <button
+                type="button"
+                className="rounded-full px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={triggerContinuation}
+              >
+                续写
+              </button>
+            ) : null}
+            {onSelectionAction ? (
+              <>
+                <button
+                  type="button"
+                  className="rounded-full px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => triggerSelectionAction("polish")}
+                >
+                  AI润色
+                </button>
+                <button
+                  type="button"
+                  className="rounded-full px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => triggerSelectionAction("de-ai")}
+                >
+                  去AI味
+                </button>
+              </>
+            ) : null}
           </div>
         ) : null}
         <div className="relative w-full">
@@ -488,6 +652,7 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
           ) : null}
           <textarea
             ref={textareaRef}
+            data-ui-test-indent={(/^(?:[　 \t]|#{1,6}\s|>\s|[-*+]\s|\d+\.\s|\||```)/m.test(value) ? "source" : "visual")}
             value={value}
             onChange={(e) => {
               const next = e.target.value;
@@ -496,6 +661,7 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
               setToolbarPosition(null);
               rebuild(heading, next);
             }}
+            onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const target = event.currentTarget; setContextMenu({ x: event.clientX, y: event.clientY, start: target.selectionStart, end: target.selectionEnd, text: target.value.slice(target.selectionStart, target.selectionEnd) }) }}
             onSelect={refreshSelection}
             onMouseUp={refreshSelection}
             onKeyUp={refreshSelection}
@@ -536,26 +702,39 @@ const WritingTextarea = forwardRef<WritingTextareaHandle, WritingTextareaProps>(
             spellCheck={false}
           />
         </div>
+        <EditorContextMenu position={contextMenu} actions={CHAPTER_CONTEXT_ACTIONS} disabled={{ copy: !contextMenu?.text, cut: !contextMenu?.text }} onAction={(action) => void runTextAction(action)} onClose={() => setContextMenu(null)} />
       </div>
     );
   },
 );
 
-function WikiEditorInner({ content, onSave }: WikiEditorInnerProps) {
+function WikiEditorInner({ content, onSave, formatToolbar = false }: WikiEditorInnerProps) {
   // Milkdown fires `markdownUpdated` once on initial parse before any
   // user interaction. That one emit must not be forwarded as a save,
   // otherwise just opening a file can overwrite its content with
   // Milkdown's normalized-but-equivalent re-emit (or, worse, with a
   // placeholder string that came back from a failed read).
   const initialEmitConsumedRef = useRef(false);
+  const actionRef = useRef(runOutlineToolbarAction);
+  const [toolbarPosition, setToolbarPosition] = useState<{ top: number; left: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; text: string; from: number; to: number } | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [replaceOpen, setReplaceOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [replacement, setReplacement] = useState("");
+  actionRef.current = runOutlineToolbarAction;
 
-  useEditor(
+  const { get } = useEditor(
     (root) =>
       Editor.make()
         .config(nord)
         .config((ctx) => {
           ctx.set(rootCtx, root);
           ctx.set(defaultValueCtx, content);
+          ctx.update(editorViewOptionsCtx, (options) => ({
+            ...options,
+            attributes: { ...(options.attributes ?? {}), "data-outline-milkdown": formatToolbar ? "true" : "false" },
+          }));
           initialEmitConsumedRef.current = false;
           ctx.get(listenerCtx).markdownUpdated((_ctx, markdown) => {
             if (!initialEmitConsumedRef.current) {
@@ -566,13 +745,71 @@ function WikiEditorInner({ content, onSave }: WikiEditorInnerProps) {
           });
         })
         .use(commonmark)
+        .use(outlineUnderlinePlugin)
         .use(gfm)
         .use(history)
-        .use(listener),
+        .use(listener)
+        // 大纲的首行 h1 被隐藏成标题栏，光标不能落进去（见 outline-hidden-title.ts）。
+        .use(formatToolbar ? outlineHiddenTitleGuardPlugin : []),
     [],
   );
 
-  return <Milkdown />;
+  const updateOutlineToolbar = useCallback(() => {
+    if (!formatToolbar) return;
+    const editor = get();
+    const root = editor?.ctx.get(rootCtx) as HTMLElement | undefined;
+    const selection = window.getSelection();
+    const anchor = selection?.anchorNode;
+    const inside = Boolean(root && anchor && root.contains(anchor));
+    const text = selection?.toString().trim() ?? "";
+    const rect = selection?.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
+    setToolbarPosition(inside && text && rect && rect.width + rect.height > 0 ? { top: rect.top, left: rect.left + rect.width / 2 } : null);
+  }, [formatToolbar, get]);
+
+  useEffect(() => {
+    if (!formatToolbar) return;
+    document.addEventListener("selectionchange", updateOutlineToolbar);
+    return () => document.removeEventListener("selectionchange", updateOutlineToolbar);
+  }, [formatToolbar, updateOutlineToolbar]);
+
+  const runOutlineContextAction = async (action: EditorContextAction) => {
+    const editor = get()
+    if (!editor) return
+    if (action === "undo" || action === "redo") { actionRef.current(editor, action); return }
+    if (action === "selectAll") { selectAllOutline(editor); return }
+    const selected = contextMenu?.text || window.getSelection()?.toString() || ""
+    if (action === "copy" || action === "cut") {
+      if (!selected) return
+      await navigator.clipboard.writeText(selected)
+      if (action === "cut" && contextMenu) editor.action((ctx) => { const view = ctx.get(editorViewCtx); view.dispatch(view.state.tr.insertText("", contextMenu.from, contextMenu.to)); view.focus() })
+      return
+    }
+    if (action === "paste") {
+      const pasted = await navigator.clipboard.readText()
+      editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        const { from, to } = view.state.selection
+        view.dispatch(view.state.tr.insertText(pasted, from, to))
+        view.focus()
+      })
+      return
+    }
+    setFindQuery(selected)
+    setReplaceOpen(action === "replace")
+    setFindOpen(true)
+  }
+
+  const outlineText = findOpen ? (get() ? readOutlinePlainText(get()!) : "") : ""
+  const outlineMatches = findAllMatches(outlineText, findQuery, { caseSensitive: false })
+
+  return (
+    <div onContextMenu={(event) => { if (!formatToolbar) return; event.preventDefault(); event.stopPropagation(); const editor = get(); const range = editor?.action((ctx) => { const selection = ctx.get(editorViewCtx).state.selection; return { from: selection.from, to: selection.to } }) ?? { from: 0, to: 0 }; setContextMenu({ x: event.clientX, y: event.clientY, text: window.getSelection()?.toString() ?? "", ...range }) }}>
+      <TextareaFindBar open={findOpen} query={findQuery} replacement={replacement} activeMatchIndex={outlineMatches.length ? 0 : -1} matchCount={outlineMatches.length} onQueryChange={setFindQuery} onReplacementChange={replaceOpen ? setReplacement : undefined} onReplace={() => { const editor = get(); if (editor) replaceOutlinePlainText(editor, findQuery, replacement, false) }} onReplaceAll={() => { const editor = get(); if (editor) replaceOutlinePlainText(editor, findQuery, replacement, true) }} onNext={() => undefined} onPrevious={() => undefined} onClose={() => { setFindOpen(false); setReplaceOpen(false) }} />
+      {formatToolbar ? <OutlineFormatToolbar position={toolbarPosition} onAction={(action, payload) => { const editor = get(); if (editor) actionRef.current(editor, action, payload) }} /> : null}
+      <Milkdown />
+      {formatToolbar ? <EditorContextMenu position={contextMenu} disabled={{ copy: !contextMenu?.text, cut: !contextMenu?.text }} onAction={(action) => void runOutlineContextAction(action)} onClose={() => setContextMenu(null)} /> : null}
+    </div>
+  );
 }
 
 interface WikiEditorProps {
@@ -586,6 +823,13 @@ interface WikiEditorProps {
   ) => void;
   highlightRequest?: PendingEditorHighlight | null;
   onHighlightHandled?: () => void;
+  onContinuationRequest?: (
+    anchor: ContinuationAnchor,
+    position: { x: number; y: number },
+  ) => void;
+  caretRequest?: PendingEditorCaret | null;
+  onCaretHandled?: () => void;
+  formatToolbar?: boolean;
 }
 
 export interface WikiEditorHandle {
@@ -604,6 +848,10 @@ export const WikiEditor = forwardRef<WikiEditorHandle, WikiEditorProps>(
       onSelectionAction,
       highlightRequest,
       onHighlightHandled,
+      onContinuationRequest,
+      caretRequest,
+      onCaretHandled,
+      formatToolbar = false,
     },
     ref,
   ) {
@@ -691,7 +939,7 @@ export const WikiEditor = forwardRef<WikiEditorHandle, WikiEditorProps>(
         {effectiveMode === "read" ? (
           <div className="px-6 py-6">
             {!immersiveWriting && frontmatter && (
-              <FrontmatterPanel data={frontmatter} />
+              <div data-ui-test-frontmatter="true"><FrontmatterPanel data={frontmatter} /></div>
             )}
             <WikiReader body={body} highlightHandcraftZones={true} />
           </div>
@@ -728,6 +976,9 @@ export const WikiEditor = forwardRef<WikiEditorHandle, WikiEditorProps>(
                 onSelectionAction={onSelectionAction}
                 highlightRequest={highlightRequest}
                 onHighlightHandled={onHighlightHandled}
+                onContinuationRequest={onContinuationRequest}
+                caretRequest={caretRequest}
+                onCaretHandled={onCaretHandled}
               />
             </div>
           </div>
@@ -735,9 +986,9 @@ export const WikiEditor = forwardRef<WikiEditorHandle, WikiEditorProps>(
           <MilkdownProvider>
             <div className="prose prose-invert min-w-0 max-w-none overflow-hidden p-6">
               {!immersiveWriting && frontmatter && (
-                <FrontmatterPanel data={frontmatter} />
+                <div data-ui-test-frontmatter="true"><FrontmatterPanel data={frontmatter} /></div>
               )}
-              <WikiEditorInner content={body} onSave={handleSave} />
+              <WikiEditorInner content={body} onSave={handleSave} formatToolbar={formatToolbar} />
             </div>
           </MilkdownProvider>
         )}

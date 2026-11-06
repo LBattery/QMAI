@@ -1,0 +1,735 @@
+/* 正文编辑器专用测试版皮肤；不命中正式版，不改动持久化文本。 */
+.ui-test-root .ui-test-editor {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  /* 水平边距移到 .ui-test-editor-document 上（见下一条）。
+     为什么不能留在这一层：正文容器有 max-width: 800px。
+     在 1280px 窗口下，把这里的 padding 从 48px 一路调大，
+     正文仍是 800px 宽、位置不变 —— 滑块看起来完全没反应，
+     正是本仓库反复要根除的"设了没反应"。 */
+  padding: 0;
+  background: var(--ui-paper);
+  color: var(--ui-ink);
+  font-family: var(--ui);
+}
+
+.ui-test-root .ui-test-editor-document {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  min-width: 0;
+  margin: 0 auto;
+  /* 「跟随窗口」时的默认边距。只在这里写一次，下面两处都引用它 ——
+     抄两遍的话，改一处漏一处就会让默认档的正文宽度偏掉，而且不会有红灯。
+     注意它**不是** App 独占的那 5 个变量（那些不许在 CSS 里声明字面量），
+     只是本文件内部的局部量。 */
+  --qmai-body-margin-x-fallback: clamp(20px, 4vw, 48px);
+  /* 左右边距的真正落点：它直接决定正文行宽。
+     挂在外层 .ui-test-editor 上的话，正文容器有宽度上限，
+     把外层 padding 从 48px 一路调大正文仍是同一个宽度、位置不变 ——
+     滑块看起来完全没反应，正是本仓库反复要根除的「设了没反应」。
+
+     为什么 max-width 不是裸的 800px：
+     本元素 box-sizing 是 border-box（Tailwind preflight 用 `*` 全局设的，
+     已进产物 index-*.css），max-width 会把左右 padding 一起算进去。
+     那样「800px」就从「正文宽度」变成了「正文 + 两侧边距」——
+     1200px 窗口下正文只剩 800 − 2×48 = 704px，老用户打开会发现正文窄了一圈，
+     而本计划自己的数值对照表写的是「默认档必须与今天逐位相同」。
+     所以上限必须写成「正文 800px + 两侧默认边距」。
+
+     为什么上限用**默认**边距算，而不是用用户的 --qmai-body-margin-x：
+       · 用默认边距 → 默认档正文恰好 800px，与改造前逐位相同（任意窗口宽度）；
+       · 若用用户值 → 拖动时上限跟着一起涨，正文恒为 800px，滑块又变成没反应。
+     用默认值算出的固定上限两全：默认档正文 = 800px，
+     拖动时 padding 变大、上限不动，正文随之变窄，滑块每一档都有可见效果。 */
+  max-width: calc(800px + 2 * var(--qmai-body-margin-x-fallback));
+  padding: 0 var(--qmai-body-margin-x, var(--qmai-body-margin-x-fallback));
+}
+
+.ui-test-root .ui-test-editor-header {
+  position: relative;
+  /* 正文 textarea 是 z-index:1，和头部同级时会盖住向下溢出的草稿提示。抬到 2，选区条（30）和查找条（40）仍在其上。 */
+  z-index: 2;
+  flex-shrink: 0;
+  padding-top: var(--ui-heading-top);
+  background: var(--ui-paper);
+}
+
+/*
+ * ── 章节：标题行与工具栏**同一行**（用户要求）──
+ *
+ * 用户口径：「这些图标太松散了，挨的近一些，放在标题右侧」。
+ * 改造前工具栏是标题**下方的独立一行**：六个 36px 图标 + 6px 间距铺满整行，
+ * 既离标题远、彼此也空。
+ *
+ * ⚠️ 为什么用 grid 而不是把工具栏 JSX 挪进标题行：
+ * 工具栏是两条提示气泡的**定位祖先**（`.ui-test-editor-toolbar` 自己
+ * `position: relative`，气泡 `position: absolute`）。挪 JSX 会让它变成
+ * 标题行里的一个 flex 项，气泡的 `left: 0` 参考系跟着漂到标题右端，
+ * 窄标题下可能把 280px 宽的气泡推出内容区。
+ * grid 只改**视觉位置**，DOM 顺序与定位关系一概不动 ——
+ * 气泡的 top/left/width 三个值继续逐项有效（`ui-test-editor.spec.tsx` 钉着它们）。
+ *
+ * ⚠️ `grid-column: 1 / -1` 那两条是**必须的**，不是冗余：一旦 header 变成 grid，
+ * 它下面**所有**直接子元素都进入自动放置 —— 文件详情区（`showPath` 打开时）
+ * 会被塞进第二列、和工具栏挤在同一行。让它横跨两列即恢复"整行、在下面"。
+ *
+ * ⚠️ 底部间距从工具栏的 `margin-bottom` 挪到 header 的 `padding-bottom`：
+ * 两者现在是**同一个 grid 行**的项目，把 26px 留在标题行的 margin-bottom 上
+ * 会让该行外框变成 28+26=54px，工具栏（30px）被 `align-items: center`
+ * 垂直居中到那 54px 里 —— 图标会浮在标题与下方空白之间。
+ */
+.ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  padding-bottom: 26px;
+}
+.ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-title-row { grid-column: 1; }
+.ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-toolbar { grid-column: 2; }
+.ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-auxiliary,
+.ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-details { grid-column: 1 / -1; }
+
+/*
+ * 章节工具栏：贴着标题右侧、图标之间收紧。
+ *
+ * 间距 6px → 2px，图标盒 36px → 30px（见 `.is-icon-only`）。
+ * 两处一起改才有用户要的效果：36px 的透明盒本身就在字形之间留了 20px 空白，
+ * 只压 gap 的话字形看上去仍然散 —— 而底色已被要求去掉（纯图标），
+ * 盒子边缘不再可见，唯一能"挨近"的手段就是把盒子本身收窄。
+ *
+ * ⚠️ 30px 的命中区**小于 44px 触控建议值**，这是有意的视觉取舍：
+ * `@media (pointer: coarse)` 会把 `.ui-test-editor-action.is-icon-only`
+ * 提回 44px，触屏设备上不会变小；桌面指针设备本来就不吃那套。
+ * 横向仍收窄，但桌面 6 个图标总宽已从 6×42=252px 降到 6×32=192px。
+ */
+.ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-toolbar {
+  margin: 0;
+  gap: 2px;
+}
+
+.ui-test-root .ui-test-editor-scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 底部安全距离：滚到底时最后一行下方保留的空白。
+     改造前这里是写死的 36px，且窄屏另有一条 28px 覆盖（已删除，
+     见文件末尾的 @media 块）—— 两处独立数字正是"不可调"的根源。
+     现在唯一来源是 --qmai-body-safe-bottom，由用户在"字体设置"里调。
+     缺省 51px 是用户确认的值。 */
+  padding-bottom: var(--qmai-body-safe-bottom, 51px);
+  scrollbar-width: thin;
+  scrollbar-color: var(--ui-soft) transparent;
+}
+
+.ui-test-root .ui-test-editor-title-row {
+  min-height: var(--ui-heading-line);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  min-width: 0;
+}
+
+.ui-test-root .ui-test-editor-title,
+.ui-test-root .ui-test-editor-title-input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ui-ink);
+  font: 500 1.25rem/1.75rem var(--serif);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 标题行 = [状态徽章] [标题]。
+ *
+ * ── 章节标题为什么另立一条规则 ──
+ * 用户口径：「将正文当中的章节标题（比如"第一章 无我觉醒"）改成类似于
+ * 『伏笔双格式』这样的字体样式」。注意他点的是**章节**，不是大纲 ——
+ * 而 `.ui-test-editor-title` 这一个类**同时**服务章节与大纲
+ * （`ui-test-editor.tsx` 里 kind 为 chapter / outline 时都渲染它），
+ * 上面那条共用规则就是给大纲留的原样式，也是
+ * `ui-test-header-alignment.spec.ts` 明写「章节大纲标题」并钉住 1.25rem 的那一条。
+ *
+ * 所以这里**不覆盖共用规则**，而是用 `[data-kind="chapter"]` 限定到章节：
+ * 大纲标题保持 1.25rem 衬线不变（用户没要求改，且大纲自己那条
+ * 「伏笔双格式」标签就在它上方，两处都缩小反而分不出层级）。
+ *
+ * 目标样式逐项对齐 `outline-dual-preview.tsx` 里那个标签的
+ * `text-xs font-medium text-muted-foreground`（= 12px / 500 / muted），
+ * 并且**连字族也从 --serif 换成 --ui**：只对齐字号字重却留着衬线，
+ * 看过去仍然不像那个标签 ——「类似的字体样式」指的是整块观感，不是单个字号。
+ *
+ * ⚠️ 这是**内容让位给 chrome** 的取舍：正文 18px 衬线，章节标题 12px 无衬线灰字。
+ * 之所以接受，是因为状态已由前面的实心徽章承担可辨识度，
+ * 标题退成"这一章叫什么"的安静说明。
+ */
+.ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-title,
+.ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-title-input {
+  color: var(--ui-muted);
+  /*
+   * 字号 13px、加粗 —— 用户口径「标题要加粗 当前字号再加1」。
+   * 上一版是 500 / 0.75rem(12px)，"+1" 指 +1px ⇒ 13px = 0.8125rem。
+   */
+  font: 700 0.8125rem/1.5 var(--ui);
+  /*
+   * ── 行高 = 行高盒 = min-height：文字在输入框里**垂直居中** ──
+   *
+   * 用户报的缺陷：「点击标题之后，字体应该显示在边框的最中间，但现在显示在顶上」。
+   *
+   * 成因不是对齐写错，而是**行盒比盒子矮**：
+   * `.ui-test-editor-title-input`（共用规则）有 `min-height: var(--ui-heading-line)`
+   * = 28px，而上一版行高是 `0.75rem/1.5` = 18px。textarea 的内容盒是 28px、
+   * 里面只放得下一条 18px 的行盒，剩下 10px **全部落在下方**
+   * （textarea 的文字默认从内容盒顶部排起），于是聚焦框看着像把字吊在顶上。
+   *
+   * 让行高直接等于那个 28px，行盒就填满内容盒，字形由半行距（half-leading）
+   * 自动居中 —— 不写 padding、不写 `align-content`，因为：
+   *   · 写 padding（(28−19.5)/2 = 4.25px）要引出一个 0.265625rem 这种
+   *     没有来源的魔数，且字号再动就失效；
+   *   · textarea 的 `align-content` 在各版本 WebView2 上行为不一致，
+   *     而本文件已经被"判定可用却静默失效"的写法坑过一次（见 letter-spacing 那段）。
+   *
+   * 用 `var(--ui-heading-line)` 而不是字面量 1.75rem：这个值**已经**是同一个元素的
+   * `min-height`，两处引用同一个变量 ⇒ 以后调行高盒时居中**自动成立**，
+   * 不会出现"改了其一、文字又贴顶"的复发。
+   *
+   * ⚠️ 显示态（h1）与输入态共用这条规则，所以两边行盒都是 28px，
+   * 点击前后文字位置**逐像素相同**，不会跳一下。
+   * `ui-test-clipping.spec.ts` 不会因此报警：它的判据只在规则声明了**固定 `height`**
+   * 时才生效，而本元素只有 `min-height`（下限，盒子可随内容长高）。
+   *
+   * ⚠️ 放在 `font` 简写**之后**：简写会把未给出的 line-height 重置成 normal，
+   * 写在它前面会被吃掉。
+   */
+  line-height: var(--ui-heading-line);
+  /*
+   * ⚠️ `flex: 0 1 auto` 是**必须的**，别退回共用的 `1 1 12rem`。
+   *
+   * 用户点标题后反馈「点击之后边框太宽了」：标题变成 12px 之后，
+   * 共用的 `flex: 1 1 12rem` 仍让这个输入框**撑满整行**，
+   * 于是聚焦时那个矩形（2px outline + 3px offset）围出的是
+   * 一大片空白，而不是"围着这几个字"。
+   *
+   * 改成不伸展 ⇒ 显示态与输入态都只占文字宽度，
+   * 这也与它已有的 `field-sizing: content` 一致（那个属性本来就想贴内容宽，
+   * 只是被 flex-basis: 12rem + 伸展盖掉了）。
+   * 空出的一整行由工具栏接管家，图标因此贴到最右。
+   *
+   * `0 1 auto` 而不是 `0 0 auto`：保留可收缩，长标题才能在窄屏里换行 / 截断，
+   * 而不是把工具栏顶出容器。
+   */
+  flex: 0 1 auto;
+}
+
+/*
+ * 章节标题输入框的聚焦框收细。
+ *
+ * 上面那条全局 `:focus-visible` 是 `2px outline + 3px offset`，对按钮合适；
+ * 但这个输入框是**无边框文字**（`border: 0`），紧贴一行 12px 小字时，
+ * 2px+3px 的框会显得比文字本身重得多 —— 用户反馈的"边框太宽"里也有这一层。
+ *
+ * ⚠️ 选择器为什么写到这么长（必须带 `[data-kind="chapter"]`）：
+ * 全局那条的实参是
+ *   `.ui-test-root .ui-test-editor :is(button, textarea, [contenteditable]):focus-visible`
+ * 而 `:is()` 的特异度取**实参里最高**的那个 —— 是 `[contenteditable]`（0,1,0），
+ * 不是 `textarea`（0,0,1）。所以它是 (0,4,0)，不是"看起来"的 (0,3,1)。
+ *   · 写成 `.ui-test-root .ui-test-editor-title-input:focus-visible` → (0,3,0)，**输**；
+ *   · 写成 `.ui-test-root .ui-test-editor .ui-test-editor-title-input:focus-visible`
+ *     → (0,4,0)，**平** —— 而本规则在文件里**更靠前**，平局时后写的全局规则赢，仍然**输**；
+ *   · 加上 `[data-kind="chapter"]` → (0,5,0)，才真正**赢**。
+ * 别指望靠"挪到文件末尾"来解决：那会让这条规则的位置与它修饰的标题规则分家。
+ */
+.ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-title-input:focus-visible {
+  outline: 1px solid var(--ui-accent);
+  outline-offset: 1px;
+}
+
+.ui-test-root .ui-test-editor-title button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.ui-test-root .ui-test-editor-title-input { min-height: var(--ui-heading-line); resize: none; overflow: hidden; field-sizing: content; }
+
+/*
+ * ── 章节状态徽章：直角 · 实心 · 两个字 ──
+ *
+ * 用户三句话定死了它的形状，逐条对应：
+ *   1) 「不要圆角的，用正方形的 90° 直角」→ `border-radius: 0`
+ *      （⚠️ 刻意不写 `border-radius: 4px` 之类"接近直角"的值：
+ *       用户是对着圆角截图说"不要圆角"的，差 1px 也会被看出来。
+ *       本文件其它控件几乎都是 6–12px 圆角，所以这一条**必须显式写 0**，
+ *       否则将来有人统一"梳理圆角"时最容易被顺手改圆。）
+ *   2) 「徽章尺寸12加粗」→ `font: 700 0.75rem/1.25 var(--ui)`
+ *   3) 「里面就两个字」→ `min-width` 按两个字排布，`white-space: nowrap`
+ *      保证「正式」「草稿」都不折行
+ *
+ * ⚠️ 高度用 `min-height` 而非 `height`：徽章要跟着界面字号缩放
+ * （`ui-test-clipping.spec.ts` 的判据是"固定 px 盒高 + 可缩放行盒"会裁字）。
+ * 这里字号是 rem、行高走 `line-height: 1.25`，`min-height` 只是下限，
+ * 盒子会随内容长高 —— 与 `.ui-test-create-name` 那条已修的例子同形。
+ *
+ * ⚠️ `padding` 的上下值也必须是 rem，理由同上：80% 档下 px 内边距
+ * 不缩、可用高度缩得更快，会把两个字截掉。
+ *
+ * ⚠️ 徽章**不写字间距**：本文件有一条文件级守卫
+ * （`ui-test-editor.spec.tsx` 的「字间距在正文层与输入层引用同一个变量，
+ * 且全文件没有写死的字间距」），它会扫出所有 `letter-spacing` 声明，
+ * 要求每一处都恰好是 `var(--qmai-body-letter-spacing, 0)`。
+ * 那是为了正文层与输入层/高亮层不错位而设的**全局**不变量，
+ * 徽章想加字间距的收益远小于破坏它的代价 —— 最初写成 `.06em` 时
+ * 这条守卫确实红了，且报错信息直接指出"写死会让输入层与高亮层错位"。
+ * 两个字居中本身也不需要字间距。
+ */
+.ui-test-root .ui-test-editor-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.5rem;
+  min-height: 1.25rem;
+  padding: 0.125rem 0.4375rem;
+  border-radius: 0;
+  background: #8b968e;
+  color: #fff;
+  font: 700 0.75rem/1.25 var(--ui);
+  white-space: nowrap;
+  user-select: none;
+  cursor: default;
+}
+
+/* 正式：绿 */
+.ui-test-root .ui-test-editor-badge.is-final { background: #2f9e62; }
+
+.ui-test-root .ui-test-editor-toolbar { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 18px 0 26px; }
+.ui-test-root .ui-test-editor-hint-anchor { position: static; display: inline-flex; max-width: 100%; }
+.ui-test-root .ui-test-editor-action.is-hint-target { color: var(--ui-accent); box-shadow: 0 0 0 2px var(--ui-accent); }
+.ui-test-root .ui-test-editor-draft-hint {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 10px);
+  left: 0;
+  width: min(280px, 100%);
+  padding: 12px 14px;
+  border: 1px solid var(--ui-line);
+  border-radius: 12px;
+  background: var(--ui-paper);
+  color: var(--ui-ink);
+  font: 400 0.8125rem/1.6 var(--ui);
+  overflow-wrap: anywhere;
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--ui-ink) 16%, transparent);
+}
+.ui-test-root .ui-test-editor-draft-hint::before {
+  content: none;
+  position: absolute;
+  top: -6px;
+  left: 36px;
+  width: 12px;
+  height: 12px;
+  background: var(--ui-paper);
+  border-top: 1px solid var(--ui-line);
+  border-left: 1px solid var(--ui-line);
+  transform: rotate(45deg);
+}
+.ui-test-root .ui-test-editor-draft-hint p { margin: 0; }
+.ui-test-root .ui-test-editor-draft-hint-actions { display: flex; align-items: center; gap: 16px; margin-top: 8px; }
+.ui-test-root .ui-test-editor-draft-hint-dismiss {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ui-accent);
+  font: 500 0.8125rem/1.5 var(--ui);
+  cursor: pointer;
+}
+
+/*
+ * 新章节灵感提示（丙-4a）。
+ *
+ * ⚠️ 定位属性与上面的 `.ui-test-editor-draft-hint` **逐项相同**，而且是**独立规则块**
+ * —— 刻意不用选择器分组（`.a, .b { … }`）：`ui-test-editor.spec.tsx` 里那条
+ * 结构断言要求草稿气泡的 `width` 写在**它自己的规则块**里，分组写法不一定匹配。
+ * 那条断言现在会**先剥掉 CSS 注释再匹配**（修复批 F4），所以本段注释怎么写
+ * 都不会冒充它通过 —— 在本注释改写之前，它正好能满足那条正则。
+ *
+ * ⚠️ 也不与草稿提示共用类名：那个类名在本文件对应的 spec 里被 ~20 处断言要求
+ * 「为 null 或长度恰为 1」，共用会把那些断言的含义悄悄扩大到两条气泡上。
+ *
+ * 两条气泡共用 `.ui-test-editor-hint-anchor` 与同一组 top/left/width，
+ * 所以一旦同时挂着就会**精确重叠**。
+ * ⚠️ 互斥**不是**两个纯函数各自判据的巧合后果：两条链喂进纯函数的 `wordCount`
+ * 可以不同（草稿链是持久化快照、灵感链是实时内容），修复批 F1 之前正是那样
+ * 漏掉了「有正文的草稿章 + 清空编辑框」。真正的保证在 `preview-panel.tsx` 里：
+ * 两条链在**同一个 effect** 里按顺序判定，草稿链刚算出来的结果作为
+ * `draftHintVisible` 传给 `resolveInspirationHint`。
+ * 接线证明见 `ui-test-editor.spec.tsx` 的「草稿章有正文时清空编辑器」用例。
+ */
+.ui-test-root .ui-test-editor-inspiration-hint {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 10px);
+  left: 0;
+  width: min(280px, 100%);
+  padding: 12px 14px;
+  border: 1px solid var(--ui-line);
+  border-radius: 12px;
+  background: var(--ui-paper);
+  color: var(--ui-ink);
+  font: 400 0.8125rem/1.6 var(--ui);
+  overflow-wrap: anywhere;
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--ui-ink) 16%, transparent);
+}
+.ui-test-root .ui-test-editor-inspiration-hint::before {
+  content: none;
+  position: absolute;
+  top: -6px;
+  left: 36px;
+  width: 12px;
+  height: 12px;
+  background: var(--ui-paper);
+  border-top: 1px solid var(--ui-line);
+  border-left: 1px solid var(--ui-line);
+  transform: rotate(45deg);
+}
+.ui-test-root .ui-test-editor-inspiration-hint p { margin: 0; }
+.ui-test-root .ui-test-editor-inspiration-hint-actions { display: flex; align-items: center; gap: 16px; margin-top: 8px; }
+.ui-test-root .ui-test-editor-inspiration-hint-dismiss {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ui-accent);
+  font: 500 0.8125rem/1.5 var(--ui);
+  cursor: pointer;
+}
+
+/*
+ * 工具栏图标：**无常态底色**（用户要求「不要背景色，只是单纯的纯图标」）。
+ *
+ * ⚠️ 改造前这里是 `background: var(--ui-panel)`，是一层常驻的浅灰底。
+ * 去掉它之后，可点击性只能靠**悬停**表达 —— 所以下面那条
+ * `:hover { background: var(--ui-soft) }` **必须留着**，不是装饰：
+ * 常态完全透明 + 悬停也无变化 = 用户看不出这里能点。
+ * （用户在确认这一条时也同意保留悬停反馈。）
+ */
+.ui-test-root .ui-test-editor-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 7px 11px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-muted);
+  font: 500 0.8125rem/1.5 var(--ui);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: background-color 150ms, color 150ms;
+}
+
+.ui-test-root .ui-test-editor-action svg,
+.ui-test-root .ui-test-editor-menu-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+/*
+ * 纯图标按钮：30×30 的**透明**命中区（用户要求「不要背景色，只是单纯的纯图标」，
+ * 以及「这些图标太松散了，挨的近一些」）。
+ *
+ * ⚠️ 改造前是 36×36 + `background: var(--ui-panel)`。底色还在时，
+ * 36px 的盒子有可见边缘，图标之间天然有"分块"感；底色去掉之后
+ * 只剩 16px 的字形浮在 36px 空白里，同一排看过去就是散。
+ * 收到 30px 让字形间距回到 ~14px。
+ *
+ * ⚠️ `padding: 7px` 与 `width: 30px` 是**配对**的：图标本身 16px（见上面的 svg 规则），
+ * 16 + 2×7 = 30，正好不留余量。若日后要把 width 收得更窄，
+ * 必须同时改 padding（或让 svg 缩小），否则 16px 字形会溢出 30px 的盒子。
+ *
+ * ⚠️ 这里的 `min-height: 30px` 会让下面窄屏 / 触屏媒体查询里那句
+ * `min-height: 44px` **失效**（`(0,3,0)` 压过 `(0,2,0)`），
+ * 所以那两个媒体查询里必须另写一条 `.is-icon-only` 的 44px。
+ */
+.ui-test-root .ui-test-editor-action.is-icon-only { width: 30px; min-height: 30px; padding: 7px; }
+.ui-test-root .ui-test-editor-action:hover { background: var(--ui-soft); color: var(--ui-accent); }
+.ui-test-root .ui-test-editor-action.is-primary { background: var(--ui-accent); color: var(--ui-on-accent); }
+.ui-test-root .ui-test-editor-action:disabled { cursor: not-allowed; opacity: .6; }
+.ui-test-root .ui-test-editor-more { min-width: 36px; background: transparent; }
+.ui-test-root .ui-test-editor :is(button, textarea, [contenteditable]):focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 3px; }
+
+.ui-test-root .ui-test-editor-menu-positioner { z-index: 50; }
+.ui-test-root .ui-test-editor-menu {
+  width: 240px;
+  max-width: min(var(--available-width), calc(100vw - 24px));
+  max-height: min(var(--available-height), 70dvh);
+  overflow: auto;
+  padding: 8px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--ui-paper);
+  color: var(--ui-ink);
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--ui-ink) 16%, transparent);
+  outline: none;
+}
+
+.ui-test-root .ui-test-editor-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 36px;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: 400 0.8125rem/1.6 var(--ui);
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.ui-test-root .ui-test-editor-menu-item:is(:hover, [data-highlighted]) { background: var(--ui-soft); }
+.ui-test-root .ui-test-editor-menu-item[data-disabled] { opacity: .6; cursor: not-allowed; }
+.ui-test-root .ui-test-editor-path { margin: 0 0 20px; color: var(--ui-muted); font: 400 0.8125rem/1.6 var(--ui); overflow-wrap: anywhere; }
+
+/* 正文四处必须引用同一个字号变量（--qmai-body-font-size / -line-height 定义在
+   ui-test.css 的 :root）。第 3 处 [data-find-highlights] 是覆盖在 textarea 之上的
+   查找高亮层，取值表达式**必须与输入层逐字相同**，否则高亮与文字错位。
+
+   ── 这套规则在真实应用里**谁能用到**（任务 10 用 CDP 实测后补记，2026-10-08）──
+   计算样式普查到不了编辑器 DOM（11 个设置分区实测 .ui-test-editor-body = 0 /
+   .ProseMirror = 0），所以这条边界过去只能靠推测。实测结论如下，**与直觉相反**：
+
+   · **小说章节用不到 `li` 那两条**。章节走 `immersiveWriting`（见
+     preview-panel.tsx 的 `immersiveWriting={isSelectedChapter}`），
+     WikiEditor 里 `effectiveMode = immersiveWriting ? "edit" : mode` 把它钉死在
+     编辑态，正文是一个 `<textarea>`；textarea 里不可能有 `ul/ol/li/::marker`。
+     顺带一提，UiTestEditor 自己的读写切换按钮是死代码（JSX 里写成 `{false && …}`），
+     所以"预览正文"那条路也进不去。
+   · **`li::marker` 唯一可达的消费者是非章节文档**（大纲/设定页，从目录打开的
+     `.md`）：它们 `kind="outline"`、`immersiveWriting=false`，走 Milkdown 的
+     `.ProseMirror`（另含 read 模式的 `[dir][lang]`）。
+   · 实测样本：真实 exe 打开 `wiki/outlines/开篇方向.md`（`ul>li` 27 个、`ol>li` 5 个）
+     默认档 正文 18px / 无序 li 16px / 有序 li 16px / 无序 ::marker 12px /
+     有序 ::marker 16px；正文字号 125% 后为 22.5 / 20 / 20 / 15 / 20，
+     即逐个恰好 ×1.25，比例（无序 < 列表项、有序 = 列表项）保持不变。
+
+   因此本文件由 verify-body-font-single-source.mjs（静态）+
+   verify-real-exe.mjs（真实 exe 读 ::marker）+ verify-real-exe-settings-save.mjs
+   （真实 exe 走设置保存）三重把关；计算样式普查发现不了这里。
+
+   新的可调参数（字号 px / 行间距 / 字间距 / 左右边距 / 底部安全距离）
+   一律通过 ui-test.css 的间接层与使用点的 var(...) 兜底值流向正文，
+   函数入口只有 font-settings.ts 的 applyBodyTypography 一个。
+   为什么要有入口：这些值同时决定正文与覆盖在正文上的查找高亮层，
+   两处各写一次就会错位（见上面 [data-find-highlights] 的说明）。 */
+.ui-test-root .ui-test-editor-body { min-width: 0; font: 400 var(--qmai-body-font-size)/var(--qmai-body-line-height) var(--body-font); letter-spacing: var(--qmai-body-letter-spacing, 0); overflow-wrap: anywhere; }
+/* 让旧编辑器参与正文排版，不再叠加文档卡片和第二个滚动容器。 */
+.ui-test-root .ui-test-editor-body > div { height: auto; overflow: visible; }
+/*
+ * ── 覆盖在正文之上的**界面浮层**必须显式钉回界面字体 ──
+ *
+ * 为什么需要这一段（本轮终审查出的真实泄漏，而它**所有既有守卫都看不见**）：
+ *
+ *   `.ui-test-editor-body` 上那条 `font:` 简写会把 font-family 也设成
+ *   `var(--body-font)`，而 font-family 是**继承**属性 ——
+ *   凡是渲染在正文容器内、但本身属于界面 chrome 的**非表单元素**，
+ *   都会静默继承正文字体。
+ *
+ *   `ui-test.css` 里有一条兜底只覆盖 `button, input, textarea, select`，
+ *   所以查找条的输入框和按钮是对的，而它们旁边那个显示「1/5」「未找到」的
+ *   `<span>` 不在兜底里 —— 用户把正文字体改成楷体后，查找条的计数文字
+ *   会跟着变楷体，而它显然是界面，不是正文。用户报的正是这一类缺陷。
+ *
+ * 为什么既有守卫看不见它：
+ *   · `ui-font-derivation.spec.ts` 的泄漏守卫扫的是**声明**了 `var(--body-font)`
+ *     的规则；这是**继承**泄漏，声明处（:268/:277）本身没问题，结构上不可见；
+ *   · `verify-real-exe.mjs` 的 inContent 判据用
+ *     `closest(".ProseMirror, .ui-test-editor-body, .ui-test-editor, textarea")`
+ *     分类，这个 span 命中 `.ui-test-editor-body` 被归为 content，
+ *     于是"它跟随界面字号 = 违规"那条判据永远不会指向它。
+ *
+ * 所以这条不能靠"守卫会发现"，只能靠**把这些浮层显式钉回 var(--ui)**，
+ * 并由 ui-test-editor.spec.tsx 里那条"已知界面浮层必须显式声明界面字体"的
+ * 判据把它变成**持续要求**（新增一个浮层标记就会红）。
+ *
+ * 用容器级而不是逐个元素：将来往查找条里加任何非表单元素都会自然跟随界面字体，
+ * 不必记得再加一条规则。
+ */
+.ui-test-root .ui-test-editor-body :is([data-find-bar="true"], [data-selection-toolbar="true"], [data-editor-context-menu="true"]) { font-family: var(--ui); }
+.ui-test-root .ui-test-editor-body .immersive-scroll-container { height: auto; overflow: visible; }
+.ui-test-root .ui-test-editor-body .immersive-scroll-container > div { max-width: 100%; padding: 0; }
+.ui-test-root .ui-test-editor-body .prose { padding: 0; overflow: visible; }
+.ui-test-root .ui-test-editor-body .milkdown { padding: 0; }
+.ui-test-root .ui-test-editor-body .ProseMirror,
+.ui-test-root .ui-test-editor-body [dir][lang],
+.ui-test-root .ui-test-editor-body [data-writing-editor] textarea { color: var(--ui-ink); font: 400 var(--qmai-body-font-size)/var(--qmai-body-line-height) var(--body-font); }
+.ui-test-root .ui-test-editor-body :is(.ProseMirror, [dir][lang]) p { margin: 0 0 16px; line-height: var(--qmai-body-line-height); text-indent: 2em; }
+.ui-test-root .ui-test-editor-body :is(h1, h2, h3, h4, h5, h6, li, blockquote, pre),
+.ui-test-root .ui-test-editor-body :is(li, blockquote) p { text-indent: 0; }
+/* 文档标题：字号跟随正文字号倍数，但字体按用户确认保持 var(--ui)。 */
+.ui-test-root .ui-test-editor-body :is(h2, h3, h4, h5, h6) { margin: 26px 0 12px; font: 600 var(--qmai-body-font-size)/1.6 var(--ui); color: var(--ui-ink); }
+.ui-test-root .ui-test-editor-body :is(ul, ol) { margin: 6px 0 16px; padding-left: 1.5em; }
+.ui-test-root .ui-test-editor-body :is(pre, table) { max-width: 100%; overflow-x: auto; }
+.ui-test-root .ui-test-editor-body img { max-width: 100%; height: auto; }
+/*
+ * 表格 / 引用块 / 代码块在 WYSIWYG 编辑态没有任何骨架。
+ * milkdown 主题包只做正文排版（段落、列表、标题），gfm 预设虽然把
+ * `| 项 | 设定 |` 解析成了 <table>，却没有配套的边框和内边距，
+ * 于是导入的设定集在编辑态摊成一片纯文字、列与列之间看不出边界。
+ * 实测那份真实设定集 427 行里有 160 行是表格行、34 行引用、3 段围栏代码，
+ * 所以这三类都要补，取值与阅读态（WikiReader 的组件样式）对齐。
+ * 只作用于编辑态根节点（.ProseMirror / .milkdown）：阅读态既有样式已经齐全，
+ * 再叠加会变成双层边框。
+ * 单元格里 `> p` 那条必须比上面 `:is(.ProseMirror, [dir][lang]) p`（优先级 0,4,1）
+ * 更具体，否则正文的段首缩进会留在表格里把列撑歪；这里多带一层 .tableWrapper
+ * （prosemirror-tables 生成的表格包裹层，见 milkdown-vendor chunk 里
+ * `this.dom.className = "tableWrapper"`）来取得 0,4,2。
+ */
+.ui-test-root .ui-test-editor-body .ProseMirror table,
+.ui-test-root .ui-test-editor-body .milkdown table { width: 100%; margin: 0 0 16px; border-collapse: collapse; }
+.ui-test-root .ui-test-editor-body .ProseMirror :is(th, td),
+.ui-test-root .ui-test-editor-body .milkdown :is(th, td) { border: 1px solid var(--ui-line); padding: 6px 12px; line-height: 1.7; text-align: start; vertical-align: top; }
+.ui-test-root .ui-test-editor-body .ProseMirror th,
+.ui-test-root .ui-test-editor-body .milkdown th { background: var(--ui-soft); font-weight: 600; }
+.ui-test-root .ui-test-editor-body .ProseMirror .tableWrapper table :is(th, td) > p,
+.ui-test-root .ui-test-editor-body .milkdown .tableWrapper table :is(th, td) > p { margin: 0; text-indent: 0; }
+.ui-test-root .ui-test-editor-body .ProseMirror blockquote,
+.ui-test-root .ui-test-editor-body .milkdown blockquote { margin: 0 0 16px; border-left: 3px solid var(--ui-accent); background: var(--ui-panel); padding: 8px 14px; }
+.ui-test-root .ui-test-editor-body .ProseMirror blockquote > :last-child,
+.ui-test-root .ui-test-editor-body .milkdown blockquote > :last-child { margin-bottom: 0; }
+.ui-test-root .ui-test-editor-body .ProseMirror pre,
+.ui-test-root .ui-test-editor-body .milkdown pre { margin: 0 0 16px; border: 1px solid var(--ui-line); border-radius: 6px; background: var(--ui-panel); padding: 12px 14px; }
+/* 原写作文本已经含全角缩进，不能再叠加 CSS 缩进。Enter/查找/选区沿用原编辑器。 */
+.ui-test-root .ui-test-editor-body [data-writing-editor] textarea { text-indent: 0; }
+/* 声明视觉缩进，不改 textarea 值、选区或写盘；原生控件的支持限制见下。 */
+.ui-test-root .ui-test-editor-body [data-writing-editor] textarea[data-ui-test-indent="visual"] { text-indent: 2em each-line; }
+.ui-test-root .ui-test-editor-body [data-writing-editor] textarea { display: block; caret-color: var(--ui-accent); }
+/* 原生 textarea 不吃继承：Blink 的 UA 样式表给它声明了 letter-spacing: normal，
+   而任何声明都胜过继承。只靠 .ui-test-editor-body 上面那一处，输入层会退回
+   normal、与覆盖其上的查找高亮层错位 —— 正是本文件最怕的「高亮与文字错位」。
+   这里显式再写一次**同一个变量**，所以仍然不可能漂移（两处同源）。
+   为什么不能只依赖别处：Tailwind preflight 里恰好有一条 textarea{letter-spacing:inherit}，
+   改造后一段时间正是靠它才碰巧一致。但那是挂在另一个文件 @layer base 上的依赖，
+   一旦 preflight 被关掉、或出现任何一条不带 layer 的 letter-spacing 声明，一致性
+   就会静默失效且没有任何红灯。这条断言在真机上读两层计算值（见 spec 与任务 12）。 */
+.ui-test-root .ui-test-editor-body [data-writing-editor] textarea { letter-spacing: var(--qmai-body-letter-spacing, 0); }
+/* Chrome textarea 的 each-line 当前只绘制首行，查找层须匹配实际绘制位置。 */
+.ui-test-root .ui-test-editor-body [data-find-highlights] { font-size: var(--qmai-body-font-size); line-height: var(--qmai-body-line-height); }
+.ui-test-root .ui-test-editor-body [data-writing-editor] > div:has(> textarea[data-ui-test-indent="visual"]) > [data-find-highlights] { text-indent: 2em; }
+.ui-test-root .ui-test-editor[data-kind="outline"] .ui-test-editor-body { padding-top: 24px; }
+.ui-test-root .ui-test-editor[data-kind="outline"] .ui-test-editor-body :is(.ProseMirror, [dir][lang]) > :is(h2, h3):first-child { margin-top: 0; }
+/* 正文以插入光标表示焦点，按钮、标题、菜单继续保留键盘焦点轮廓。 */
+.ui-test-root .ui-test-editor-body [data-writing-editor] textarea:focus-visible,
+.ui-test-root .ui-test-editor-body .ProseMirror:focus-visible { outline: none; box-shadow: none; caret-color: var(--ui-accent); }
+.ui-test-root .ui-test-editor-body [data-ui-test-frontmatter] { display: none; }
+.ui-test-root .ui-test-editor-body :is(.ProseMirror, [dir][lang]) > p { font-size: var(--qmai-body-font-size); }
+.ui-test-root .ui-test-editor[data-kind="outline"] .ui-test-editor-body :is(.ProseMirror, [dir][lang]) > p { text-indent: 0; }
+.ui-test-root .ui-test-editor-body :is(.ProseMirror, [dir][lang]) :is(ul, ol) { padding-left: 21px; font-size: var(--qmai-body-font-list); line-height: var(--qmai-body-line-height); }
+.ui-test-root .ui-test-editor-body :is(.ProseMirror, [dir][lang]) li { margin: 0; padding: 0; font-size: var(--qmai-body-font-list); line-height: var(--qmai-body-line-height); }
+.ui-test-root .ui-test-editor-body :is(.ProseMirror, [dir][lang]) li p { margin: 0; padding: 0; font-size: var(--qmai-body-font-list); line-height: var(--qmai-body-line-height); text-indent: 0; }
+/* 列表标记：**只有非章节文档（大纲/设定页）会走到这两条**——章节正文是
+   textarea，不可能产生 li。实测比例必须是「无序标记(0.75rem) < 无序列表项(1rem)」
+   与「有序标记 = 有序列表项」，两者都随 --qmai-body-font-size 等比缩放。
+   检查方式见上方注释与 verify-real-exe.mjs（必须读 li::marker，
+   **不能**读 ul::marker：后者会静默返回 ul 自身的字号，而 16px 恰好等于
+   有序标记的期望值，会得到一个假通过）。 */
+.ui-test-root .ui-test-editor-body :is(.ProseMirror, [dir][lang]) li::marker { color: var(--ui-ink); font-size: var(--qmai-body-font-marker); }
+.ui-test-root .ui-test-editor-body :is(.ProseMirror, [dir][lang]) ol > li::marker { font-size: var(--qmai-body-font-list); }
+.ui-test-root .ui-test-editor-details,
+.ui-test-root .ui-test-editor-auxiliary { margin: 0 0 24px; padding: 16px; border-radius: 8px; background: var(--ui-panel); font: 400 0.8125rem/1.6 var(--ui); overflow-wrap: anywhere; }
+.ui-test-root .ui-test-editor-details .not-prose { margin: 0; border: 0; background: none; box-shadow: none; }
+.ui-test-root .ui-test-editor-details .ui-test-editor-path { margin-bottom: 8px; }
+.ui-test-root .ui-test-editor-auxiliary[hidden] { display: none; }
+/* 原 Edit/Done 切换及重复标题已迁入中文更多菜单和可编辑标题，不丢操作。 */
+.ui-test-root .ui-test-editor[data-kind="outline"] .ui-test-editor-body > div > button { display: none; }
+.ui-test-root .ui-test-editor[data-kind="outline"] .ui-test-editor-body > div > .px-6 { padding: 0; }
+.ui-test-root .ui-test-editor[data-kind="outline"] .ui-test-editor-body :is(.ProseMirror, [dir][lang]) > h1:first-child { display: none; }
+
+.ui-test-root .ui-test-editor-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin-top: 32px;
+  color: var(--ui-muted);
+  font: 400 0.8125rem/1.6 var(--ui);
+}
+
+.ui-test-root .ui-test-editor-save { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+.ui-test-root .ui-test-editor-save [data-ui-test-save-state] { display: inline-flex; align-items: center; gap: 6px; }
+.ui-test-root .ui-test-editor-save svg { width: 14px; height: 14px; flex-shrink: 0; }
+.ui-test-root .ui-test-editor-save .ui-test-editor-action { margin-left: 8px; }
+.ui-test-root .ui-test-editor-task-status { margin-top: 8px; }
+.ui-test-root .ui-test-editor-footer-meta { font-variant-numeric: tabular-nums; }
+.ui-test-root .ui-test-editor-empty { display: grid; height: 100%; place-content: center; gap: 8px; padding: 24px; text-align: center; color: var(--ui-muted); font: 400 0.875rem/1.7 var(--ui); }
+.ui-test-root .ui-test-editor-empty h2 { margin: 0; color: var(--ui-ink); font: 500 1.375rem/1.5 var(--serif); }
+
+@media (max-width: 640px) {
+  .ui-test-root .ui-test-editor-header { padding-top: var(--ui-heading-top); }
+  .ui-test-root .ui-test-editor-title-row { gap: 8px 12px; }
+  .ui-test-root .ui-test-editor-toolbar { gap: 6px; margin-bottom: 24px; }
+  /*
+   * 章节：窄屏放弃"图标并排在最右"，改为图标另起一行。
+   *
+   * ⚠️ 两条都得写，缺一个都会坏：
+   *   · 不改 `grid-template-columns` ⇒ 第二列（工具栏）仍然占位，第一列被压到
+   *     放不下标题，两边一起挤；
+   *   · 不清 `margin-bottom` ⇒ 上面那条 24px 会留在工具栏上，
+   *     而工具栏此时与标题行分属两行，那 24px 变成行内多余空白。
+   */
+  .ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-header { grid-template-columns: minmax(0, 1fr); }
+  .ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-title-row { grid-column: 1 / -1; }
+  .ui-test-root .ui-test-editor[data-kind="chapter"] .ui-test-editor-toolbar {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    margin-bottom: 0;
+    gap: 2px;
+  }
+  .ui-test-root .ui-test-editor-action,
+  .ui-test-root .ui-test-editor-menu-item { min-height: 44px; }
+  /*
+   * ⚠️ 这条**不能省**。基础规则里的 `.ui-test-editor-action.is-icon-only`
+   * （(0,3,0)）比上面那条 `.ui-test-editor-action`（(0,2,0)）特异度更高，
+   * 光靠"写在后面"压不住它 —— 30px 的 min-height 会继续赢，
+   * 于是这个 44px 的触控提升对**纯图标按钮完全失效**（改造前它们没有
+   * 自己的 min-height，所以是吃得到的）。宽度也一并放宽：30px 宽的手指目标太小。
+   */
+  .ui-test-root .ui-test-editor-action.is-icon-only { width: 44px; min-height: 44px; }
+  .ui-test-root .ui-test-editor-footer-meta { flex-basis: 100%; }
+}
+
+@media (pointer: coarse) {
+  .ui-test-root .ui-test-editor-action,
+  .ui-test-root .ui-test-editor-menu-item { min-height: 44px; }
+  /* 同上：触屏必须把 30px 的图标盒放大回可点尺寸。 */
+  .ui-test-root .ui-test-editor-action.is-icon-only { width: 44px; min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-test-root .ui-test-editor-action { transition: none; }
+}

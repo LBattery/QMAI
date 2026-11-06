@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest"
-import type { AiCapability } from "./types"
 import {
   buildAvailableCapabilities,
   buildBuiltInToolCapabilities,
@@ -18,19 +17,6 @@ const toolNames = [
   "read_web_page",
   "summarize_search_results",
 ]
-
-function futureMcpCapability(): AiCapability {
-  return {
-    id: "mcp:knowledge-graph:query",
-    name: "Knowledge Graph Query",
-    kind: "mcp_tool",
-    permission: "auto",
-    modes: ["strict"],
-    intents: ["character_query", "setting_query", "general"],
-    toolName: "mcp_knowledge_graph_query",
-    source: "mcp",
-  }
-}
 
 describe("AI capability selector", () => {
   it("builds capabilities from built-in tool names and selected skills", () => {
@@ -72,7 +58,6 @@ describe("AI capability selector", () => {
     const capabilities = buildAvailableCapabilities({
       toolNames,
       selectedSkills: [outputSkill],
-      mcpCapabilities: [futureMcpCapability()],
     })
 
     const selected = selectCapabilities({
@@ -90,7 +75,6 @@ describe("AI capability selector", () => {
     ]))
     expect(selected.map((item) => item.id)).not.toContain("skill:output")
     expect(selected.some((item) => item.kind === "web_search")).toBe(false)
-    expect(selected.some((item) => item.kind === "mcp_tool")).toBe(false)
     expect(JSON.stringify(selected)).not.toContain("private output instructions")
   })
 
@@ -178,7 +162,6 @@ describe("AI capability selector", () => {
     const capabilities = buildAvailableCapabilities({
       toolNames: ["read_chapter", "run_chapter_workflow"],
       selectedSkills: [],
-      mcpCapabilities: [],
     })
 
     const standardSelected = selectCapabilities({
@@ -198,40 +181,25 @@ describe("AI capability selector", () => {
     expect(strictSelected.map((item) => item.toolName)).toContain("run_chapter_workflow")
   })
 
-  it("allows strict knowledge tasks to select future MCP placeholders without executing MCP", () => {
-    const capabilities = [
-      ...buildBuiltInToolCapabilities(toolNames),
-      futureMcpCapability(),
-    ]
+  it("keeps discuss writing mode read-only and never selects the workflow tool", () => {
+    const capabilities = buildAvailableCapabilities({
+      toolNames: ["read_chapter", "read_outline", "run_chapter_workflow", "write_chapter", "apply_skill", "load_context"],
+      selectedSkills: [],
+    })
 
     const selected = selectCapabilities({
       capabilities,
-      intent: "character_query",
-      mode: "strict",
-      userMessage: "use knowledge graph to analyze protagonist and antagonist relationship",
+      intent: "write_chapter",
+      mode: "discuss",
+      userMessage: "第三章不知道怎么写",
     })
 
-    expect(selected).toContainEqual(expect.objectContaining({
-      id: "mcp:knowledge-graph:query",
-      kind: "mcp_tool",
-      permission: "auto",
-      toolName: "mcp_knowledge_graph_query",
-    }))
-  })
-
-  it("does not select graph MCP capabilities when classification blocks graph data", () => {
-    const selected = selectCapabilities({
-      capabilities: [
-        ...buildBuiltInToolCapabilities(toolNames),
-        futureMcpCapability(),
-      ],
-      intent: "character_query",
-      mode: "strict",
-      userMessage: "use knowledge graph to analyze relationships",
-      blockedSources: ["graph"],
-    })
-
-    expect(selected.some((item) => item.kind === "mcp_tool")).toBe(false)
+    const names = selected.map((item) => item.toolName)
+    expect(names).toContain("read_chapter")
+    expect(names).toContain("read_outline")
+    expect(names).not.toContain("run_chapter_workflow")
+    expect(names).not.toContain("write_chapter")
+    expect(names).not.toContain("apply_skill")
   })
 
   it("can build selected skill capabilities directly", () => {

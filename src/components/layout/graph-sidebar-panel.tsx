@@ -4,6 +4,7 @@ import { Filter, SlidersHorizontal, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { GRAPH_MODE_LABELS, type GraphMode } from "@/lib/graph-mode"
 import { PanelHeaderWithHelp } from "@/components/layout/panel-header-with-help"
+import { SidebarBottomActions } from "@/components/layout/sidebar-bottom-actions"
 
 type ColorMode = "type" | "community"
 type GraphDisplayMode = "graph" | "document" | "mindmap"
@@ -35,7 +36,7 @@ export function GraphSidebarPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
+      <div data-ui-panel-heading className="flex shrink-0 items-center justify-between border-b px-3 py-2">
         <div className="flex items-center gap-1.5 text-sm font-semibold">
           <PanelHeaderWithHelp title={t("novel.graph.title")} helpKey="graph" />
         </div>
@@ -131,7 +132,7 @@ export function GraphSidebarPanel() {
               <select
                 value={edgeStyle}
                 onChange={(e) => setEdgeStyle(e.target.value as GraphEdgeStyle)}
-                className="flex-1 h-6 rounded border border-input bg-background px-1 text-[11px] outline-none"
+                className="flex-1 h-6 rounded border border-input bg-background px-1 text-[0.6875rem] outline-none"
               >
                 <option value="curve">曲线避让</option>
                 <option value="arrow">箭头</option>
@@ -173,6 +174,7 @@ export function GraphSidebarPanel() {
           )}
         </div>
       </div>
+      <SidebarBottomActions />
     </div>
   )
 }

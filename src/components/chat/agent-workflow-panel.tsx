@@ -1,5 +1,6 @@
 import { useMemo, useRef, useEffect } from "react"
 import { getWorkflowToolDescription, getWorkflowToolResultDisplay } from "@/lib/agent/workflow-trace"
+import { extractSearchDisplayDetail } from "@/lib/search-display"
 import type { AgentRunRecord } from "@/lib/agent/types"
 import type { ContextTrace } from "@/lib/agent/context-trace"
 import { normalizeOutlineWriteTarget } from "@/lib/agent/tools/write-outline-node"
@@ -23,6 +24,7 @@ interface AgentWorkflowPanelProps {
 function adaptToolCall(call: ToolCallRecord): ToolCallEventItem {
   const isError = call.status === "error"
   const displayResult = getWorkflowToolResultDisplay(call.result)
+  const searchDetail = isError ? null : extractSearchDisplayDetail(call.result)
   return {
     id: call.id,
     name: call.name,
@@ -34,6 +36,7 @@ function adaptToolCall(call: ToolCallRecord): ToolCallEventItem {
     error: isError ? displayResult : undefined,
     startedAt: call.startedAt,
     finishedAt: call.finishedAt,
+    ...(searchDetail ? { searchDetail } : {}),
   }
 }
 
@@ -168,14 +171,14 @@ export function AgentWorkflowPanel({
                 <button
                   type="button"
                   onClick={() => onConfirmSave(call)}
-                  className="rounded bg-green-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-green-700"
+                  className="rounded bg-green-600 px-2.5 py-1 text-[0.6875rem] font-medium text-white hover:bg-green-700"
                 >
                   确认保存
                 </button>
                 <button
                   type="button"
                   onClick={() => onReject(call)}
-                  className="rounded border border-amber-300/70 bg-background px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent"
+                  className="rounded border border-amber-300/70 bg-background px-2.5 py-1 text-[0.6875rem] font-medium text-muted-foreground hover:bg-accent"
                 >
                   放弃
                 </button>

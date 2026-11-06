@@ -4,6 +4,7 @@ import { resolve } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 import { ChatMessage, StreamingMessage } from "./chat-message"
 import { getWorkflowModeButtonClass } from "./chat-panel"
+import { WAITING_HINTS } from "@/lib/novel/waiting-hints"
 import type { DisplayMessage } from "@/stores/chat-store"
 
 vi.mock("@/lib/novel/agent-parser", () => ({
@@ -91,6 +92,29 @@ describe("chat message references", () => {
     expect(html).toContain("@第一章")
     expect(html).toContain('data-reference-id="ref-1"')
     expect(html).not.toContain("移除引用")
+  })
+})
+
+describe("chapter co-creation rendering", () => {
+  it("hides the chapter_discuss protocol block from the assistant bubble", () => {
+    const message: DisplayMessage = {
+      id: "msg-discuss",
+      role: "assistant",
+      content: [
+        "关键判断：第三章需要一个爆发点。",
+        "<!-- chapter_discuss -->",
+        '{"status":"needs_choice","module":"第3章","directions":[]}',
+        "<!-- /chapter_discuss -->",
+      ].join("\n"),
+      timestamp: 1,
+      conversationId: "conv-1",
+      chapterDiscussPhase: "decision",
+    }
+
+    const html = renderToStaticMarkup(<ChatMessage message={message} />)
+
+    expect(html).not.toContain("chapter_discuss")
+    expect(html).toContain("关键判断")
   })
 })
 
@@ -223,7 +247,8 @@ describe("AI 对话上下文中控入口", () => {
 
     const html = renderToStaticMarkup(<ChatMessage message={message} />)
 
-    expect(html).toContain("查看生成详情")
+    expect(html).not.toContain("查看生成详情")
+    expect(html).toContain("查看本轮用量")
   })
 })
 
@@ -308,3 +333,296 @@ describe("deep chapter unfinished continuation action", () => {
     expect(source).toContain("继续未完成")
   })
 })
+
+describe("生成期间始终显示等待文案", () => {
+  const runningMessage = (content: string, isAgentRunning: boolean): DisplayMessage => ({
+    id: "assistant-hint",
+    role: "assistant",
+    content,
+    timestamp: 1,
+    conversationId: "conv-1",
+    isAgentRunning,
+  })
+
+  const hasWaitingHint = (html: string) => WAITING_HINTS.some((hint) => html.includes(hint))
+
+  it("正文已经在生成时，等待文案仍然显示在正文下面", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessage message={runningMessage("这是最终正文。", true)} />,
+    )
+
+    expect(html).toContain("这是最终正文。")
+    expect(hasWaitingHint(html)).toBe(true)
+  })
+
+  it("还没有正文时同样显示等待文案", () => {
+    const html = renderToStaticMarkup(<ChatMessage message={runningMessage("", true)} />)
+
+    expect(hasWaitingHint(html)).toBe(true)
+  })
+
+  it("生成完全结束后不再显示等待文案", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessage message={runningMessage("这是最终正文。", false)} />,
+    )
+
+    expect(html).toContain("这是最终正文。")
+    expect(hasWaitingHint(html)).toBe(false)
+  })
+
+  it("等待文案渲染在正文之后，确保始终在最下面", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessage message={runningMessage("这是最终正文。", true)} />,
+    )
+
+    const contentIndex = html.indexOf("这是最终正文。")
+    const hintIndex = WAITING_HINTS.reduce((found, hint) => {
+      const index = html.indexOf(hint)
+      return index >= 0 && (found < 0 || index < found) ? index : found
+    }, -1)
+    expect(contentIndex).toBeGreaterThanOrEqual(0)
+    expect(hintIndex).toBeGreaterThan(contentIndex)
+  })
+})
+
+/*
+ * 事件细纲：章节工具栏那枚「生成章节细纲」现在把请求发进 AI 对话
+ * （用户要求「生成的内容在 AI 对话框中显示」），所以写作助手这一侧也必须
+ * 认得出细纲并把裸 JSON 收起来 —— 否则用户看到的是一大坨 `eventOutlineData`。
+ */
+describe("事件细纲卡片（写作助手侧）", () => {
+  const outline = {
+    version: 1,
+    chapterNumber: 12,
+    title: "第12章 · 令牌初现",
+    targetWords: 3000,
+    events: [1, 2, 3, 4].map((id) => ({
+      id,
+      title: `事件${id} 一句话事件`,
+      points: ["关键台词：你来啦", "神情动作：她手一抖"],
+    })),
+    endingHook: "令牌上的四个字亮起时，院外传来脚步声。",
+  }
+
+  const assistantWithOutline = (patch: Partial<DisplayMessage> = {}): DisplayMessage => ({
+    id: "msg-event-outline",
+    role: "assistant",
+    content: [
+      "# 事件细纲 · 第12章 令牌初现",
+      "",
+      "## 事件1 楚白翻出令牌",
+      "- 关键台词：你来啦",
+      "",
+      "```json",
+      JSON.stringify({ eventOutlineData: outline }),
+      "```",
+    ].join("\n"),
+    timestamp: 1,
+    conversationId: "conv-1",
+    ...patch,
+  })
+
+  it("把 eventOutlineData 渲染成卡片，并且不再显示裸 JSON", () => {
+    const html = renderToStaticMarkup(<ChatMessage message={assistantWithOutline()} />)
+
+    expect(html).toContain("data-event-outline-card")
+    expect(html).toContain("第12章 · 令牌初现")
+    expect(html).toContain("用这份细纲写这一章")
+    // 卡片已经把同一份数据渲染成可读结构，围栏里的裸 JSON 是纯噪声。
+    expect(html).not.toContain("eventOutlineData")
+  })
+
+  it("模型只给 JSON 时，气泡用数据反推正文（不能空着）", () => {
+    /*
+     * 2026-10-18 起细纲提示词只要 JSON，模型不再手写 Markdown。
+     * 摘掉围栏后若直接显示原文，气泡就是一片空白 —— 看起来像「没生成」。
+     * 这里必须落到反推正文：形状沿用旧契约「# 事件细纲 · 第N章 章名」。
+     */
+    const html = renderToStaticMarkup(
+      <ChatMessage
+        message={assistantWithOutline({
+          content: `\`\`\`json\n${JSON.stringify({ eventOutlineData: outline })}\n\`\`\``,
+        })}
+      />,
+    )
+
+    expect(html).toContain("data-event-outline-card")
+    expect(html).not.toContain("eventOutlineData")
+    expect(html).toContain("事件细纲 · 第12章 令牌初现")
+    expect(html).toContain("事件1 一句话事件")
+    expect(html).toContain("关键台词：你来啦")
+  })
+
+  it("围栏外只留一句「已生成」说明时，气泡仍显示反推正文", () => {
+    /*
+     * 提示词明确允许模型在围栏外留一句交代（「围栏外最多留一句『已生成…』」）。
+     * 如果气泡按「剥完还有没有字」来判，那句 12 字的交代就会顶掉本该展示的正文 ——
+     * 用户看到一条只有一句话的回复，而完整内容躺在 JSON 里没人渲染。
+     */
+    const html = renderToStaticMarkup(
+      <ChatMessage
+        message={assistantWithOutline({
+          content: `已生成第12章事件细纲。\n\n\`\`\`json\n${JSON.stringify({ eventOutlineData: outline })}\n\`\`\``,
+        })}
+      />,
+    )
+
+    expect(html).not.toContain("eventOutlineData")
+    expect(html).toContain("事件1 一句话事件")
+    expect(html).toContain("事件2 一句话事件")
+  })
+
+  it("生成过程中不解析：逐 token 重渲染时不做括号配平，卡片等收尾后再出", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessage message={assistantWithOutline({ isAgentRunning: true })} />,
+    )
+
+    expect(html).not.toContain("data-event-outline-card")
+  })
+
+  it("用户消息里粘贴的同样 JSON 不渲染卡片（那不是生成结果）", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessage message={assistantWithOutline({ role: "user" })} />,
+    )
+
+    expect(html).not.toContain("data-event-outline-card")
+  })
+
+  it("普通助手回复不长出卡片", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessage message={assistantWithOutline({ content: "这一章我建议这样走。", id: "msg-plain" })} />,
+    )
+
+    expect(html).not.toContain("data-event-outline-card")
+  })
+
+  /*
+   * ── 2026-10-13 用户实测的那个组合 ──
+   *
+   * 共创判「前文不足以推演」的那一轮，模型经常**顺手把整章事件细纲也一起给出来**
+   * （只是没给多向分支）。于是同一条回复里既有 `chapter_discuss` 协议块、
+   * 又有 `eventOutlineData` 围栏，用户看到的是：
+   *   · 气泡里漏着一大坨裸 JSON（两条剥离被写成互斥三元，那一支只剥协议块）；
+   *   · 细纲卡 + 一张说「前文不足以推演」的琥珀卡并排，两张卡各带一枚「换一批」。
+   *
+   * 现在：裸 JSON 必须收起来，且只剩**一张**卡 —— 原因与三枚动作都并进细纲卡。
+   */
+  const insufficientProtocol = {
+    status: "insufficient" as const,
+    module: "第12章",
+    judgment: "原回复只给了固定情节，未提供可供挑选的多向剧情分支。",
+    directions: [],
+    preferenceId: "",
+    preferenceReason: "",
+  }
+
+  /** 同一条回复：细纲（Markdown + JSON 围栏）+ 共创协议块。 */
+  const assistantWithOutlineAndInsufficient = (patch: Partial<DisplayMessage> = {}): DisplayMessage => ({
+    ...assistantWithOutline(),
+    content: [
+      "# 事件细纲 · 第12章 令牌初现",
+      "",
+      "## 事件1 楚白翻出令牌",
+      "- 关键台词：你来啦",
+      "",
+      "<!-- chapter_discuss -->",
+      JSON.stringify({ status: "insufficient", module: "第12章", directions: [] }),
+      "<!-- /chapter_discuss -->",
+      "",
+      "```json",
+      JSON.stringify({ eventOutlineData: outline }),
+      "```",
+    ].join("\n"),
+    chapterDiscussProtocol: insufficientProtocol,
+    chapterDiscussPhase: "decision",
+    ...patch,
+  })
+
+  it("共创判「前文不足以推演」又给了细纲时：裸 JSON 收起来，只剩一张卡", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessage
+        message={assistantWithOutlineAndInsufficient()}
+        onSelectChapterDiscussDirection={() => {}}
+        onRegenerateChapterDiscuss={() => {}}
+        onCustomChapterDiscuss={() => {}}
+      />,
+    )
+
+    // 1) 裸 JSON 一个字都不许露（两条剥离必须都跑，不能二选一）
+    expect(html).not.toContain("eventOutlineData")
+    expect(html).not.toContain("chapter_discuss")
+    // 2) 细纲卡还在，且只有一张（两张卡时这枚按钮会出现两次）
+    expect(html.match(/用这份细纲写这一章/g)).toHaveLength(1)
+    expect(html.match(/换一批/g)).toHaveLength(1)
+    // 3) 那张「前文不足以推演」的独立卡整张退场，原因搬进细纲卡
+    expect(html).not.toContain("data-chapter-discuss-card")
+    expect(html).toContain("data-event-outline-discuss-note")
+    expect(html).toContain("未提供可供挑选的多向剧情分支")
+  })
+
+  it("没有细纲时那一轮「前文不足以推演」照旧单独成卡（合并只发生在有细纲时）", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessage
+        message={insufficientOnlyMessage()}
+        onSelectChapterDiscussDirection={() => {}}
+        onRegenerateChapterDiscuss={() => {}}
+        onCustomChapterDiscuss={() => {}}
+      />,
+    )
+
+    expect(html).toContain("data-chapter-discuss-card")
+    expect(html).toContain("前文不足以推演")
+    expect(html).not.toContain("用这份细纲写这一章")
+  })
+
+  it("共创给的是多向方向（needs_choice）时，即便同一条回复带了细纲也照常出方向卡", () => {
+    const html = renderToStaticMarkup(
+      <ChatMessage
+        message={assistantWithOutlineAndInsufficient({
+          chapterDiscussProtocol: {
+            ...insufficientProtocol,
+            status: "needs_choice",
+            directions: [{
+              id: "d1",
+              storyType: "复仇线",
+              title: "藏起来，然后反杀回收队",
+              summary: "主角先躲进废车场，等那队人进来再突然动手。",
+            }],
+          },
+        })}
+        onSelectChapterDiscussDirection={() => {}}
+        onRegenerateChapterDiscuss={() => {}}
+        onCustomChapterDiscuss={() => {}}
+      />,
+    )
+
+    expect(html).toContain("data-chapter-discuss-card")
+    // 反向控制：细纲卡也在（两张是两件不同的事，不能互相顶掉）
+    expect(html).toContain("data-event-outline-card")
+  })
+})
+
+/** 只有共创协议、没有事件细纲的那一轮。 */
+function insufficientOnlyMessage(): DisplayMessage {
+  return {
+    id: "msg-discuss-only",
+    role: "assistant",
+    content: [
+      "关键判断：前文给不出可挑选的多向分支。",
+      "<!-- chapter_discuss -->",
+      JSON.stringify({ status: "insufficient", module: "第12章", judgment: "前文不足以推演。" }),
+      "<!-- /chapter_discuss -->",
+    ].join("\n"),
+    timestamp: 1,
+    conversationId: "conv-1",
+    chapterDiscussPhase: "decision",
+    chapterDiscussProtocol: {
+      status: "insufficient",
+      module: "第12章",
+      judgment: "前文不足以推演。",
+      directions: [],
+      preferenceId: "",
+      preferenceReason: "",
+    },
+  }
+}

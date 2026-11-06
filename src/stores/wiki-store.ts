@@ -16,10 +16,30 @@ import {
   type SidebarNavConfig,
 } from "@/lib/sidebar-nav-preferences"
 import {
+  DEFAULT_BODY_FONT_FAMILY,
+  DEFAULT_BODY_FONT_PX,
+  DEFAULT_BODY_LINE_HEIGHT,
+  DEFAULT_BODY_LETTER_SPACING,
+  DEFAULT_BODY_MARGIN_X,
+  DEFAULT_BODY_SAFE_BOTTOM,
   DEFAULT_UI_FONT_FAMILY,
+  clampBodyFontPx,
+  clampBodyLineHeight,
+  clampBodyLetterSpacing,
+  clampBodyMarginX,
+  clampBodySafeBottom,
+  resolveMigratedBodyFontPx,
+  clampUiFontSizeScale,
+  normalizeBodyFontFamily,
   normalizeUiFontFamily,
+  type BodyFontFamily,
   type UiFontFamily,
 } from "@/lib/font-settings"
+import {
+  DEFAULT_REASONING_DEPTH,
+  normalizeReasoningDepth,
+  type ReasoningDepth,
+} from "@/lib/reasoning-depth"
 import {
   DEFAULT_VISUAL_STYLE,
   VISUAL_STYLE_STORAGE_KEY,
@@ -35,11 +55,11 @@ import {
   type AiWorkflowMode,
   type OutlineWorkflowMode,
 } from "@/lib/agent/workflow-mode"
-import { DEFAULT_MCP_CONFIG, type McpConfig } from "@/lib/mcp/config"
 import {
   normalizeProviderConfigs,
   normalizeUserLlmConfig,
 } from "@/lib/llm-context-size"
+import type { CodexSpeedMode } from "@/lib/codex-cli-speed"
 
 const GRAPH_LABEL_MODE_KEY = "lk-graph-label-display-mode"
 const GRAPH_EDGE_COLOR_KEY = "lk-graph-edge-color"
@@ -48,31 +68,101 @@ const GRAPH_EDGE_STYLE_KEY = "lk-graph-edge-style"
 const GRAPH_EDGE_LABELS_ALWAYS_KEY = "lk-graph-edge-labels-always"
 const UI_FONT_SIZE_SCALE_KEY = "qmai-ui-font-size-scale"
 const UI_FONT_FAMILY_KEY = "qmai-ui-font-family"
+/** 正文字体独立键：与界面字体分开存，任何一个被改都不会覆盖另一个。 */
+const BODY_FONT_FAMILY_KEY = "qmai-body-font-family"
+/** 正文字号独立键：与界面字号分开存。 */
+const BODY_FONT_SIZE_SCALE_KEY = "qmai-ui-body-font-scale"
+/*
+ * 旧键保留**只读**：新用户不会再写它，但读回时要用它做一次性迁移。
+ * 不删除的理由：用户回滚到旧版本时，旧设置仍然在。
+ */
+const BODY_FONT_PX_KEY = "qmai-body-font-px"
+const BODY_LINE_HEIGHT_KEY = "qmai-body-line-height"
+const BODY_LETTER_SPACING_KEY = "qmai-body-letter-spacing"
+const BODY_MARGIN_X_KEY = "qmai-body-margin-x"
+const BODY_SAFE_BOTTOM_KEY = "qmai-body-safe-bottom"
 const SIDEBAR_NAV_CONFIG_KEY = "qmai-sidebar-nav-config"
 
-export type SettingsCategoryId =
-  | "llm"
-  | "rerank"
-  | "embedding"
+type SettingsCategoryId =
+  | "model"
   | "network"
   | "interface"
   | "novel"
   | "usage-guide"
-  | "maintenance"
   | "data-management"
   | "feedback"
   | "contact-support"
   | "changelog"
 
+export type ModelSettingsTabId = "default" | "llm" | "rerank" | "embedding"
+
+export interface StyleEvolutionNotice {
+  stylePresetId: string
+  name: string
+  outcome: "bootstrap" | "kept"
+}
+
 const readStoredUiFontSizeScale = (): number => {
   if (typeof localStorage === "undefined") return 1
   const saved = Number(localStorage.getItem(UI_FONT_SIZE_SCALE_KEY) ?? "1")
-  return Number.isFinite(saved) ? Math.max(0.85, Math.min(1.3, Number(saved.toFixed(2)))) : 1
+  return Number.isFinite(saved) ? clampUiFontSizeScale(saved) : 1
 }
 
 const readStoredUiFontFamily = (): UiFontFamily => {
   if (typeof localStorage === "undefined") return DEFAULT_UI_FONT_FAMILY
   return normalizeUiFontFamily(localStorage.getItem(UI_FONT_FAMILY_KEY))
+}
+
+const readStoredBodyFontFamily = (): BodyFontFamily => {
+  if (typeof localStorage === "undefined") return DEFAULT_BODY_FONT_FAMILY
+  return normalizeBodyFontFamily(localStorage.getItem(BODY_FONT_FAMILY_KEY))
+}
+
+/**
+ * 读回正文字号（px）。
+ *
+ * 新键优先；读不到时交给 resolveMigratedBodyFontPx 决定，它会
+ * **把界面字号乘进去**（0.85→15 / 1→18 / 1.25→23 / 1.5→27），
+ * 并在「没存过 + 界面字号非默认」时按界面字号补种一次。
+ * 旧键不写、不删，见上面常量处的说明。
+ *
+ * ⚠ 顺序是有意义的：readStoredUiFontSizeScale 定义在本函数**上方**。
+ * 本函数在模块求值期就会被调用（state 初始化处），若它引用了
+ * 定义在下面的 const 箭头函数，会直接抛暂时性死区错误、整个 store
+ * 起不来。挪动这两个函数的相对位置前先看这条警告。
+ */
+const readStoredBodyFontPx = (): number => {
+  if (typeof localStorage === "undefined") return DEFAULT_BODY_FONT_PX
+  const raw = localStorage.getItem(BODY_FONT_PX_KEY)
+  if (raw !== null) return clampBodyFontPx(raw)
+  const legacy = localStorage.getItem(BODY_FONT_SIZE_SCALE_KEY)
+  const migrated = resolveMigratedBodyFontPx(legacy, readStoredUiFontSizeScale())
+  // null = 没有可迁移/可补种的值，保持默认
+  return migrated ?? DEFAULT_BODY_FONT_PX
+}
+
+/**
+ * 读取一个「数字 or null」的排版参数。
+ * null 是合法取值（仅左右边距用它表示「跟随窗口」），见 clampBodyMarginX。
+ */
+const readStoredBodyLineHeight = (): number => {
+  if (typeof localStorage === "undefined") return DEFAULT_BODY_LINE_HEIGHT
+  return clampBodyLineHeight(localStorage.getItem(BODY_LINE_HEIGHT_KEY))
+}
+
+const readStoredBodyLetterSpacing = (): number => {
+  if (typeof localStorage === "undefined") return DEFAULT_BODY_LETTER_SPACING
+  return clampBodyLetterSpacing(localStorage.getItem(BODY_LETTER_SPACING_KEY))
+}
+
+const readStoredBodyMarginX = (): number | null => {
+  if (typeof localStorage === "undefined") return DEFAULT_BODY_MARGIN_X
+  return clampBodyMarginX(localStorage.getItem(BODY_MARGIN_X_KEY))
+}
+
+const readStoredBodySafeBottom = (): number => {
+  if (typeof localStorage === "undefined") return DEFAULT_BODY_SAFE_BOTTOM
+  return clampBodySafeBottom(localStorage.getItem(BODY_SAFE_BOTTOM_KEY))
 }
 
 const readStoredVisualStyle = (): VisualStyle => {
@@ -142,7 +232,7 @@ export interface ReasoningConfig {
 }
 
 interface LlmConfig {
-  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli" | "cursor-cli"
+  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli" | "cursor-cli" | "antigravity-cli"
   apiKey: string
   model: string
   ollamaUrl: string
@@ -158,11 +248,14 @@ interface LlmConfig {
   reasoning?: ReasoningConfig
   localCliIsolation?: boolean
   codexCliTimeoutMinutes?: number
+  codexSpeedMode?: CodexSpeedMode
+  /** Cursor ACP `fast=` parameter. Independent of Codex Fast. */
+  cursorSpeedMode?: CodexSpeedMode
   /** When false, Agent requests omit tools/tool_choice. Default/undefined = enabled. */
   functionCallingEnabled?: boolean
 }
 
-export type SearchProvider = "bocha" | "qiniu" | "metaso" | "tavily" | "serpapi" | "searxng" | "none"
+export type SearchProvider = "bocha" | "qiniu" | "metaso" | "tavily" | "serpapi" | "searxng" | "gemini" | "baizhi" | "antigravity" | "none"
 export type SerpApiEngine =
   | "google"
   | "google_news"
@@ -192,6 +285,14 @@ export interface SearchProviderOverride {
   serpApiEngine?: SerpApiEngine
   searXngUrl?: string
   searXngCategories?: SearXngCategory[]
+  /** Gemini 搜索（Grounding with Google Search）用的模型，默认 gemini-3.8-flash。 */
+  geminiModel?: string
+  /** 反重力 CLI 搜索用的 agy 模型；留空用 agy 默认模型。 */
+  antigravityModel?: string
+  /** 反重力 CLI 单次搜索超时（秒），30–900；缺省 180。 */
+  antigravityTimeoutSecs?: number
+  /** Gemini API 自定义地址（代理/中转），默认 https://generativelanguage.googleapis.com。 */
+  geminiBaseUrl?: string
 }
 
 export type SearchProviderConfigs = Partial<Record<Exclude<SearchProvider, "none">, SearchProviderOverride>>
@@ -229,9 +330,18 @@ interface EmbeddingConfig {
   overlapChunkChars?: number
 }
 
+/**
+ * 检索重排（rerank）配置。
+ *
+ * ⚠️ 这里**没有** `useMainLlm`：4.3.6 起取消了「复用主模型」。
+ * 用聊天主模型当重排器要额外发一次完整对话请求（每次检索 12 个候选 ≈ 数千 token），
+ * 换来的排序变化基本看不出来，用户侧的表现就是「开了没反应、还烧钱」。
+ * 现在重排只走专用重排模型（直连 …/rerank 或能返回 JSON 的模型）；
+ * 没配模型时 resolveRerankModel 返回 null，检索直接降级为原顺序。
+ * 老配置里残留的 `useMainLlm` 由 project-store 的 normalizeRerankConfig 吞掉。
+ */
 export interface RerankConfig {
   enabled: boolean
-  useMainLlm: boolean
   provider: LlmConfig["provider"]
   apiKey: string
   model: string
@@ -243,7 +353,6 @@ export interface RerankConfig {
 
 export const DEFAULT_RERANK_CONFIG: RerankConfig = {
   enabled: false,
-  useMainLlm: true,
   provider: "custom",
   apiKey: "",
   model: "",
@@ -318,10 +427,17 @@ export interface NovelConfig {
   searchTopK: number
   /** 单章目标字数（按去除空白后的字符数计），章节生成提示词和扩写阈值都按它推算。 */
   chapterTargetChars: number
-  autoIngestOnSave: boolean
+  /*
+   * 原先这里有 `autoIngestOnSave`：「保存为正式章节时自动提取记忆」。
+   * 用户指出它与章节/大纲工具栏的「提取记忆」按钮是同一件事，要求取消 ——
+   * 字段、开关与那条自动行为都已移除，提取记忆只由用户点按钮触发。
+   * 旧配置里存着的这个键读取时会被忽略（见 loadNovelConfig 的逐字段取值）。
+   */
   autoExtractOnImport: boolean
   /** 前情分析：读取并 LLM 分析前几章完整正文。快速模式始终跳过；标准/严格模式跟随此开关。关闭时记忆库的近期摘要与上一章结尾仍会注入（默认关）。 */
   deepPreviousChaptersAnalysis: boolean
+  /** 章节写作联网补搜：本地缺实体时自动联网。快速模式始终跳过；标准/严格模式跟随此开关。需先配置网页搜索源（默认开）。 */
+  writingWebSearchEnabled: boolean
   /** 审稿（含六维审查）使用的 reasoning 档位。下调可省审稿推理 Token，但连贯性把关会变弱（默认 high）。 */
   reviewReasoningEffort: "low" | "medium" | "high"
   /** 默认模型（工作流）：拆文库、剧情推演室、去重等。空字符串表示跟随 AI 会话模型。 */
@@ -342,6 +458,27 @@ export interface NovelConfig {
   communitySummaryAsync: boolean
   /** 生成章节时自动输出标题：开启后AI在正文开头输出 # 第X章 标题名 格式的标题，保存时自动使用（默认开）。 */
   autoGenerateChapterTitle: boolean
+  /** 草稿章节是否提示先保存为正式再提取记忆。关闭后不再弹出（默认开）。 */
+  draftMemoryHintEnabled: boolean
+  /** 这本书的文件夹里是否已经提示过一次。重新打开开关不会清掉。 */
+  draftMemoryHintSeen: boolean
+  /**
+   * 新章节灵感提示（丙-4a）：章节正文为空时，点章节工具栏的「生成章节细纲」
+   * 会在按钮旁挂出一枚说明气泡（默认开）。
+   *
+   * ⚠️ 与 `draftMemoryHintEnabled` **是两套独立字段**，刻意不复用：
+   * 复用会让「关掉灵感提示」连带关掉草稿提示（反之亦然）。
+   * 两者在界面上互斥（见 `inspiration-hint.ts` 与 `draft-memory-hint.ts:23`），
+   * 但持久化语义必须各自独立。
+   */
+  inspirationHintEnabled: boolean
+  /**
+   * 这本书的文件夹里已经挂过一次新章节灵感气泡（丙-4a）。
+   *
+   * 与 `draftMemoryHintSeen` 同样是「每本书一次」的**显示即记**标记，
+   * 不复用后者：两个提示各自记自己的账，关掉其中一个不该影响另一个。
+   */
+  inspirationHintSeen: boolean
 }
 
 export const DEFAULT_NOVEL_CONFIG: NovelConfig = {
@@ -349,9 +486,9 @@ export const DEFAULT_NOVEL_CONFIG: NovelConfig = {
   recentSummaryWindow: 8,
   searchTopK: 5,
   chapterTargetChars: 3000,
-  autoIngestOnSave: true,
   autoExtractOnImport: true,
   deepPreviousChaptersAnalysis: false,
+  writingWebSearchEnabled: true,
   reviewReasoningEffort: "high",
   defaultLlmModel: "",
   writingModel: "",
@@ -364,6 +501,10 @@ export const DEFAULT_NOVEL_CONFIG: NovelConfig = {
   communitySummaryInterval: 5,
   communitySummaryAsync: true,
   autoGenerateChapterTitle: true,
+  draftMemoryHintEnabled: true,
+  draftMemoryHintSeen: false,
+  inspirationHintEnabled: true,
+  inspirationHintSeen: false,
 }
 
 export interface RevisionFeedbackWindowConfig {
@@ -458,6 +599,8 @@ export interface ProviderOverride {
   reasoning?: ReasoningConfig
   localCliIsolation?: boolean
   codexCliTimeoutMinutes?: number
+  codexSpeedMode?: CodexSpeedMode
+  cursorSpeedMode?: CodexSpeedMode
   /** 是否在 AI 会话中显示该 provider 下的模型（仅用于自定义供应商）。默认 true。 */
   enabled?: boolean
   /** 已保存的模型列表（仅用于自定义供应商） */
@@ -487,22 +630,20 @@ export type FinalChapterSavePhase =
   | "ingest_failed"
   | "ingest_no_llm"
   | "ingest_no_chapter_number"
-  | "ingest_not_final"
-  | "ingest_extract_failed"
 
-export interface FinalChapterSaveState extends BaseTaskState {
+interface FinalChapterSaveState extends BaseTaskState {
   filePath: string
   saving: boolean
   phase: FinalChapterSavePhase | null
   params?: Record<string, string | number>
 }
 
-export interface LintRunState extends AsyncTaskState {
+interface LintRunState extends AsyncTaskState {
   hasRun: boolean
   results: LintResult[]
 }
 
-export interface ReviewRunState extends AsyncTaskState {
+interface ReviewRunState extends AsyncTaskState {
   results: NovelReviewResult[]
   thinking?: string
   dimensionResults?: Partial<Record<SixReviewDimensionKey, DimensionReviewResult>>
@@ -520,7 +661,7 @@ export interface PendingEditorHighlight {
 type LintRunFinishState = Omit<Partial<LintRunState>, "runId" | "projectPath" | "filePath">
 type ReviewRunFinishState = Omit<Partial<ReviewRunState>, "runId" | "projectPath" | "filePath">
 
-export const SKILL_LIBRARY_UNSAVED_CONFIRM = "当前 Skill 还有未保存修改，确定放弃修改吗？"
+const SKILL_LIBRARY_UNSAVED_CONFIRM = "当前 Skill 还有未保存修改，确定放弃修改吗？"
 
 export function confirmDiscardSkillLibraryDraft(): boolean {
   if (typeof window === "undefined" || typeof window.confirm !== "function") return true
@@ -556,11 +697,16 @@ interface WikiState {
    * one wiki-relative) still works.
    */
   pendingScrollImageSrc: string | null
-  selectedMemoryCenterEntry: string | null
   chatExpanded: boolean
   searchPanelOpen: boolean
-  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "soul" | "skillLibrary" | "writingSkillLibrary" | "skillFavorites" | "bookAnalysis" | "settings" | "trash" | "reviewCenter" | "storySimulation" | "directorRoom"
+  /*
+   * 合并说明：两侧各自追加了不同的技能库内部视图，取并集。
+   *   main（人物 Skill）→ personaSkillLibrary
+   *   scratch-20261010（文风 skill 化）→ writingStyleLibrary、characterSoulLibrary
+   */
+  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "soul" | "skillLibrary" | "writingSkillLibrary" | "writingStyleLibrary" | "characterSoulLibrary" | "personaSkillLibrary" | "skillFavorites" | "bookAnalysis" | "settings" | "trash" | "reviewCenter" | "storySimulation" | "maintenance" | "directorRoom"
   activeSettingsCategory: SettingsCategoryId | null
+  activeModelSettingsTab: ModelSettingsTabId | null
   selectedSoulId: string | null
   selectedSoulTab: "project" | "character"
   selectedSoulSection: "builtIn" | "custom"
@@ -568,6 +714,9 @@ interface WikiState {
   skillLibraryDraftDirty: boolean
   selectedWritingSkillLibrarySkillId: string | null
   writingSkillLibraryDraftDirty: boolean
+  /** 技能库「文风 skill」当前选中的文风 id；null = 未选中。 */
+  selectedWritingStyleLibraryStyleId: string | null
+  personaSkillLibraryDraftDirty: boolean
   selectedReviewDimension: string | null
   selectedReviewFilePath: string
   graphMode: string
@@ -587,6 +736,14 @@ interface WikiState {
   /** Dedicated global AI outline model key; isolated from AI chat. */
   aiOutlineModel: string
   aiOutlineModelRevision: number
+  /**
+   * Thinking depth for the chat model picked in the writing footer. Applies
+   * only to chapter body generation (`chapterWritingLlmConfig`), never to the
+   * orchestrating agent, which runs on the default model.
+   */
+  aiChatReasoningDepth: ReasoningDepth
+  /** Thinking depth for the outline chat model; applies to generation turns only. */
+  aiOutlineReasoningDepth: ReasoningDepth
   /** 默认模型（工作流）：拆文库、导入队列、去重、角色 aura 等。章节/大纲记忆摄取见 novelConfig.extractModel */
   defaultLlmModel: string
   /** Per-provider-preset stored overrides (API key, model, endpoint, …). */
@@ -594,7 +751,6 @@ interface WikiState {
   /** Which preset is currently active. `null` = no LLM configured. */
   activePresetId: string | null
   searchApiConfig: SearchApiConfig
-  mcpConfig: McpConfig
   embeddingConfig: EmbeddingConfig
   rerankConfig: RerankConfig
   multimodalConfig: MultimodalConfig
@@ -605,11 +761,28 @@ interface WikiState {
   novelMode: boolean
   chatEditModeEnabled: boolean
   aiWorkflowMode: AiWorkflowMode
+  /** 切入「共创」前所处的模式；共创选定方向后按它生成正文（默认 standard）。 */
+  aiWorkflowModeBeforeDiscuss: AiWorkflowMode
   outlineWorkflowMode: OutlineWorkflowMode
   planExecuteEnabled: boolean
   novelConfig: NovelConfig
   /** 社区摘要生成错误信息（UI 层监听并弹窗提示） */
   communitySummaryError: string | null
+  /**
+   * 人物 Skill 本轮没建出档案的原因（UI 层监听并弹窗提示）。
+   * 学习是后台 `void` 调用，失败以前只写 console，用户在界面上完全看不到 ——
+   * 表现就是「提取完了技能库还是空的」，必须有个能看见的出口。
+   */
+  personaSkillLearningError: string | null
+  /**
+   * 人物 Skill 本轮学习完成后，弹出「记忆提取完成」提示用的新建/更新人物名单。
+   * null = 不显示弹窗。批量导入多章时会把人物名累加合并。
+   */
+  personaSkillCompletion: { created: string[]; updated: string[] } | null
+  /**
+   * 文风自进化写出了新候选（需要用户在文风库里点一下才启用）。null = 不显示提示。
+   */
+  styleEvolutionNotice: StyleEvolutionNotice | null
   searchHistory: string[]
   searchTrigger: { query: string; ts: number } | null
   revisionFeedbackWindowConfig: RevisionFeedbackWindowConfig
@@ -619,6 +792,17 @@ interface WikiState {
   theme: "light" | "dark" | "system"
   uiFontSizeScale: number
   uiFontFamily: UiFontFamily
+  uiBodyFontFamily: BodyFontFamily
+  /** 正文字号（px 绝对值）。替代原 uiBodyFontSizeScale（倍数）。 */
+  uiBodyFontPx: number
+  /** 正文行间距（无单位倍数）。 */
+  uiBodyLineHeight: number
+  /** 正文字间距（px，可为负）。 */
+  uiBodyLetterSpacing: number
+  /** 正文左右边距（px）；null = 跟随窗口。 */
+  uiBodyMarginX: number | null
+  /** 正文底部安全距离（px）。 */
+  uiBodySafeBottom: number
   visualStyle: VisualStyle
   sidebarNavConfig: SidebarNavConfig
   dataVersion: number
@@ -632,11 +816,12 @@ interface WikiState {
   setFileContent: (content: string) => void
   setPendingEditorHighlight: (highlight: PendingEditorHighlight | null) => void
   setPendingScrollImageSrc: (src: string | null) => void
-  setSelectedMemoryCenterEntry: (entry: string | null) => void
+
   setChatExpanded: (expanded: boolean) => void
   setSearchPanelOpen: (open: boolean) => void
   setActiveView: (view: WikiState["activeView"]) => void
   setActiveSettingsCategory: (category: SettingsCategoryId | null) => void
+  setActiveModelSettingsTab: (tab: ModelSettingsTabId | null) => void
   setSelectedSoulId: (id: string | null) => void
   setSelectedSoulTab: (tab: "project" | "character") => void
   setSelectedSoulSection: (section: "builtIn" | "custom") => void
@@ -644,6 +829,8 @@ interface WikiState {
   setSkillLibraryDraftDirty: (dirty: boolean) => void
   setSelectedWritingSkillLibrarySkillId: (id: string | null) => void
   setWritingSkillLibraryDraftDirty: (dirty: boolean) => void
+  setSelectedWritingStyleLibraryStyleId: (id: string | null) => void
+  setPersonaSkillLibraryDraftDirty: (dirty: boolean) => void
   setSelectedReviewDimension: (dimension: string | null) => void
   setSelectedReviewFilePath: (path: string) => void
   setGraphMode: (mode: string) => void
@@ -661,11 +848,12 @@ interface WikiState {
   setLlmConfig: (config: LlmConfig) => void
   setAiChatModel: (model: string) => void
   setAiOutlineModel: (model: string) => void
+  setAiChatReasoningDepth: (depth: ReasoningDepth) => void
+  setAiOutlineReasoningDepth: (depth: ReasoningDepth) => void
   setDefaultLlmModel: (model: string) => void
   setProviderConfigs: (configs: ProviderConfigs) => void
   setActivePresetId: (id: string | null) => void
   setSearchApiConfig: (config: SearchApiConfig) => void
-  setMcpConfig: (mcpConfig: McpConfig) => void
   setEmbeddingConfig: (config: EmbeddingConfig) => void
   setRerankConfig: (config: Partial<RerankConfig>) => void
   setMultimodalConfig: (config: MultimodalConfig) => void
@@ -680,6 +868,9 @@ interface WikiState {
   setPlanExecuteEnabled: (enabled: boolean) => void
   setNovelConfig: (config: Partial<NovelConfig>) => void
   setCommunitySummaryError: (error: string | null) => void
+  setPersonaSkillLearningError: (error: string | null) => void
+  setPersonaSkillCompletion: (payload: { created: string[]; updated: string[] } | null) => void
+  setStyleEvolutionNotice: (notice: StyleEvolutionNotice | null) => void
   setSearchHistory: (history: string[]) => void
   setSearchTrigger: (trigger: { query: string; ts: number } | null) => void
   setRevisionFeedbackWindowConfig: (revisionFeedbackWindowConfig: RevisionFeedbackWindowConfig) => void
@@ -692,6 +883,12 @@ interface WikiState {
   setTheme: (theme: "light" | "dark" | "system") => void
   setUiFontSizeScale: (scale: number) => void
   setUiFontFamily: (fontFamily: UiFontFamily) => void
+  setUiBodyFontFamily: (fontFamily: BodyFontFamily) => void
+  setUiBodyFontPx: (value: number) => void
+  setUiBodyLineHeight: (value: number) => void
+  setUiBodyLetterSpacing: (value: number) => void
+  setUiBodyMarginX: (value: number | null) => void
+  setUiBodySafeBottom: (value: number) => void
   setVisualStyle: (visualStyle: VisualStyle) => void
   setSidebarNavConfig: (config: Partial<SidebarNavConfig>) => void
   bumpDataVersion: () => void
@@ -707,18 +904,21 @@ export const useWikiStore = create<WikiState>((set) => ({
   fileContent: "",
   pendingEditorHighlight: null,
   pendingScrollImageSrc: null,
-  selectedMemoryCenterEntry: null,
+
   chatExpanded: false,
   searchPanelOpen: false,
   activeView: "wiki",
   activeSettingsCategory: null,
+  activeModelSettingsTab: null,
   selectedSoulId: null,
-  selectedSoulTab: "project",
+  selectedSoulTab: "character",
   selectedSoulSection: "builtIn",
   selectedSkillLibrarySkillId: null,
   skillLibraryDraftDirty: false,
   selectedWritingSkillLibrarySkillId: null,
   writingSkillLibraryDraftDirty: false,
+  selectedWritingStyleLibraryStyleId: null,
+  personaSkillLibraryDraftDirty: false,
   selectedReviewDimension: null,
   selectedReviewFilePath: "",
   graphMode: "overview",
@@ -748,6 +948,8 @@ export const useWikiStore = create<WikiState>((set) => ({
   aiChatModel: "",
   aiOutlineModel: "",
   aiOutlineModelRevision: 0,
+  aiChatReasoningDepth: DEFAULT_REASONING_DEPTH,
+  aiOutlineReasoningDepth: DEFAULT_REASONING_DEPTH,
   defaultLlmModel: "",
   providerConfigs: {},
   activePresetId: null,
@@ -770,7 +972,7 @@ export const useWikiStore = create<WikiState>((set) => ({
   setFileContent: (fileContent) => set({ fileContent }),
   setPendingEditorHighlight: (pendingEditorHighlight) => set({ pendingEditorHighlight }),
   setPendingScrollImageSrc: (pendingScrollImageSrc) => set({ pendingScrollImageSrc }),
-  setSelectedMemoryCenterEntry: (selectedMemoryCenterEntry) => set({ selectedMemoryCenterEntry }),
+
   setChatExpanded: (chatExpanded) => set({ chatExpanded }),
   setSearchPanelOpen: (searchPanelOpen) => set({ searchPanelOpen }),
   setActiveView: (activeView) => set((state) => {
@@ -790,15 +992,27 @@ export const useWikiStore = create<WikiState>((set) => ({
     ) {
       return {}
     }
+    if (
+      state.activeView === "personaSkillLibrary"
+      && activeView !== "personaSkillLibrary"
+      && state.personaSkillLibraryDraftDirty
+      && !confirmDiscardSkillLibraryDraft()
+    ) {
+      return {}
+    }
     return {
       activeView,
       skillLibraryDraftDirty: activeView === "skillLibrary" ? state.skillLibraryDraftDirty : false,
       writingSkillLibraryDraftDirty: activeView === "writingSkillLibrary"
         ? state.writingSkillLibraryDraftDirty
         : false,
+      personaSkillLibraryDraftDirty: activeView === "personaSkillLibrary"
+        ? state.personaSkillLibraryDraftDirty
+        : false,
     }
   }),
   setActiveSettingsCategory: (activeSettingsCategory) => set({ activeSettingsCategory }),
+  setActiveModelSettingsTab: (activeModelSettingsTab) => set({ activeModelSettingsTab }),
   setSelectedSoulId: (selectedSoulId) => set({ selectedSoulId }),
   setSelectedSoulTab: (selectedSoulTab) => set({ selectedSoulTab }),
   setSelectedSoulSection: (selectedSoulSection) => set({ selectedSoulSection }),
@@ -820,6 +1034,10 @@ export const useWikiStore = create<WikiState>((set) => ({
     }
   }),
   setWritingSkillLibraryDraftDirty: (writingSkillLibraryDraftDirty) => set({ writingSkillLibraryDraftDirty }),
+  setSelectedWritingStyleLibraryStyleId: (selectedWritingStyleLibraryStyleId) =>
+    set({ selectedWritingStyleLibraryStyleId }),
+  setPersonaSkillLibraryDraftDirty: (personaSkillLibraryDraftDirty) =>
+    set({ personaSkillLibraryDraftDirty }),
   setSelectedReviewDimension: (selectedReviewDimension) => set({ selectedReviewDimension }),
   setSelectedReviewFilePath: (selectedReviewFilePath) => set({ selectedReviewFilePath }),
   setGraphMode: (graphMode) => set({ graphMode }),
@@ -842,7 +1060,6 @@ export const useWikiStore = create<WikiState>((set) => ({
     searXngCategories: ["general"],
     providerConfigs: {},
   },
-  mcpConfig: DEFAULT_MCP_CONFIG,
 
   embeddingConfig: {
     enabled: false,
@@ -892,10 +1109,14 @@ export const useWikiStore = create<WikiState>((set) => ({
   novelMode: true,
   chatEditModeEnabled: false,
   aiWorkflowMode: DEFAULT_AI_WORKFLOW_MODE,
+  aiWorkflowModeBeforeDiscuss: DEFAULT_AI_WORKFLOW_MODE,
   outlineWorkflowMode: DEFAULT_OUTLINE_WORKFLOW_MODE,
   planExecuteEnabled: false,
   novelConfig: { ...DEFAULT_NOVEL_CONFIG },
   communitySummaryError: null,
+  personaSkillLearningError: null,
+  personaSkillCompletion: null,
+  styleEvolutionNotice: null,
   searchHistory: [],
   searchTrigger: null,
   revisionFeedbackWindowConfig: {
@@ -910,6 +1131,12 @@ export const useWikiStore = create<WikiState>((set) => ({
   theme: "system",
   uiFontSizeScale: readStoredUiFontSizeScale(),
   uiFontFamily: readStoredUiFontFamily(),
+  uiBodyFontFamily: readStoredBodyFontFamily(),
+  uiBodyFontPx: readStoredBodyFontPx(),
+  uiBodyLineHeight: readStoredBodyLineHeight(),
+  uiBodyLetterSpacing: readStoredBodyLetterSpacing(),
+  uiBodyMarginX: readStoredBodyMarginX(),
+  uiBodySafeBottom: readStoredBodySafeBottom(),
   visualStyle: readStoredVisualStyle(),
   sidebarNavConfig: readStoredSidebarNavConfig(),
 
@@ -919,13 +1146,18 @@ export const useWikiStore = create<WikiState>((set) => ({
     aiOutlineModel,
     aiOutlineModelRevision: state.aiOutlineModelRevision + 1,
   })),
+  setAiChatReasoningDepth: (depth) => set({
+    aiChatReasoningDepth: normalizeReasoningDepth(depth),
+  }),
+  setAiOutlineReasoningDepth: (depth) => set({
+    aiOutlineReasoningDepth: normalizeReasoningDepth(depth),
+  }),
   setDefaultLlmModel: (defaultLlmModel) => set({ defaultLlmModel }),
   setProviderConfigs: (providerConfigs) => set({
     providerConfigs: normalizeProviderConfigs(providerConfigs),
   }),
   setActivePresetId: (activePresetId) => set({ activePresetId }),
   setSearchApiConfig: (searchApiConfig) => set({ searchApiConfig }),
-  setMcpConfig: (mcpConfig) => set({ mcpConfig }),
   setEmbeddingConfig: (embeddingConfig) => set({ embeddingConfig }),
   setRerankConfig: (rerankConfig) => set((state) => ({ rerankConfig: { ...state.rerankConfig, ...rerankConfig } })),
   setMultimodalConfig: (multimodalConfig) => set({ multimodalConfig }),
@@ -935,7 +1167,17 @@ export const useWikiStore = create<WikiState>((set) => ({
   setSourceWatchConfig: (sourceWatchConfig) => set({ sourceWatchConfig }),
   setNovelMode: (novelMode) => set({ novelMode }),
   setChatEditModeEnabled: (chatEditModeEnabled) => set({ chatEditModeEnabled }),
-  setAiWorkflowMode: (aiWorkflowMode) => set({ aiWorkflowMode }),
+  setAiWorkflowMode: (aiWorkflowMode) =>
+    set((state) => ({
+      aiWorkflowMode,
+      // 切到「共创」时记住切入前的模式；切到其它模式时直接刷新为当前选择。
+      aiWorkflowModeBeforeDiscuss:
+        aiWorkflowMode === "discuss"
+          ? (state.aiWorkflowMode !== "discuss"
+            ? state.aiWorkflowMode
+            : state.aiWorkflowModeBeforeDiscuss)
+          : aiWorkflowMode,
+    })),
   setOutlineWorkflowMode: (outlineWorkflowMode) => set({ outlineWorkflowMode }),
   setPlanExecuteEnabled: (planExecuteEnabled) => set({ planExecuteEnabled }),
   setNovelConfig: (config) => set((state) => ({
@@ -945,6 +1187,22 @@ export const useWikiStore = create<WikiState>((set) => ({
       : {}),
   })),
   setCommunitySummaryError: (communitySummaryError) => set({ communitySummaryError }),
+  setPersonaSkillLearningError: (personaSkillLearningError) => set({ personaSkillLearningError }),
+  setPersonaSkillCompletion: (payload) =>
+    set((state) => {
+      if (!payload) return { personaSkillCompletion: null }
+      const prev = state.personaSkillCompletion
+      if (!prev) return { personaSkillCompletion: payload }
+      // 批量导入多章时每章都会触发一次，人物名累加合并，避免后一章覆盖前一章。
+      const merge = (a: string[], b: string[]) => [...new Set([...a, ...b])]
+      return {
+        personaSkillCompletion: {
+          created: merge(prev.created, payload.created),
+          updated: merge(prev.updated, payload.updated),
+        },
+      }
+    }),
+  setStyleEvolutionNotice: (styleEvolutionNotice) => set({ styleEvolutionNotice }),
   setSearchHistory: (searchHistory) => set({ searchHistory }),
   setSearchTrigger: (searchTrigger) => set({ searchTrigger }),
   setRevisionFeedbackWindowConfig: (revisionFeedbackWindowConfig) => set({ revisionFeedbackWindowConfig }),
@@ -962,7 +1220,7 @@ export const useWikiStore = create<WikiState>((set) => ({
   clearTransientTaskState: () => set({ finalChapterSave: null, lintRun: null, reviewRun: null }),
   setTheme: (theme) => set({ theme }),
   setUiFontSizeScale: (scale) => {
-    const clamped = Math.max(0.85, Math.min(1.3, Number(scale.toFixed(2))))
+    const clamped = clampUiFontSizeScale(scale)
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(UI_FONT_SIZE_SCALE_KEY, String(clamped))
     }
@@ -974,6 +1232,51 @@ export const useWikiStore = create<WikiState>((set) => ({
       localStorage.setItem(UI_FONT_FAMILY_KEY, normalized)
     }
     set({ uiFontFamily: normalized })
+  },
+  setUiBodyFontFamily: (fontFamily) => {
+    const normalized = normalizeBodyFontFamily(fontFamily)
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(BODY_FONT_FAMILY_KEY, normalized)
+    }
+    set({ uiBodyFontFamily: normalized })
+  },
+  /*
+   * 5 个排版参数的统一写法：钳制 → 落 localStorage → 写 store。
+   * 三者缺一都会出问题：
+   *   · 少钳制 → 「设成 200px 后下次启动被读回时截成别的值」；
+   *   · 少落盘 → 这次生效、下次启动丢失；
+   *   · 少写 store → 界面不刷新。
+   * 范围一律来自 font-settings.ts 的 clamp，不在这里重写数字。
+   */
+  setUiBodyFontPx: (value) => {
+    const clamped = clampBodyFontPx(value)
+    if (typeof localStorage !== "undefined") localStorage.setItem(BODY_FONT_PX_KEY, String(clamped))
+    set({ uiBodyFontPx: clamped })
+  },
+  setUiBodyLineHeight: (value) => {
+    const clamped = clampBodyLineHeight(value)
+    if (typeof localStorage !== "undefined") localStorage.setItem(BODY_LINE_HEIGHT_KEY, String(clamped))
+    set({ uiBodyLineHeight: clamped })
+  },
+  setUiBodyLetterSpacing: (value) => {
+    const clamped = clampBodyLetterSpacing(value)
+    if (typeof localStorage !== "undefined") localStorage.setItem(BODY_LETTER_SPACING_KEY, String(clamped))
+    set({ uiBodyLetterSpacing: clamped })
+  },
+  setUiBodyMarginX: (value) => {
+    const clamped = clampBodyMarginX(value)
+    if (typeof localStorage !== "undefined") {
+      // null 表示「跟随窗口」：移除该键，让读取函数回到默认的 null，
+      // 而不是写字符串 "null"（读回时 Number("null") 是 NaN）
+      if (clamped === null) localStorage.removeItem(BODY_MARGIN_X_KEY)
+      else localStorage.setItem(BODY_MARGIN_X_KEY, String(clamped))
+    }
+    set({ uiBodyMarginX: clamped })
+  },
+  setUiBodySafeBottom: (value) => {
+    const clamped = clampBodySafeBottom(value)
+    if (typeof localStorage !== "undefined") localStorage.setItem(BODY_SAFE_BOTTOM_KEY, String(clamped))
+    set({ uiBodySafeBottom: clamped })
   },
   setVisualStyle: (visualStyle) => {
     const normalized = normalizeVisualStyle(visualStyle)
@@ -994,4 +1297,4 @@ export const useWikiStore = create<WikiState>((set) => ({
   bumpBindingVersion: () => set((state) => ({ bindingVersion: state.bindingVersion + 1 })),
 }))
 
-export type { WikiState, LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProxyConfig, ScheduledImportConfig, SourceWatchConfig, VisualStyle }
+export type { WikiState, LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProxyConfig, SourceWatchConfig }

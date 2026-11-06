@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import { readFile, writeFile, createDirectory } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
+import { deriveConversationTitle } from "@/lib/conversation-title"
 import type { AgentRunRecord } from "@/lib/agent/types"
 import type { ReferenceToken } from "@/lib/reference/types"
 import type { ContextHubSnapshotRef, SessionContextSummary } from "@/lib/context-hub/types"
@@ -15,6 +16,18 @@ import {
 import { useWikiStore } from "@/stores/wiki-store"
 import type { IntentClarityResult } from "@/lib/novel/outline-intent-clarity"
 import type { NextStepRecommendation } from "@/lib/novel/outline-next-step"
+import {
+  isOutlineDiscussProtocol,
+  type OutlineDiscussDecisionState,
+  type OutlineDiscussPhase,
+  type OutlineDiscussProtocol,
+} from "@/lib/novel/outline-discuss-protocol"
+import {
+  isOutlinePlanProtocol,
+  type OutlinePlanDecision,
+  type OutlinePlanPhase,
+  type OutlinePlanProtocol,
+} from "@/lib/novel/outline-plan-protocol"
 import { isNovelGenerationRequestPackage, type NovelGenerationRequestPackage } from "@/lib/novel/novel-generation-request-package"
 import type { CharacterAgentResult } from "@/lib/novel/character-multi-agent"
 import {
@@ -83,7 +96,40 @@ export interface OutlineMultiAgentRunState {
   }
 }
 
+/**
+ * 保存前的结构化校验报告（卷纲 10×10、章纲 17 节等）。
+ *
+ * 存在的意义：这类问题不阻止保存（用户可以「保存当前内容」），但必须让用户
+ * **在生成结果旁边**看见缺什么，而不是被一个和内容脱节的浮层挡住。
+ */
+export interface OutlineSaveReport {
+  /** 拟保存的文件名。 */
+  fileName: string
+  /** 结构化数据类型，用于文案（卷纲 / 章纲）。 */
+  fileType: "volume-outline" | "chapter-outline"
+  /** 校验器给出的问题清单（原文，不截断 —— 明细要能逐条看）。 */
+  problems: string[]
+  /** 是否已经自动补全过一次仍不完整（此时可强制保存）。 */
+  repairAttempted: boolean
+}
+
+/**
+ * 用户向导里填的「对本章的想法或硬要求」必须是字符串。
+ *
+ * 手改过的 outline-chats.json 里若把它写成数字或对象，它会一路走到
+ * event-outline.ts 的 `requirement?.trim()` —— 而那是**渲染期**的 useMemo，
+ * 抛出的 TypeError 会把整个大纲面板打白。所以加载侧先校验、不合格即丢弃。
+ * 放在这里而不是内联 typeof：与相邻字段（isNovelGenerationRequestPackage /
+ * isOutlinePlanProtocol）的加载校验保持同一种写法，便于一眼看出
+ * 「哪些字段过校验、哪些没有」。
+ */
+function isEventOutlineRequirement(value: unknown): value is string {
+  return typeof value === "string"
+}
+
 export interface OutlineChatMessage {
+  /** 实际发送时间；旧消息缺失时不补造时间。 */
+  timestamp?: number
   id: string
   role: "user" | "assistant"
   content: string
@@ -101,9 +147,64 @@ export interface OutlineChatMessage {
   intentPhase?: "intent_analysis" | "generation" | "waiting_user_input"
   intentClarityResult?: IntentClarityResult | null
   intentProtocolError?: string
+  /** 计划模式：本轮是要素盘点还是方案提案。 */
+  outlinePlanPhase?: OutlinePlanPhase
+  /** 计划模式：追问或生成计划的协议结果。 */
+  outlinePlanProtocol?: OutlinePlanProtocol | null
+  outlinePlanError?: string
+  /** 计划协议补齐一轮后降级成追问时的说明（与 error 互斥）。 */
+  outlinePlanNotice?: string
+  /** 计划模式：卡片已被使用，重载后保持置灰。 */
+  outlinePlanDecision?: OutlinePlanDecision
+  /** 共创模式：本轮是决策讨论。 */
+  outlineDiscussPhase?: OutlineDiscussPhase
+  /** 共创模式：决策点或定稿协议结果。 */
+  outlineDiscussProtocol?: OutlineDiscussProtocol | null
+  outlineDiscussError?: string
+  /**
+   * 共创协议补齐一轮后仍不完美、但已按现有内容出卡片时的说明。
+   * 与 error 互斥：error 表示连协议都拿不到，需要用户重发。
+   */
+  outlineDiscussNotice?: string
+  /**
+   * 保存前结构化校验发现的问题。
+   *
+   * 挂在这条消息上、显示在生成结果**下方**，而不是只弹一个持久浮层：
+   * 用户看到的应当是「这段生成结果哪里不完整」，而不是一条和内容脱节、
+   * 还带滚动条的错误提示（实测报过「卷纲内容仍不完整（138 项）」）。
+   */
+  outlineSaveReport?: OutlineSaveReport
+  /** 共创模式：卡片已被使用，重载后保持置灰。 */
+  outlineDiscussDecision?: OutlineDiscussDecisionState
   nextStepRecommendation?: NextStepRecommendation | null
   novelGenerationRequest?: NovelGenerationRequestPackage
   contextHubSnapshot?: ContextHubSnapshotRef
+  generationTiming?: { startedAt: number; finishedAt?: number }
+  /**
+   * 这一轮事件细纲生成里，用户在向导中填的「对本章的想法或硬要求」。
+   *
+   * 为什么不靠模型回抄示例 JSON：扩写那一步（eventOutlineToProsePrompt）必须**确定地**
+   * 拿到这段要求，而模型抄不抄是随机的。所以随本消息一起存下来，渲染卡片时由
+   * extractEventOutlineData(content, requirement) 就地补上。
+   *
+   * 为什么放在消息本身上、而不是「章号 -> 要求」的映射：它是**这一条消息的输入**，
+   * 与消息在同一个对象字面量里创建（见 outline-chat-panel 的 handleSend），
+   * 所以不存在「换了章号就取到别人的要求」这种错配；存量数据没有这个字段时读到
+   * undefined，行为与加字段之前完全一致。
+   *
+   * 落盘：本 store 整份 conversations 直接 JSON.stringify，**写入方向**不需要任何
+   * 序列化改动，新字段照原样进 `<项目>/.qmai/outline-chats.json`。
+   *
+   * ⚠️ 但**加载侧要校验**（loadFromDisk 里的 messages 映射）：那里不是纯
+   * `{...message}` —— 每个带渲染期 `?.` 调用的字段都要过一遍类型校验，
+   * `eventOutlineRequirement` 用的是 isEventOutlineRequirement（必须是字符串），
+   * 否则手改过的 json 里写成数字或对象会在 event-outline.ts 的 `requirement?.trim()`
+   * 处抛 TypeError、把整个大纲面板打白。
+   *
+   * 注：同一批里 characterMultiAgentResults / agentToolCalls 等渲染期字段**没有**
+   * 这样的校验（既有状态，不属本批范围），这里的校验是就事论事、不是「全字段已校验」。
+   */
+  eventOutlineRequirement?: string
   /** Thinking-model chain-of-thought; must be replayed on subsequent turns. */
   reasoning_content?: string
 }
@@ -127,6 +228,14 @@ interface OutlineChatState {
   runStates: ConversationRunStates
   loaded: boolean
   pendingReferenceTokens: ReferenceToken[]
+  /**
+   * 用户显式关掉过需求分析浮层的消息 ID。
+   *
+   * 放在 store（模块级单例）而不是面板组件里：面板会随功能切换卸载重建，
+   * 组件内 state 会丢，导致「关过了又弹」或「误关后彻底不再出现」。
+   * 只存内存，不写入 outline-chats.json。
+   */
+  dismissedIntentPromptIds: Record<string, true>
 
   createConversation: () => string
   setActiveConversation: (id: string | null) => void
@@ -147,6 +256,8 @@ interface OutlineChatState {
   canStartConversationRun: (id: string) => boolean
   enqueueReferenceTokens: (tokens: ReferenceToken[]) => void
   consumePendingReferenceTokens: () => ReferenceToken[]
+  /** 记录「用户显式关掉了这条消息的需求分析浮层」，跨面板卸载保留。 */
+  dismissIntentPrompt: (messageId: string) => void
   loadFromDisk: () => Promise<void>
   saveToDisk: () => Promise<void>
 }
@@ -221,6 +332,15 @@ export const useOutlineChatStore = create<OutlineChatState>((set, get) => {
   runStates: {},
   loaded: false,
   pendingReferenceTokens: [],
+  dismissedIntentPromptIds: {},
+
+  dismissIntentPrompt: (messageId) => {
+    set((state) => (
+      state.dismissedIntentPromptIds[messageId]
+        ? state
+        : { dismissedIntentPromptIds: { ...state.dismissedIntentPromptIds, [messageId]: true } }
+    ))
+  },
 
   createConversation: () => {
     const id = crypto.randomUUID()
@@ -257,7 +377,7 @@ export const useOutlineChatStore = create<OutlineChatState>((set, get) => {
     const now = Date.now()
     set((s) => ({
       conversations: s.conversations.map((c) =>
-        c.id === convId ? { ...c, messages: [...c.messages, msg], updatedAt: now } : c
+        c.id === convId ? { ...c, messages: [...c.messages, { ...msg, timestamp: msg.timestamp ?? now }], updatedAt: now } : c
       ),
     }))
     scheduleSave()
@@ -276,8 +396,10 @@ export const useOutlineChatStore = create<OutlineChatState>((set, get) => {
           msgs.push({ id: crypto.randomUUID(), role: "assistant", content, sources })
         }
         const firstUser = msgs.find((m) => m.role === "user")
-        const title = firstUser ? firstUser.content.slice(0, 20) + (firstUser.content.length > 20 ? "..." : "") : c.title
-        return { ...c, messages: msgs, title, updatedAt: now }
+        // 首条用户消息不变，派生结果也就稳定（本 store 没有重命名动作）。
+        // 派生不出内容时保留原标题，不要写入空字符串。
+        const derived = firstUser ? deriveConversationTitle(firstUser.content) : ""
+        return { ...c, messages: msgs, title: derived || c.title, updatedAt: now }
       }),
     }))
     scheduleSave()
@@ -397,7 +519,7 @@ export const useOutlineChatStore = create<OutlineChatState>((set, get) => {
     if (!path) {
       set({
         conversations: [], activeConversationId: null, runStates: {}, streamingContents: {},
-        pendingReferenceTokens: [], loaded: true,
+        pendingReferenceTokens: [], dismissedIntentPromptIds: {}, loaded: true,
       })
       return
     }
@@ -421,6 +543,22 @@ export const useOutlineChatStore = create<OutlineChatState>((set, get) => {
           ...message,
           novelGenerationRequest: isNovelGenerationRequestPackage(message.novelGenerationRequest)
             ? message.novelGenerationRequest
+            : undefined,
+          /*
+           * 要求必须是字符串。手改过的 outline-chats.json 里若把它写成数字或对象，
+           * 它会一路走到 event-outline.ts 的 `requirement?.trim()` —— 而那是**渲染期**
+           * 的 useMemo，抛出的 TypeError 会把整个大纲面板打白。
+           * 存量数据本来就没有这个字段，读到 undefined 即丢弃，行为与加字段前一致。
+           */
+          eventOutlineRequirement: isEventOutlineRequirement(message.eventOutlineRequirement)
+            ? message.eventOutlineRequirement
+            : undefined,
+          // 结构不完整的计划协议一律丢弃，避免重载后渲染出残缺卡片
+          outlinePlanProtocol: isOutlinePlanProtocol(message.outlinePlanProtocol)
+            ? message.outlinePlanProtocol
+            : undefined,
+          outlineDiscussProtocol: isOutlineDiscussProtocol(message.outlineDiscussProtocol)
+            ? message.outlineDiscussProtocol
             : undefined,
           // 验证 resumeablePlan 数据完整性，清除结构不完整的续传数据
           multiAgentRun: message.multiAgentRun
@@ -459,7 +597,7 @@ export const useOutlineChatStore = create<OutlineChatState>((set, get) => {
       if (generation !== loadGeneration || getStoragePath() !== path) return
       set({
         conversations: [], activeConversationId: null, runStates: {}, streamingContents: {},
-        pendingReferenceTokens: [], loaded: true,
+        pendingReferenceTokens: [], dismissedIntentPromptIds: {}, loaded: true,
       })
     }
   },

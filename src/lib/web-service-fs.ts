@@ -16,6 +16,7 @@ interface ApiResponse {
   executableDir?: string
   resourceDir?: string
   appState?: Record<string, unknown> | null
+  savedPath?: string
   sourcePath?: string | null
 }
 
@@ -111,6 +112,16 @@ export const webServiceFs = {
     const result = await api("/api/project/open", { path })
     if (!result.project) throw new Error("Web API did not return a project")
     return result.project
+  },
+  async renameProject(path: string, name: string): Promise<{ name: string; path: string }> {
+    const result = await api("/api/project/rename", { path, name })
+    if (!result.project) throw new Error("Web 服务未返回项目")
+    return result.project
+  },
+  async saveProjectCover(path: string, source: string): Promise<string> {
+    const result = await api("/api/project/cover", { path, source })
+    if (!result.savedPath) throw new Error("Web 服务未返回封面路径")
+    return result.savedPath
   },
   async getExecutableDir(): Promise<string> {
     return (await api("/api/system/paths")).executableDir ?? ""

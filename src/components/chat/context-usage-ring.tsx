@@ -28,7 +28,7 @@ const SEGMENT_COLORS: Record<ContextUsageKey, string> = {
   currentInput: "#fb923c",
 }
 
-export interface ContextUsageRingProps {
+interface ContextUsageRingProps {
   usage?: ContextUsageSnapshot | null
   onCreateConversation?: () => void
   className?: string
@@ -190,7 +190,7 @@ export function ContextUsageRing({
                 {onCreateConversation && (
                   <button
                     type="button"
-                    className="rounded border border-destructive/40 px-2 py-1 text-[11px] text-destructive hover:bg-destructive/10"
+                    className="rounded border border-destructive/40 px-2 py-1 text-[0.6875rem] text-destructive hover:bg-destructive/10"
                     onClick={(event) => {
                       event.preventDefault()
                       event.stopPropagation()

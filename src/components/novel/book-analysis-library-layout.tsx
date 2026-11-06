@@ -1,5 +1,10 @@
 import type { ReactNode } from "react"
+import { useEffect, useState } from "react"
+import { Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { readFile } from "@/commands/fs"
+import { joinPath } from "@/lib/path-utils"
+import { listStoryMapHistory } from "@/lib/novel/book-analysis/story-map-history"
 import type { BookAnalysisLibraryState } from "@/lib/novel/book-analysis/library-state"
 import type { PlotFramework } from "@/lib/novel/plot-framework"
 import type {
@@ -8,8 +13,213 @@ import type {
   AnalysisSkill,
   BookAnalysisPipelineTask,
 } from "@/lib/novel/book-analysis/analysis-pipeline-types"
+import { useDocumentAppearance, useDocumentAppearanceHtml } from "@/lib/html-document-appearance"
 import { BookAnalysisActiveContext } from "./book-analysis-active-context"
-import { BookAnalysisModuleView } from "./book-analysis-module-view"
+import { BookAnalysisModuleView, type BookAnalysisModuleTab } from "./book-analysis-module-view"
+
+function StoryMapPreview({ html, title, expanded }: { html: string; title: string; expanded: boolean }) {
+  const skin = useDocumentAppearance()
+  const srcDoc = useDocumentAppearanceHtml(html)
+  return (
+    <iframe
+      key={skin}
+      title={title}
+      srcDoc={srcDoc}
+      sandbox="allow-same-origin"
+      className={`w-full border-0 bg-transparent ${expanded ? "h-[70vh]" : "h-[300px]"}`}
+    />
+  )
+}
+
+interface StoryMapCardData {
+  id: string
+  title: string
+  mainline: string
+  createdAt: number
+  startOrder: number
+  endOrder: number
+  chapterCount: number
+  mainEventCount: number
+  branchCount: number
+  html: string | null
+}
+
+/**
+ * 拆书故事导图展示：读取 story-maps/ 下全部历史导图，按最新在前逐一渲染卡片；
+ * 每张卡片含大标题 + 预览，点击「查看全部」展开到完整高度阅读。
+ * 兼容旧数据：若只有根目录 story-map.html（无历史目录），按单张方式展示。
+ */
+export function StoryMapContent({
+  bookPath,
+  refreshKey = 0,
+  onDeleteStoryMap,
+  onCardCountChange,
+}: {
+  bookPath: string
+  refreshKey?: number
+  /** 删除某张历史导图（id 为历史目录名或 legacy）；由父级实际执行磁盘删除。未提供时不渲染删除按钮。 */
+  onDeleteStoryMap?: (id: string) => Promise<void> | void
+  /**
+   * 读取结束后回传卡片数量（null＝读取中）。外层据此决定「一张旧导图都没有」时整块不显示。
+   * 由这里回传而不是让外层自己读一遍：空不空要同时看历史目录与根目录旧格式两处，
+   * 只有这个组件知道完整规则，外层再读一遍会重复一次 listStoryMapHistory。
+   */
+  onCardCountChange?: (count: number | null) => void
+}) {
+  const [cards, setCards] = useState<StoryMapCardData[] | null>(null)
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+
+  /** 落卡片与回传数量必须成对，抽出来免得漏掉某个分支（含 catch）。 */
+  const applyCards = (next: StoryMapCardData[] | null) => {
+    setCards(next)
+    onCardCountChange?.(next === null ? null : next.length)
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    applyCards(null)
+    setExpandedIds(new Set())
+    void (async () => {
+      try {
+        const history = await listStoryMapHistory(bookPath)
+        const loaded: StoryMapCardData[] = []
+        for (const entry of history) {
+          const html = await readFile(entry.htmlPath).catch(() => null)
+          const map = entry.map
+          const orders = map.chapters.map((chapter) => chapter.order)
+          loaded.push({
+            id: entry.dirName,
+            title: map.bookTitle,
+            mainline: map.mainLineLabel,
+            createdAt: map.createdAt,
+            startOrder: orders.length ? Math.min(...orders) : 0,
+            endOrder: orders.length ? Math.max(...orders) : 0,
+            chapterCount: map.chapters.length,
+            mainEventCount: map.chapters.reduce((sum, chapter) => sum + chapter.mainEvents.length, 0),
+            branchCount: map.chapters.reduce((sum, chapter) => sum + chapter.branches.length, 0),
+            html,
+          })
+        }
+        if (cancelled) return
+        if (loaded.length > 0) {
+          // 新的在前
+          applyCards(loaded.reverse())
+          return
+        }
+        // 旧格式兼容：仅根目录 story-map.html（未走历史目录生成的老数据）
+        const legacyHtml = await readFile(joinPath(bookPath, "story-map.html")).catch(() => null)
+        if (cancelled) return
+        if (legacyHtml) {
+          applyCards([{
+            id: "legacy",
+            title: "",
+            mainline: "",
+            createdAt: 0,
+            startOrder: 0,
+            endOrder: 0,
+            chapterCount: 0,
+            mainEventCount: 0,
+            branchCount: 0,
+            html: legacyHtml,
+          }])
+        } else {
+          applyCards([])
+        }
+      } catch {
+        if (!cancelled) applyCards([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [bookPath, refreshKey])
+
+  const toggleExpand = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const handleDeleteMap = async (card: StoryMapCardData) => {
+    const title = card.title ? `《${card.title}》故事导图` : "故事导图"
+    if (!window.confirm(`确认删除「${title}」吗？\n\n删除后不可恢复。`)) return
+    if (!onDeleteStoryMap) return
+    try {
+      await onDeleteStoryMap(card.id)
+      // 走 applyCards 而不是裸 setCards：删掉最后一张时数量要跟着回传 0，
+      // 否则外层会留下过期的 count，空区块又冒出来。
+      applyCards(cards ? cards.filter((item) => item.id !== card.id) : cards)
+    } catch (error) {
+      console.error("[story-map] 删除故事导图失败", error)
+    }
+  }
+
+  if (cards === null) {
+    return <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">正在加载故事导图…</div>
+  }
+  if (cards.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+        尚未提取故事导图。请先分析「故事」技能生成导图。
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-4" aria-label="故事导图历史列表">
+      {cards.map((card) => {
+        const expanded = expandedIds.has(card.id)
+        return (
+          <div key={card.id} className="overflow-hidden rounded-md border bg-background">
+            <div className="flex items-start justify-between gap-3 border-b bg-background px-4 py-3">
+              <div className="min-w-0">
+                <div className="truncate text-base font-semibold">
+                  {card.title ? `《${card.title}》故事导图` : "故事导图"}
+                  {card.mainline ? (
+                    <span className="ml-2 text-sm font-medium text-primary">主线：{card.mainline}</span>
+                  ) : null}
+                </div>
+                {card.createdAt > 0 && (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    生成于 {new Date(card.createdAt).toLocaleString("zh-CN")}
+                    {card.chapterCount > 0
+                      ? ` ｜ 覆盖第 ${card.startOrder}～${card.endOrder} 章 ｜ 主线 ${card.mainEventCount} 条 · 分支 ${card.branchCount} 条`
+                      : ""}
+                  </div>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => toggleExpand(card.id)}>
+                  {expanded ? "收起" : "查看全部"}
+                </Button>
+                {onDeleteStoryMap && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive hover:bg-destructive/10"
+                    onClick={() => void handleDeleteMap(card)}
+                  >
+                    <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                    删除
+                  </Button>
+                )}
+              </div>
+            </div>
+            {card.html ? (
+              <StoryMapPreview
+                html={card.html}
+                title={`故事导图预览-${card.id}`}
+                expanded={expanded}
+              />
+            ) : (
+              <div className="p-4 text-sm text-muted-foreground">该历史导图的 HTML 缺失，无法预览。</div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 interface BookAnalysisLibraryLayoutProps {
   state: BookAnalysisLibraryState
@@ -24,12 +234,21 @@ interface BookAnalysisLibraryLayoutProps {
   analysisTask?: BookAnalysisPipelineTask | null
   analysisChunks?: AnalysisChunkRecord[]
   analysisProgresses?: Record<string, AnalysisRuntimeProgress>
+  /** 同书全部分析任务（含并行运行的多个）；用于分别显示各自的并行进度 */
+  analysisTasks?: BookAnalysisPipelineTask[]
+  /** 并行任务各自的控制：暂停/继续/重试/取消（按任务 id 定位） */
+  onParallelPauseTask?: (taskId: string) => void
+  onParallelContinueTask?: (taskId: string) => void
+  onParallelRetryTask?: (taskId: string) => void
+  onParallelCancelTask?: (taskId: string) => void
   onSelectBook: (bookId: string) => void
   onSelectCharacter: (characterId: string) => void
   onImportNovel: () => void
   onExtractStyle: () => void
   onExtractStoryFramework: () => void
   onCreateOutlineFromFramework?: (frameworkId: string) => void
+  /** 打开该作品生成的故事导图（story-map.html）；未提取时传 undefined 隐藏入口 */
+  onOpenStoryMap?: (bookPath: string) => void
   onToggleStyle: () => void
   onAddSelectedSkillsToSoul: (skillId: string) => void
   onOpenSkillSelection?: () => void
@@ -37,12 +256,24 @@ interface BookAnalysisLibraryLayoutProps {
   onReextractSkill?: (skill: AnalysisSkill) => void
   onConfigureAnalysisTask?: () => void
   onSelectAnalysisCharacters?: () => void
-  onPauseAnalysisTask?: () => void
-  onContinueAnalysisTask?: () => void
-  onRetryAnalysisTask?: () => void
   onRetryAnalysisChunk?: (skill: AnalysisSkill, chunkId: string) => void
-  onCancelAnalysisTask?: () => void
   onDeleteBook: (bookId: string) => void
+  /** 删除单个角色（档案 + Skill） */
+  onDeleteCharacter?: (characterId: string) => void
+  /** 删除作品文风画像 */
+  onDeleteStyle?: () => void
+  /** 删除某张历史故事导图（id 为历史目录名或 legacy） */
+  onDeleteStoryMap?: (id: string) => Promise<void> | void
+  /** 受控页签：任务完成「查看结果」时可从外部切换到对应 Skill 页签 */
+  analysisActiveTab?: BookAnalysisModuleTab
+  onAnalysisActiveTabChange?: (tab: BookAnalysisModuleTab) => void
+  /** 故事导图刷新键：故事任务完成后递增，触发 StoryMapContent 重新读取历史导图 */
+  storyMapRefreshKey?: number
+  /**
+   * 嵌在新版拆书页里时置真：新版顶部已经显示书名与章数字，
+   * 这里不再重复一套「拆书库／书名／章数字」，只保留右侧的「打开故事导图」。
+   */
+  hideBookHeader?: boolean
 }
 
 export function BookAnalysisLibraryLayout({
@@ -51,12 +282,16 @@ export function BookAnalysisLibraryLayout({
   selectedCharacterId,
   extractingStyle,
   addingToSoul,
-  storyFrameworks = [],
   analysisTask,
   analysisChunks = [],
   analysisProgresses = {},
+  analysisTasks = [],
+  onParallelPauseTask,
+  onParallelContinueTask,
+  onParallelRetryTask,
+  onParallelCancelTask,
   onSelectCharacter,
-  onCreateOutlineFromFramework,
+  onOpenStoryMap,
   onToggleStyle,
   onAddSelectedSkillsToSoul,
   onOpenSkillSelection,
@@ -66,11 +301,14 @@ export function BookAnalysisLibraryLayout({
   onReextractSkill,
   onConfigureAnalysisTask,
   onSelectAnalysisCharacters,
-  onPauseAnalysisTask,
-  onContinueAnalysisTask,
-  onRetryAnalysisTask,
   onRetryAnalysisChunk,
-  onCancelAnalysisTask,
+  onDeleteCharacter,
+  onDeleteStyle,
+  onDeleteStoryMap,
+  analysisActiveTab,
+  onAnalysisActiveTabChange,
+  storyMapRefreshKey,
+  hideBookHeader = false,
 }: BookAnalysisLibraryLayoutProps) {
   const selectedBook = state.books.find((book) => book.id === selectedBookId) ?? state.books[0] ?? null
 
@@ -83,40 +321,32 @@ export function BookAnalysisLibraryLayout({
   }
 
   const storyContent = (
-    <section className="space-y-3">
-      {storyFrameworks.length === 0 ? (
-        <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">尚未提取故事框架。</div>
-      ) : storyFrameworks.map((framework) => (
-        <article key={framework.id} className="rounded-md border bg-background p-4 text-sm">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="font-medium">{framework.title}</h3>
-              <p className="mt-1 text-xs text-muted-foreground">{framework.line === "main" ? "主线" : "支线"} · 覆盖 {framework.rangeChapterIds.length} 章</p>
-            </div>
-            {onCreateOutlineFromFramework && <Button variant="outline" size="sm" onClick={() => onCreateOutlineFromFramework(framework.id)}>基于此框架创建章纲</Button>}
-          </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <div><div className="font-medium">开局钩子</div><p className="mt-1 whitespace-pre-wrap text-muted-foreground">{framework.beats.hook}</p></div>
-            <div><div className="font-medium">铺垫</div><p className="mt-1 whitespace-pre-wrap text-muted-foreground">{framework.beats.buildup}</p></div>
-            <div><div className="font-medium">爽点</div><p className="mt-1 whitespace-pre-wrap text-muted-foreground">{framework.beats.payoff}</p></div>
-            <div><div className="font-medium">结尾钩子</div><p className="mt-1 whitespace-pre-wrap text-muted-foreground">{framework.beats.endingHook}</p></div>
-          </div>
-        </article>
-      ))}
-    </section>
+    <StoryMapContent bookPath={selectedBook.path} refreshKey={storyMapRefreshKey} onDeleteStoryMap={onDeleteStoryMap} />
   )
 
   return (
     <div className="flex h-full min-h-0 bg-muted/20">
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="shrink-0 border-b bg-background px-5 py-3">
-          <div className="text-xs font-medium text-muted-foreground">拆书库</div>
-          <h2 className="text-lg font-semibold">{selectedBook.metadata.title}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">{selectedBook.metadata.totalChapters} 章 · {selectedBook.metadata.totalWords.toLocaleString()} 字</p>
+          <div className="flex items-start gap-3" style={{ justifyContent: hideBookHeader ? "flex-end" : "space-between" }}>
+            {hideBookHeader ? null : (
+              <div>
+                <div className="text-xs font-medium text-muted-foreground">拆书库</div>
+                <h2 className="text-lg font-semibold">{selectedBook.metadata.title}</h2>
+                <p className="mt-1 text-xs text-muted-foreground">{selectedBook.metadata.totalChapters} 章 · {selectedBook.metadata.totalWords.toLocaleString()} 字</p>
+              </div>
+            )}
+            {onOpenStoryMap ? (
+              <Button variant="outline" size="sm" onClick={() => onOpenStoryMap(selectedBook.path)}>
+                打开故事导图
+              </Button>
+            ) : null}
+          </div>
         </header>
         <BookAnalysisModuleView
         book={selectedBook}
         task={analysisTask}
+        tasks={analysisTasks}
         chunks={analysisChunks}
         progresses={analysisProgresses}
         selectedCharacterId={selectedCharacterId}
@@ -133,13 +363,17 @@ export function BookAnalysisLibraryLayout({
           else if (skill === "story") onExtractStoryFramework()
           else onExtractStyle()
         }}
+        onDeleteCharacter={onDeleteCharacter}
+        onDeleteStyle={onDeleteStyle}
         onConfigureTask={onConfigureAnalysisTask}
         onSelectCharacters={onSelectAnalysisCharacters}
-        onPauseTask={onPauseAnalysisTask}
-        onContinueTask={onContinueAnalysisTask}
-        onRetryTask={onRetryAnalysisTask}
+        onPauseTask={onParallelPauseTask}
+        onContinueTask={onParallelContinueTask}
+        onRetryTask={onParallelRetryTask}
         onRetryChunk={onRetryAnalysisChunk}
-        onCancelTask={onCancelAnalysisTask}
+        onCancelTask={onParallelCancelTask}
+        activeTab={analysisActiveTab}
+        onActiveTabChange={onAnalysisActiveTabChange}
         />
       </main>
       <BookAnalysisActiveContext enabledStyle={state.enabledStyle} bindings={state.bindings} />

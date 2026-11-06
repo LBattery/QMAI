@@ -5,10 +5,13 @@ import {
   getEffectiveMaxOutputTokens,
   getProviderConfig,
   isTruncationFinishReason,
+  parseOpenAiSseError,
   thinkingMinMaxTokens,
   type RequestOverrides,
 } from "./llm-providers"
 import { getHttpFetch, isFetchNetworkError } from "./tauri-fetch"
+import { isUserAbortError } from "./user-abort"
+import { isTauriInvalidResourceIdError } from "./tauri-resource-error"
 import { countReasoningCharsInLine, extractReasoningTextFromLine } from "./reasoning-detector"
 import {
   formatReasoningReplayRiskForError,
@@ -32,6 +35,7 @@ import {
   withReasoningDisabled,
 } from "./reasoning-retry"
 import { applyGlobalUserMemoryToMessages } from "./user-memory/request-integration"
+import { preparePromptCacheRouting } from "./prompt-cache-routing"
 import type { UserMemoryDecision } from "./user-memory/decision-trace"
 import {
   buildLlmRequestCacheTrace,
@@ -42,7 +46,7 @@ import {
 import { withWritingWakeLock } from "./writing-wake-lock"
 
 export type { ChatMessage, RequestOverrides } from "./llm-providers"
-export { isFetchNetworkError } from "./tauri-fetch"
+
 export type { LlmUsage } from "./llm-usage"
 
 export interface StreamCallbacks {
@@ -50,6 +54,8 @@ export interface StreamCallbacks {
   onReasoningToken?: (token: string) => void
   /** 工具调用流式 delta，用于累积 tool_calls */
   onToolCallDelta?: (delta: { index: number; id?: string; name?: string; arguments?: string }) => void
+  /** Provider reported finish reason for the current response. */
+  onFinishReason?: (reason: string) => void
   onUsage?: (usage: LlmUsage) => void
   /** Sanitized request-level timing/cache trace; never contains prompt text or credentials. */
   onRequestTrace?: (trace: LlmRequestCacheTrace) => void
@@ -70,6 +76,17 @@ async function streamViaClaudeCodeCli(
 ) {
   const mod = await import("./claude-cli-transport")
   return mod.streamClaudeCodeCli(config, messages, callbacks, signal, requestOverrides)
+}
+
+async function streamViaAntigravityCli(
+  config: LlmConfig,
+  messages: import("./llm-providers").ChatMessage[],
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal,
+  requestOverrides?: RequestOverrides,
+) {
+  const mod = await import("./antigravity-cli-transport")
+  return mod.streamAntigravityCli(config, messages, callbacks, signal, requestOverrides)
 }
 
 async function streamViaCodexCli(
@@ -93,7 +110,7 @@ export const DEFAULT_LLM_REQUEST_TIMEOUT_MS = 30 * 60 * 1000
  */
 export const OUTPUT_TRUNCATED_ERROR_MARKER = "输出被截断"
 
-export function buildOutputTruncatedError(finishReason: string): Error {
+function buildOutputTruncatedError(finishReason: string): Error {
   return new Error(
     `${OUTPUT_TRUNCATED_ERROR_MARKER}：模型已达到最大输出 token 上限（finish_reason=${finishReason}）。` +
     `已生成的内容已保留，可输入"继续"让模型补全剩余部分，或提高最大输出 token 后重试。`,
@@ -104,7 +121,7 @@ export function isOutputTruncatedError(error: unknown): boolean {
   return error instanceof Error && error.message.includes(OUTPUT_TRUNCATED_ERROR_MARKER)
 }
 
-export function shouldRetryWithBrowserFetch(errorDetail: string): boolean {
+function shouldRetryWithBrowserFetch(errorDetail: string): boolean {
   return /client not allowed/i.test(errorDetail) && /tauri-plugin-http/i.test(errorDetail)
 }
 
@@ -130,11 +147,13 @@ function waitForRetry(ms: number, signal?: AbortSignal): Promise<boolean> {
   })
 }
 
-function parseToolCallDeltaFromLine(line: string): { index: number; id?: string; name?: string; arguments?: string } | null {
+function parseToolCallDeltasFromLine(
+  line: string,
+): Array<{ index: number; id?: string; name?: string; arguments?: string }> {
   const trimmed = line.trim()
-  if (!trimmed.startsWith("data: ")) return null
+  if (!trimmed.startsWith("data: ")) return []
   const data = trimmed.slice(6).trim()
-  if (data === "[DONE]") return null
+  if (data === "[DONE]") return []
   try {
     const parsed = JSON.parse(data) as {
       choices?: Array<{
@@ -147,18 +166,19 @@ function parseToolCallDeltaFromLine(line: string): { index: number; id?: string;
         }
       }>
     }
-    const toolCall = parsed.choices?.[0]?.delta?.tool_calls?.[0]
-    if (toolCall === undefined) return null
-    return {
+    const toolCalls = parsed.choices?.[0]?.delta?.tool_calls ?? []
+    return toolCalls.map((toolCall) => ({
       index: toolCall.index ?? 0,
-      id: toolCall.id,
-      name: toolCall.function?.name,
-      arguments: toolCall.function?.arguments,
-    }
+      ...(toolCall.id !== undefined ? { id: toolCall.id } : {}),
+      ...(toolCall.function?.name !== undefined ? { name: toolCall.function.name } : {}),
+      ...(toolCall.function?.arguments !== undefined
+        ? { arguments: toolCall.function.arguments }
+        : {}),
+    }))
   } catch {
     // A malformed SSE line is not fatal: skip it and keep the stream alive.
     // The only error reachable here is JSON.parse's SyntaxError.
-    return null
+    return []
   }
 }
 
@@ -181,7 +201,7 @@ function inputLengthLimitMessage(limit: { inputLength: number; maxLength: number
  * request. Returns the highest value the model will accept when the error
  * reports one; otherwise null.
  */
-export function parseMaxTokensLimit(errorDetail: string): number | null {
+function parseMaxTokensLimit(errorDetail: string): number | null {
   const patterns = [
     /max[_ ]?(?:output[_ ]?)?tokens?\s*(?:of\s+|is\s+|=\s*)?([\d,]+)\s*(?:is\s+)?(?:too\s+(?:large|high)|exceeds|above|greater than)/i,
     /(?:max[_ ]?(?:output[_ ]?)?tokens?|maximum\s+output)\s*(?:must be|should be|limited to|capped at|<=|≤)\s*([\d,]+)/i,
@@ -199,7 +219,7 @@ export function parseMaxTokensLimit(errorDetail: string): number | null {
 }
 
 function isLocalCliProvider(provider: LlmConfig["provider"]): boolean {
-  return provider === "claude-code" || provider === "codex-cli" || provider === "cursor-cli"
+  return provider === "claude-code" || provider === "codex-cli" || provider === "cursor-cli" || provider === "antigravity-cli"
 }
 
 export async function streamChat(
@@ -306,17 +326,20 @@ async function streamChatHeld(
   const { onToken, onDone, onError } = callbacks
   const decoder = new TextDecoder()
 
+  effectiveRequestOverrides = await preparePromptCacheRouting(runtimeConfig, budgetedMessages, effectiveRequestOverrides)
   let prefixDescriptor = await buildLlmRequestPrefixDescriptor(
     runtimeConfig,
     budgetedMessages,
     effectiveRequestOverrides,
   )
   interface ActiveRequestTrace {
+    requestId: string
     startedAt: number
     firstResponseAt?: number
     finished: boolean
   }
   const startRequestTrace = (): ActiveRequestTrace => ({
+    requestId: crypto.randomUUID(),
     startedAt: Date.now(),
     finished: false,
   })
@@ -332,6 +355,7 @@ async function streamChatHeld(
     trace.finished = true
     try {
       callbacks.onRequestTrace?.(buildLlmRequestCacheTrace({
+        requestId: trace.requestId,
         config: runtimeConfig,
         ...prefixDescriptor,
         startedAt: trace.startedAt,
@@ -400,6 +424,11 @@ async function streamChatHeld(
   if (runtimeConfig.provider === "codex-cli") {
     return streamLocalWithTrace((localCallbacks) =>
       streamViaCodexCli(runtimeConfig, budgetedMessages, localCallbacks, signal, effectiveRequestOverrides))
+  }
+
+  if (runtimeConfig.provider === "antigravity-cli") {
+    return streamLocalWithTrace((localCallbacks) =>
+      streamViaAntigravityCli(runtimeConfig, budgetedMessages, localCallbacks, signal, effectiveRequestOverrides))
   }
 
   if (runtimeConfig.provider === "cursor-cli") {
@@ -517,7 +546,7 @@ async function streamChatHeld(
     try {
       response = await sendRequest(requestInit)
     } catch (err) {
-      if (signal?.aborted || (combinedSignal?.aborted && !timeoutFired)) {
+      if (signal?.aborted || (combinedSignal?.aborted && !timeoutFired) || isTauriInvalidResourceIdError(err)) {
         onDone()
         return
       }
@@ -589,6 +618,7 @@ async function streamChatHeld(
           onError(new Error(inputLengthLimitMessage(inputLimit)))
           return
         }
+        effectiveRequestOverrides = await preparePromptCacheRouting(runtimeConfig, retryMessages, effectiveRequestOverrides)
         prefixDescriptor = await buildLlmRequestPrefixDescriptor(
           runtimeConfig,
           retryMessages,
@@ -659,6 +689,7 @@ async function streamChatHeld(
       ) {
         effectiveRequestOverrides = withReasoningDisabled(effectiveRequestOverrides)
         budgetedMessages = stripEmptyReasoningContent(budgetedMessages)
+        effectiveRequestOverrides = await preparePromptCacheRouting(runtimeConfig, budgetedMessages, effectiveRequestOverrides)
         prefixDescriptor = await buildLlmRequestPrefixDescriptor(
           runtimeConfig,
           budgetedMessages,
@@ -754,7 +785,10 @@ async function streamChatHeld(
     }
     const recordFinishReason = (line: string) => {
       const reason = providerConfig.parseFinishReason(line)
-      if (reason) finishReason = reason
+      if (reason) {
+        finishReason = reason
+        callbacks.onFinishReason?.(reason)
+      }
     }
     const recordReasoning = (line: string) => {
       const reasoningParts = extractReasoningTextFromLine(line)
@@ -772,23 +806,28 @@ async function streamChatHeld(
         if (done) {
           if (lineBuffer.trim()) {
             const trimmed = lineBuffer.trim()
+            const sseError = parseOpenAiSseError(trimmed)
+            if (sseError) {
+              finishRequestTrace(activeRequestTrace, "error", streamUsage)
+              onError(new Error(sseError))
+              return
+            }
             recordUsage(trimmed)
             recordFinishReason(trimmed)
             // Always harvest reasoning first: some gateways emit
             // reasoning_content and tool_calls on the same SSE line.
             reasoningCharsObserved += countReasoningCharsInLine(trimmed)
             recordReasoning(trimmed)
-            const toolDelta = parseToolCallDeltaFromLine(trimmed)
-            if (toolDelta) {
+            const toolDeltas = parseToolCallDeltasFromLine(trimmed)
+            for (const toolDelta of toolDeltas) {
               markFirstResponse(activeRequestTrace)
               toolCallDeltaCount += 1
               callbacks.onToolCallDelta?.(toolDelta)
-            } else {
-              const token = providerConfig.parseStream(trimmed)
-              if (token !== null) {
-                if (token) markFirstResponse(activeRequestTrace)
-                recordToken(token)
-              }
+            }
+            const token = providerConfig.parseStream(trimmed)
+            if (token !== null) {
+              if (token) markFirstResponse(activeRequestTrace)
+              recordToken(token)
             }
           }
           break
@@ -800,18 +839,23 @@ async function streamChatHeld(
         for (const line of lines) {
           const trimmed = line.trim()
           if (!trimmed) continue
+          const sseError = parseOpenAiSseError(trimmed)
+          if (sseError) {
+            finishRequestTrace(activeRequestTrace, "error", streamUsage)
+            onError(new Error(sseError))
+            return
+          }
           recordUsage(trimmed)
           recordFinishReason(trimmed)
           // Always harvest reasoning first: some gateways emit
           // reasoning_content and tool_calls on the same SSE line.
           reasoningCharsObserved += countReasoningCharsInLine(trimmed)
           recordReasoning(trimmed)
-          const toolDelta = parseToolCallDeltaFromLine(trimmed)
-          if (toolDelta) {
+          const toolDeltas = parseToolCallDeltasFromLine(trimmed)
+          for (const toolDelta of toolDeltas) {
             markFirstResponse(activeRequestTrace)
             toolCallDeltaCount += 1
             callbacks.onToolCallDelta?.(toolDelta)
-            continue
           }
           const token = providerConfig.parseStream(trimmed)
           if (token !== null) {
@@ -870,7 +914,7 @@ async function streamChatHeld(
       finishRequestTrace(activeRequestTrace, "success", streamUsage)
       onDone()
     } catch (err) {
-      if (err instanceof Error && (err.name === "AbortError" || (signal?.aborted))) {
+      if (isUserAbortError(err, signal)) {
         finishRequestTrace(activeRequestTrace, "cancelled", streamUsage)
         onDone()
         return

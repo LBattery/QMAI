@@ -110,6 +110,13 @@ export interface LlmRequestDiagnostics {
   cacheWriteTokens?: number
   requests?: LlmRequestCacheTrace[]
   omittedRequestCount?: number
+  usageTotals?: {
+    requestCount: number
+    inputTokens?: number
+    outputTokens?: number
+    cachedInputTokens?: number
+    cacheWriteInputTokens?: number
+  }
 }
 
 /** Generation-details stats: source traces + independent stablePrefixStatus; token fields are estimates. */
@@ -120,6 +127,16 @@ export interface ContextHubStats {
   fallbackUsed: number
   readFailed: number
   writeFailed: number
+  /** 本地复用资料的估算 token 之和，不代表少发送的 token 或缓存价格折扣。 */
+  cacheHitTokens?: number
+  /** 任务型加载次数，仅作诊断；旧快照不可据此反推任务型命中数。 */
+  taskScopedLoaded?: number
+  /** 非任务型实际加载次数（并发去重，含空值和失败）；旧快照缺失表示未知。 */
+  cacheableLoaded?: number
+  /** 同范围内的缓存复用次数（含缓存空值）；须与 cacheableLoaded 成对出现。 */
+  cacheableHits?: number
+  /** 本轮任务级数据源的缓存命中数；从可缓存命中率分子中扣除。旧快照缺失时按 0 处理。 */
+  taskScopedHits?: number
   stablePrefixStatus?: StablePrefixStatus
   /** Estimated tokens (local heuristic). */
   stableTokens: number
@@ -166,8 +183,6 @@ export interface ContextCacheItemTrace {
   dependencyPaths: string[]
   dependencyPathsTruncated: boolean
 }
-
-export type ContextSourceTrace = ContextCacheItemTrace
 
 export interface ContextHubSnapshotRef {
   id: string
@@ -226,25 +241,6 @@ export interface ContextHub {
   dispose(): void
 }
 
-export function emptyContextHubStats(): ContextHubStats {
-  return {
-    cacheHits: 0,
-    reloaded: 0,
-    empty: 0,
-    fallbackUsed: 0,
-    readFailed: 0,
-    writeFailed: 0,
-    stableTokens: 0,
-    summaryTokens: 0,
-    dynamicTokens: 0,
-    candidateTokens: 0,
-    estimatedSavedTokens: 0,
-    estimatedSavedPercent: 0,
-    expanded: false,
-    providerCacheEnabled: false,
-  }
-}
-
 const CURRENT_ITEM_STATUSES = new Set<ContextCacheItemStatus>([
   "cache_hit",
   "reloaded",
@@ -274,6 +270,16 @@ function normalizeRequestDiagnostics(value: unknown): LlmRequestDiagnostics | un
   const requests = Array.isArray(source.requests)
     ? source.requests.filter(isLlmRequestCacheTrace).map(copyLlmRequestCacheTrace)
     : undefined
+  const totalsSource = source.usageTotals
+  const usageTotals = totalsSource && typeof totalsSource === "object" && isFiniteNumber((totalsSource as { requestCount?: unknown }).requestCount)
+    ? {
+        requestCount: Math.max(0, Math.floor((totalsSource as { requestCount: number }).requestCount)),
+        ...(isFiniteNumber((totalsSource as { inputTokens?: unknown }).inputTokens) ? { inputTokens: (totalsSource as { inputTokens: number }).inputTokens } : {}),
+        ...(isFiniteNumber((totalsSource as { outputTokens?: unknown }).outputTokens) ? { outputTokens: (totalsSource as { outputTokens: number }).outputTokens } : {}),
+        ...(isFiniteNumber((totalsSource as { cachedInputTokens?: unknown }).cachedInputTokens) ? { cachedInputTokens: (totalsSource as { cachedInputTokens: number }).cachedInputTokens } : {}),
+        ...(isFiniteNumber((totalsSource as { cacheWriteInputTokens?: unknown }).cacheWriteInputTokens) ? { cacheWriteInputTokens: (totalsSource as { cacheWriteInputTokens: number }).cacheWriteInputTokens } : {}),
+      }
+    : undefined
   const requestCountAvailable = typeof source.requestCountAvailable === "boolean"
     ? source.requestCountAvailable
     : undefined
@@ -290,6 +296,7 @@ function normalizeRequestDiagnostics(value: unknown): LlmRequestDiagnostics | un
     ...(isFiniteNumber(source.cacheReadTokens) ? { cacheReadTokens: source.cacheReadTokens } : {}),
     ...(isFiniteNumber(source.cacheWriteTokens) ? { cacheWriteTokens: source.cacheWriteTokens } : {}),
     ...(requests ? { requests } : {}),
+    ...(usageTotals ? { usageTotals } : {}),
     ...(isFiniteNumber(source.omittedRequestCount)
       ? { omittedRequestCount: Math.max(0, Math.floor(source.omittedRequestCount)) }
       : {}),
@@ -297,10 +304,16 @@ function normalizeRequestDiagnostics(value: unknown): LlmRequestDiagnostics | un
 }
 
 function normalizeContextHubStats(source: ContextHubStats): ContextHubStats {
-  const { requestDiagnostics: _requestDiagnostics, ...rest } = source
+  const { requestDiagnostics: _requestDiagnostics, cacheableLoaded, cacheableHits, ...rest } = source
   const requestDiagnostics = normalizeRequestDiagnostics(source.requestDiagnostics)
+  const validCacheCounters = typeof cacheableLoaded === "number"
+    && Number.isSafeInteger(cacheableLoaded) && cacheableLoaded >= 0
+    && typeof cacheableHits === "number"
+    && Number.isSafeInteger(cacheableHits) && cacheableHits >= 0
+    && cacheableHits <= cacheableLoaded
   return {
     ...rest,
+    ...(validCacheCounters ? { cacheableLoaded, cacheableHits } : {}),
     ...(requestDiagnostics ? { requestDiagnostics } : {}),
   }
 }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { getCustomCompatibleHeaders, getProviderConfig, parseGoogleLine, withCustomOriginHeader } from "./llm-providers"
+import { getCustomCompatibleHeaders, getProviderConfig, modelSupportsReasoningControl, parseGoogleLine, parseOpenAiSseError, withCustomOriginHeader } from "./llm-providers"
+import type { ChatMessage } from "./llm-providers"
+import { filterDeAiOutput } from "./novel/de-ai-output"
 import type { LlmConfig, ReasoningMode } from "@/stores/wiki-store"
 
 function customConfig(overrides: Partial<LlmConfig> = {}): LlmConfig {
@@ -21,6 +23,18 @@ function requestBody(config: LlmConfig): Record<string, unknown> {
     { role: "user", content: "请回答。" },
   ]) as Record<string, unknown>
 }
+
+describe("OpenAI SSE error lines", () => {
+  it("reads cursor-api-proxy agent_exit errors instead of treating them as empty content", () => {
+    expect(
+      parseOpenAiSseError(
+        'data: {"error":{"message":"The Cursor agent process exited with code 1. See server logs for details.","code":"cursor_cli_error"}}',
+      ),
+    ).toBe("The Cursor agent process exited with code 1. See server logs for details.")
+    expect(parseOpenAiSseError("data: [DONE]")).toBeNull()
+    expect(parseOpenAiSseError('data: {"choices":[{"delta":{"content":"hi"}}]}')).toBeNull()
+  })
+})
 
 describe("llm provider reasoning options", () => {
   it("keeps Anthropic thinking inside the caller's max_tokens budget", () => {
@@ -468,7 +482,7 @@ describe("prompt caching cache_control breakpoints", () => {
         { type: "text", text: "稳定项目核心", cacheControl: true },
         { type: "text", text: "动态上下文" },
       ],
-    }]) as Record<string, any>
+    }]) as { systemInstruction: { parts: Array<{ text: string }> } }
 
     expect(body.systemInstruction.parts).toEqual([{ text: "稳定项目核心动态上下文" }])
   })
@@ -505,7 +519,7 @@ describe("Qwen3.5/3.6 leading system coalesce", () => {
     { role: "user" as const, content: "开始写" },
   ]
 
-  function rolesAndContent(config: LlmConfig, messages = dualSystem) {
+  function rolesAndContent(config: LlmConfig, messages: ChatMessage[] = dualSystem) {
     const body = getProviderConfig(config).buildBody(messages) as {
       messages?: Array<{ role: string; content: unknown }>
       input?: Array<{ role: string; content: unknown }>
@@ -667,6 +681,12 @@ describe("Gemini thought summaries", () => {
     })
   }
 
+  function googleLine(...parts: string[]): string {
+    return `data: ${JSON.stringify({
+      candidates: [{ content: { parts: parts.map((text) => ({ text })) } }],
+    })}`
+  }
+
   it("does not return thought:true parts as visible content", () => {
     const line = 'data: {"candidates":[{"content":{"parts":[{"text":"先拆章纲","thought":true},{"text":"雨还在下。"}]}}]}'
     expect(parseGoogleLine(line)).toBe("雨还在下。")
@@ -676,6 +696,36 @@ describe("Gemini thought summaries", () => {
     const dump = "**Defining the Request**\\n\\nThe user wants the full text for Chapter 14."
     const line = `data: {"candidates":[{"content":{"parts":[{"text":"${dump}"},{"text":"雨还在下。"}]}}]}`
     expect(parseGoogleLine(line)).toBe("雨还在下。")
+  })
+
+  it("filters a thought summary split across Gemini SSE events and parts at the completed-result boundary", () => {
+    const body = "地下暗轨深处，空气沉得像一汪死水。叶刃没有回头。"
+    const lines = [
+      googleLine(
+        "I'm currently focused on defining the project scope, prioritizing ",
+        "the objective: refining the novel snippet to align with the \"去 AI 味\" skill's instructions.",
+      ),
+      googleLine(
+        "\n\n**Examining the Narrative Details**\n\n",
+        "I'm now diving deep into analyzing the source text and preserving its key conflicts.",
+      ),
+      googleLine(
+        "\n\n**Analyzing the Conflict's Dynamics**\n\n",
+        "I've been mapping out the escalating conflict within the narrative's framework.",
+      ),
+      googleLine(`\n\n${body}`),
+    ]
+
+    // parseGoogleLine is stateless, so a single event or part cannot reliably
+    // identify a summary whose evidence is spread across the completed payload.
+    // Do not constrain how much the provider can discard eagerly; the business
+    // boundary must still guarantee that only the revised body survives.
+    const completed = lines
+      .map((line) => parseGoogleLine(line))
+      .filter((text): text is string => text !== null)
+      .join("")
+
+    expect(filterDeAiOutput(completed)).toBe(body)
   })
 
   it("hides thought summaries on Gemini 3.x even in auto reasoning mode", () => {
@@ -703,5 +753,126 @@ describe("Gemini thought summaries", () => {
     ) as Record<string, unknown>
 
     expect(body.generationConfig).toBeUndefined()
+  })
+})
+
+describe("modelSupportsReasoningControl", () => {
+  it("hides the control for local CLI providers that ignore config.reasoning", () => {
+    // Claude Code takes no thinking parameter; Cursor CLI reads effort out of
+    // the model id (`model[reasoning_effort=high]`) instead.
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "claude-code",
+      model: "claude-sonnet-4-5",
+    }))).toBe(false)
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "cursor-cli",
+      model: "gpt-5.4",
+    }))).toBe(false)
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "antigravity-cli",
+      model: "gemini-3.8-flash-high",
+    }))).toBe(false)
+  })
+
+  it("offers the control for Codex CLI, which maps the mode onto turn effort", () => {
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "codex-cli",
+      model: "gpt-5.4-codex",
+    }))).toBe(true)
+  })
+
+  it("gates Gemini on the same version check that guards thinkingConfig", () => {
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "google",
+      model: "gemini-2.5-pro",
+    }))).toBe(true)
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "google",
+      model: "gemini-1.5-pro",
+    }))).toBe(false)
+  })
+
+  it("requires Claude 3.7+ on the Anthropic wire, since 3.5 rejects thinking", () => {
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "anthropic",
+      model: "claude-3-7-sonnet-latest",
+    }))).toBe(true)
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+    }))).toBe(true)
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "anthropic",
+      model: "claude-3-5-sonnet-20241022",
+    }))).toBe(false)
+  })
+
+  it("applies the Anthropic gate to MiniMax and anthropic_messages custom endpoints", () => {
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "minimax",
+      model: "MiniMax-M2",
+    }))).toBe(true)
+    expect(modelSupportsReasoningControl(customConfig({
+      apiMode: "anthropic_messages",
+      model: "claude-opus-4-1",
+    }))).toBe(true)
+    expect(modelSupportsReasoningControl(customConfig({
+      apiMode: "anthropic_messages",
+      model: "claude-3-haiku-20240307",
+    }))).toBe(false)
+  })
+
+  it("offers the control only for reasoning models on the OpenAI wire", () => {
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "openai",
+      model: "gpt-5.4",
+    }))).toBe(true)
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "openai",
+      model: "o3",
+    }))).toBe(true)
+    // gpt-4o either ignores reasoning_effort or 400s on it.
+    expect(modelSupportsReasoningControl(customConfig({
+      provider: "openai",
+      model: "gpt-4o",
+    }))).toBe(false)
+  })
+
+  it("recognises vendor-prefixed reasoning ids served by OpenAI-compatible gateways", () => {
+    expect(modelSupportsReasoningControl(customConfig({
+      model: "openai/o3",
+      customEndpoint: "https://openrouter.ai/api/v1",
+    }))).toBe(true)
+    expect(modelSupportsReasoningControl(customConfig({
+      model: "x-ai/grok-4-reasoning",
+      customEndpoint: "https://openrouter.ai/api/v1",
+    }))).toBe(true)
+    expect(modelSupportsReasoningControl(customConfig({
+      model: "meta-llama/llama-3.3-70b-instruct",
+      customEndpoint: "https://openrouter.ai/api/v1",
+    }))).toBe(false)
+  })
+
+  it("covers the vendor-specific thinking branches of buildOpenAiCompatibleBody", () => {
+    expect(modelSupportsReasoningControl(customConfig({
+      model: "deepseek-chat",
+      customEndpoint: "https://api.deepseek.com/v1",
+    }))).toBe(true)
+    expect(modelSupportsReasoningControl(customConfig({
+      model: "qwen3-235b-a22b",
+    }))).toBe(true)
+    expect(modelSupportsReasoningControl(customConfig({
+      model: "glm-5",
+      customEndpoint: "https://open.bigmodel.cn/api/paas/v4",
+    }))).toBe(true)
+  })
+
+  it("does not offer the control for GLM-5 outside the official Zhipu endpoint", () => {
+    // Third-party GLM deployments may not accept the top-level thinking
+    // object, which is why the body builder gates on the endpoint too.
+    expect(modelSupportsReasoningControl(customConfig({
+      model: "glm-5",
+      customEndpoint: "https://api.atlascloud.ai/v1",
+    }))).toBe(false)
   })
 })

@@ -1,55 +1,50 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useState } from "react"
 import {
   Bot,
   BookOpen,
-  Database,
-  ListFilter,
   Palette,
   Network,
   History,
-  Wrench,
-  HelpCircle,
   MessageCircle,
   HeartHandshake,
   Archive,
-  FileText,
-  Download,
   Brain,
   Search,
+  Plug,
 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import i18n from "@/i18n"
 import { Button } from "@/components/ui/button"
 import { PanelHeaderWithHelp } from "@/components/layout/panel-header-with-help"
-import { useWikiStore } from "@/stores/wiki-store"
+import { useWikiStore, type ModelSettingsTabId } from "@/stores/wiki-store"
+import "@/components/uitest/ui-test-tools.css"
 import { isTauri } from "@/lib/platform"
 import { useChatStore } from "@/stores/chat-store"
 import { saveLanguage, loadNovelConfig, loadRerankConfig } from "@/lib/project-store"
 import type { SettingsDraft, DraftSetter } from "./settings-types"
 import type { SidebarNavConfig } from "@/lib/sidebar-nav-preferences"
-import type { UiFontFamily } from "@/lib/font-settings"
+import type { BodyFontFamily, UiFontFamily } from "@/lib/font-settings"
 import { LlmProviderSection } from "./sections/llm-provider-section"
-import { EmbeddingSection } from "./sections/embedding-section"
-import { RerankSection } from "./sections/rerank-section"
+import { DefaultModelSettingsPanel } from "./sections/default-model-settings-panel"
+import { UiTestEmbeddingModels, UiTestRerankModels } from "@/components/uitest/models/retrieval-models"
+import { confirmModelDraftLeave } from "@/components/uitest/models/model-draft-guard"
 import { InterfaceSection } from "./sections/interface-section"
 import { NovelSection } from "./sections/novel-section"
 import { ClassificationSection } from "./sections/classification-section"
 import { NetworkSection } from "./sections/network-section"
 import { WebSearchSection } from "./sections/web-search-section"
-import { McpSection } from "./sections/mcp-section"
+import { AgentMcpSection } from "./sections/agent-mcp-section"
 import { ChangelogSection } from "./sections/changelog-section"
-import { MaintenanceSection } from "./sections/maintenance-section"
 import { FeedbackSection } from "./sections/feedback-section"
 import { UsageGuideSection } from "./sections/usage-guide-section"
 import { ContactSupportSection } from "./sections/contact-support-section"
 import { DataManagementSection } from "./sections/data-management-section"
 import { ExportCenterSection } from "./sections/export-center-section"
 import { UserMemorySection } from "./sections/user-memory-section"
+import { ModelTutorialLink } from "./model-tutorial-link"
 
 type CategoryId =
-  | "llm"
-  | "rerank"
-  | "embedding"
+  | "model"
   | "network"
   | "web-search"
   | "mcp"
@@ -57,7 +52,6 @@ type CategoryId =
   | "novel"
   | "user-memory"
   | "usage-guide"
-  | "maintenance"
   | "data-management"
   | "export-center"
   | "feedback"
@@ -78,33 +72,106 @@ interface Category {
 }
 
 const CATEGORIES: Category[] = [
-  { id: "llm", labelKey: "settings.categories.llm", icon: Bot },
-  { id: "rerank", labelKey: "settings.categories.rerank", icon: ListFilter },
-  { id: "embedding", labelKey: "settings.categories.embedding", icon: Database },
-  { id: "novel", labelKey: "settings.categories.novel", hintKey: "settings.categories.novelHint", icon: BookOpen },
+  { id: "model", labelKey: "settings.categories.model", icon: Brain },
+  /*
+   * 「新手引导」不再单独占一个分类：它现在只是写作设置里的一个开关
+   * （打开后旁边出现「播放」）。按阶段重播的入口已按用户要求去掉 ——
+   * 需要整段重看时，点播放即可。
+   */
+  { id: "novel", labelKey: "settings.categories.novel", icon: BookOpen },
   { id: "network", labelKey: "settings.categories.network", icon: Network },
+  { id: "mcp", labelKey: "settings.categories.mcp", icon: Plug },
   { id: "web-search", labelKey: "settings.categories.webSearch", icon: Search },
-  { id: "mcp", labelKey: "settings.categories.mcp", icon: Network },
   { id: "interface", labelKey: "settings.categories.interface", icon: Palette },
   { id: "user-memory", labelKey: "settings.categories.userMemory", icon: Brain },
-  { id: "usage-guide", labelKey: "settings.categories.usageGuide", icon: HelpCircle },
-  { id: "maintenance", labelKey: "settings.categories.maintenance", icon: Wrench },
   { id: "data-management", labelKey: "settings.categories.dataManagement", icon: Archive },
-  { id: "export-center", labelKey: "settings.categories.exportCenter", defaultLabel: "导出中心", icon: Download },
   { id: "feedback", labelKey: "settings.categories.feedback", icon: MessageCircle },
   { id: "contact-support", labelKey: "settings.categories.contactSupport", icon: HeartHandshake },
-  { id: "classification", labelKey: "settings.categories.classification", icon: FileText },
   { id: "changelog", labelKey: "settings.categories.changelog", icon: History },
 ]
 
 /** Settings tabs that edit the shared draft and need the global Save footer. */
 const CATEGORIES_WITH_SAVE_FOOTER: CategoryId[] = [
-  "rerank",
-  "embedding",
+  "model",
   "network",
   "interface",
   "novel",
 ]
+
+const UI_TEST_MODEL_TABS: Array<{ id: ModelSettingsTabId; label: string }> = [
+  { id: "default", label: "默认模型" },
+  { id: "llm", label: "大语言模型" },
+  { id: "rerank", label: "重排模型" },
+  { id: "embedding", label: "向量模型" },
+]
+
+/** 测试版子页按需挂载并保留草稿；业务调用仍复用原配置接口。 */
+export function UiTestModelSettingsSection({ draft, setDraft }: { draft: SettingsDraft; setDraft: DraftSetter }) {
+  const requestedTab = useWikiStore((s) => s.activeModelSettingsTab)
+  const setRequestedTab = useWikiStore((s) => s.setActiveModelSettingsTab)
+  const [active, setActive] = useState<ModelSettingsTabId>(() => requestedTab ?? "llm")
+  const id = useId()
+  const project = useWikiStore((s) => s.project)
+  const [visited, setVisited] = useState<Set<ModelSettingsTabId>>(() => new Set([requestedTab ?? "llm"]))
+  const activate = (tab: ModelSettingsTabId) => {
+    setVisited((previous) => previous.has(tab) ? previous : new Set([...previous, tab]))
+    setActive(tab)
+  }
+
+  useEffect(() => {
+    if (!requestedTab) return
+    activate(requestedTab)
+    setRequestedTab(null)
+  }, [requestedTab, setRequestedTab])
+
+  return (
+    <div data-ui="settings-model">
+      <h1 className="ui-test-page-title hidden">{UI_TEST_MODEL_TABS.find((tab) => tab.id === active)?.label}</h1>
+      <div className="ui-test-model-tabbar">
+        <div role="tablist" aria-label="模型设置" className="ui-test-tool-tabs">
+          {UI_TEST_MODEL_TABS.map((tab, index) => (
+            <button
+              key={tab.id}
+              id={`${id}-${tab.id}`}
+              type="button"
+              role="tab"
+              data-ui-model-tab={tab.id}
+              data-guide={`settings.model-tab.${tab.id}`}
+              aria-selected={active === tab.id}
+              aria-controls={`${id}-${tab.id}-panel`}
+              tabIndex={active === tab.id ? 0 : -1}
+              onClick={() => activate(tab.id)}
+              onKeyDown={(event) => {
+                const nextIndex = event.key === "Home" ? 0
+                  : event.key === "End" ? UI_TEST_MODEL_TABS.length - 1
+                  : event.key === "ArrowRight" ? (index + 1) % UI_TEST_MODEL_TABS.length
+                  : event.key === "ArrowLeft" ? (index + UI_TEST_MODEL_TABS.length - 1) % UI_TEST_MODEL_TABS.length
+                  : null
+                if (nextIndex === null) return
+                event.preventDefault()
+                const next = UI_TEST_MODEL_TABS[nextIndex]
+                activate(next.id)
+                document.getElementById(`${id}-${next.id}`)?.focus()
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        {/* 三个要自己填密钥/地址的页签才挂教程；「默认模型」不涉及，不摆链接。 */}
+        {active !== "default" && <ModelTutorialLink />}
+      </div>
+      {UI_TEST_MODEL_TABS.map((tab) => (
+        <div key={tab.id} id={`${id}-${tab.id}-panel`} role="tabpanel" aria-labelledby={`${id}-${tab.id}`} hidden={active !== tab.id} data-ui="settings-model-panel" data-ui-model={tab.id}>
+          {visited.has(tab.id) && tab.id === "llm" && <LlmProviderSection />}
+          {visited.has(tab.id) && tab.id === "default" && <DefaultModelSettingsPanel draft={draft} setDraft={setDraft} />}
+          {visited.has(tab.id) && tab.id === "rerank" && <UiTestRerankModels key={project?.id ?? "global"} />}
+          {visited.has(tab.id) && tab.id === "embedding" && <UiTestEmbeddingModels key={project?.id ?? "global"} />}
+        </div>
+      ))}
+    </div>
+  )
+}
 
 function initialDraft(
   llm: ReturnType<typeof useWikiStore.getState>["llmConfig"],
@@ -119,6 +186,12 @@ function initialDraft(
   uiLanguage: string,
   uiFontSizeScale: number,
   uiFontFamily: UiFontFamily,
+  uiBodyFontFamily: BodyFontFamily,
+  uiBodyFontPx: number,
+  uiBodyLineHeight: number,
+  uiBodyLetterSpacing: number,
+  uiBodyMarginX: number | null,
+  uiBodySafeBottom: number,
   visualStyle: SettingsDraft["visualStyle"],
   sidebarNavConfig: SidebarNavConfig,
 ): SettingsDraft {
@@ -163,6 +236,12 @@ function initialDraft(
     uiLanguage,
     uiFontSizeScale,
     uiFontFamily,
+    uiBodyFontFamily,
+    uiBodyFontPx,
+    uiBodyLineHeight,
+    uiBodyLetterSpacing,
+    uiBodyMarginX,
+    uiBodySafeBottom,
     visualStyle,
     sidebarNavConfig,
   }
@@ -195,12 +274,24 @@ export function SettingsView() {
   const setUiFontSizeScale = useWikiStore((s) => s.setUiFontSizeScale)
   const uiFontFamily = useWikiStore((s) => s.uiFontFamily)
   const setUiFontFamily = useWikiStore((s) => s.setUiFontFamily)
+  const uiBodyFontFamily = useWikiStore((s) => s.uiBodyFontFamily)
+  const setUiBodyFontFamily = useWikiStore((s) => s.setUiBodyFontFamily)
+  const uiBodyFontPx = useWikiStore((s) => s.uiBodyFontPx)
+  const setUiBodyFontPx = useWikiStore((s) => s.setUiBodyFontPx)
+  const uiBodyLineHeight = useWikiStore((s) => s.uiBodyLineHeight)
+  const setUiBodyLineHeight = useWikiStore((s) => s.setUiBodyLineHeight)
+  const uiBodyLetterSpacing = useWikiStore((s) => s.uiBodyLetterSpacing)
+  const setUiBodyLetterSpacing = useWikiStore((s) => s.setUiBodyLetterSpacing)
+  const uiBodyMarginX = useWikiStore((s) => s.uiBodyMarginX)
+  const setUiBodyMarginX = useWikiStore((s) => s.setUiBodyMarginX)
+  const uiBodySafeBottom = useWikiStore((s) => s.uiBodySafeBottom)
+  const setUiBodySafeBottom = useWikiStore((s) => s.setUiBodySafeBottom)
   const visualStyle = useWikiStore((s) => s.visualStyle)
   const setVisualStyle = useWikiStore((s) => s.setVisualStyle)
   const sidebarNavConfig = useWikiStore((s) => s.sidebarNavConfig)
   const setSidebarNavConfig = useWikiStore((s) => s.setSidebarNavConfig)
 
-  const [active, setActive] = useState<CategoryId>("llm")
+  const [active, setActive] = useState<CategoryId>("model")
   const [saved, setSaved] = useState(false)
   const [draft, setDraftState] = useState<SettingsDraft>(() =>
     initialDraft(
@@ -216,18 +307,30 @@ export function SettingsView() {
       i18n.language,
       uiFontSizeScale,
       uiFontFamily,
+      uiBodyFontFamily,
+      uiBodyFontPx,
+      uiBodyLineHeight,
+      uiBodyLetterSpacing,
+      uiBodyMarginX,
+      uiBodySafeBottom,
       visualStyle,
       sidebarNavConfig,
     ),
   )
 
+  const changeCategory = useCallback(async (category: CategoryId) => {
+    if (category === active) return
+    if (active === "model" && !(await confirmModelDraftLeave())) return
+    setActive(category)
+  }, [active])
+
   useEffect(() => {
     if (!activeSettingsCategory) return
     if (CATEGORIES.some((category) => category.id === activeSettingsCategory)) {
-      setActive(activeSettingsCategory)
+      changeCategory(activeSettingsCategory as CategoryId)
     }
     setActiveSettingsCategory(null)
-  }, [activeSettingsCategory, setActiveSettingsCategory])
+  }, [activeSettingsCategory, changeCategory, setActiveSettingsCategory])
 
   useEffect(() => {
     let cancelled = false
@@ -276,6 +379,12 @@ export function SettingsView() {
         prev.uiLanguage,
         uiFontSizeScale,
         uiFontFamily,
+        uiBodyFontFamily,
+        uiBodyFontPx,
+        uiBodyLineHeight,
+        uiBodyLetterSpacing,
+        uiBodyMarginX,
+        uiBodySafeBottom,
         visualStyle,
         sidebarNavConfig,
       ),
@@ -292,6 +401,12 @@ export function SettingsView() {
     maxHistoryMessages,
     uiFontSizeScale,
     uiFontFamily,
+    uiBodyFontFamily,
+    uiBodyFontPx,
+    uiBodyLineHeight,
+    uiBodyLetterSpacing,
+    uiBodyMarginX,
+    uiBodySafeBottom,
     visualStyle,
     sidebarNavConfig,
   ])
@@ -314,6 +429,12 @@ export function SettingsView() {
       saveMaxHistoryMessages,
       saveUiFontSizeScale,
       saveUiFontFamily,
+      saveUiBodyFontFamily,
+      saveUiBodyFontPx,
+      saveUiBodyLineHeight,
+      saveUiBodyLetterSpacing,
+      saveUiBodyMarginX,
+      saveUiBodySafeBottom,
       saveVisualStyle,
     } = await import("@/lib/project-store")
 
@@ -408,6 +529,26 @@ export function SettingsView() {
     await saveUiFontSizeScale(draft.uiFontSizeScale, project?.id, project?.path)
     setUiFontFamily(draft.uiFontFamily)
     await saveUiFontFamily(draft.uiFontFamily)
+    // 正文字体与界面字体各自存各自的键：只做其中一个会导致
+    // "这次生效、下次启动丢失"。应用（写 CSS 变量）交给 App 的 effect，
+    // 与既有做法一致，不在这里重复写。
+    setUiBodyFontFamily(draft.uiBodyFontFamily)
+    await saveUiBodyFontFamily(draft.uiBodyFontFamily)
+    /*
+     * 5 个排版参数各自一个 localStorage 键 + 一个 app-state 键：
+     * 只写 store 会「这次生效、下次启动丢失」，只落盘会「保存了但界面不变」。
+     * 应用（写 CSS 变量）交给 App 的 effect，与既有做法一致，这里不重复写。
+     */
+    setUiBodyFontPx(draft.uiBodyFontPx)
+    await saveUiBodyFontPx(draft.uiBodyFontPx)
+    setUiBodyLineHeight(draft.uiBodyLineHeight)
+    await saveUiBodyLineHeight(draft.uiBodyLineHeight)
+    setUiBodyLetterSpacing(draft.uiBodyLetterSpacing)
+    await saveUiBodyLetterSpacing(draft.uiBodyLetterSpacing)
+    setUiBodyMarginX(draft.uiBodyMarginX)
+    await saveUiBodyMarginX(draft.uiBodyMarginX)
+    setUiBodySafeBottom(draft.uiBodySafeBottom)
+    await saveUiBodySafeBottom(draft.uiBodySafeBottom)
     setVisualStyle(draft.visualStyle)
     await saveVisualStyle(draft.visualStyle)
     const { applyVisualStyle } = await import("@/lib/visual-style-settings")
@@ -435,24 +576,26 @@ export function SettingsView() {
     outputLanguage,
     setUiFontSizeScale,
     setUiFontFamily,
+    setUiBodyFontFamily,
+    setUiBodyFontPx,
+    setUiBodyLineHeight,
+    setUiBodyLetterSpacing,
+    setUiBodyMarginX,
+    setUiBodySafeBottom,
     setVisualStyle,
     setSidebarNavConfig,
   ])
 
   const body = useMemo(() => {
     switch (active) {
-      case "llm":
-        return <LlmProviderSection />
-      case "rerank":
-        return <RerankSection draft={draft} setDraft={setDraft} />
-      case "embedding":
-        return <EmbeddingSection draft={draft} setDraft={setDraft} />
+      case "model":
+        return <UiTestModelSettingsSection draft={draft} setDraft={setDraft} />
       case "network":
         return <NetworkSection draft={draft} setDraft={setDraft} />
       case "web-search":
         return <WebSearchSection />
       case "mcp":
-        return <McpSection />
+        return <AgentMcpSection />
       case "interface":
         return <InterfaceSection draft={draft} setDraft={setDraft} />
       case "novel":
@@ -463,8 +606,6 @@ export function SettingsView() {
         return <ClassificationSection projectPath={project?.path ?? undefined} />
       case "usage-guide":
         return <UsageGuideSection />
-      case "maintenance":
-        return <MaintenanceSection />
       case "data-management":
         return <DataManagementSection />
       case "export-center":
@@ -478,21 +619,21 @@ export function SettingsView() {
     }
   }, [active, draft, setDraft])
 
-  const showSaveFooter = CATEGORIES_WITH_SAVE_FOOTER.includes(active)
+  const showSaveFooter = CATEGORIES_WITH_SAVE_FOOTER.includes(active) && active !== "model"
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full overflow-hidden" data-ui-page="settings" data-ui-settings-category={active}>
       {/* Sidebar — category nav. Matches the IconSidebar's pill-on-accent
           pattern so the two navigational surfaces feel like one app. */}
-      <aside className="flex w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-        <div className="flex items-center gap-1.5 px-4 pb-2 pt-4 text-[11px] font-semibold uppercase tracking-wider">
+      <aside data-ui="settings-sidebar" className="flex w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+        <div className="flex items-center gap-1.5 px-4 pb-2 pt-4 text-[0.6875rem] font-semibold uppercase tracking-wider">
           <PanelHeaderWithHelp
             title={t("settings.title")}
             helpKey="settings"
             className="cursor-pointer text-sidebar-foreground/65 transition-colors hover:text-sidebar-foreground"
           />
         </div>
-        <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+        <nav aria-label="设置分类" data-ui="settings-navigation" className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
           {CATEGORIES.map((c) => {
             const Icon = c.icon
             const isActive = c.id === active
@@ -500,8 +641,9 @@ export function SettingsView() {
             return (
               <button
                 key={c.id}
+                data-ui-settings-category-button={c.id}
                 type="button"
-                onClick={() => setActive(c.id)}
+                onClick={() => changeCategory(c.id)}
                 aria-current={isActive ? "page" : undefined}
                 className={`group mb-0.5 flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors ${
                   isActive
@@ -517,7 +659,7 @@ export function SettingsView() {
                 <span className="flex min-w-0 flex-1 flex-col items-start">
                   <span className="truncate">{t(c.labelKey, { defaultValue: c.defaultLabel })}</span>
                   {c.hintKey ? (
-                    <span className={`truncate text-[10px] leading-tight ${
+                    <span className={`truncate text-[0.625rem] leading-tight ${
                       isActive ? "text-sidebar-accent-foreground/70" : "text-sidebar-foreground/55"
                     }`}>
                       {t(c.hintKey)}
@@ -531,13 +673,21 @@ export function SettingsView() {
       </aside>
 
       {/* Content */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
-          <div className="mx-auto max-w-2xl">{body}</div>
+      <div data-ui="settings-content" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div data-ui="settings-mobile-navigation">
+            <label htmlFor="ui-test-settings-category">设置分类</label>
+            <select id="ui-test-settings-category" aria-label="设置分类" value={active} onChange={(event) => changeCategory(event.target.value as CategoryId)}>
+              {CATEGORIES.map((category) => <option key={category.id} value={category.id}>{t(category.labelKey, { defaultValue: category.defaultLabel })}</option>)}
+            </select>
+          </div>
+        <div data-ui="settings-scroll" className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
+          <div data-ui="settings-section" className="mx-auto max-w-2xl">
+            {body}
+          </div>
         </div>
 
         {showSaveFooter && (
-          <div className="shrink-0 border-t bg-background/80 backdrop-blur px-8 py-3">
+          <div data-ui="settings-footer" className="shrink-0 border-t bg-background/80 backdrop-blur px-8 py-3">
             <div className="mx-auto flex max-w-2xl items-center justify-between gap-4">
               <p className="text-xs text-muted-foreground">
                 {saved ? t("settings.savedTick") : t("settings.changeHint")}

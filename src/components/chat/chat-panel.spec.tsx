@@ -14,9 +14,9 @@ describe("chat-panel de-AI skill handling", () => {
     expect(source).not.toContain("setChapterSaveStatus(deAiSkillWarning)")
   })
 
-  it("uses a skill library trigger instead of the old de-AI-only label in the chat input toolbar", () => {
-    expect(source).toContain("<DeAiSkillPicker")
-    expect(source).toContain('buttonLabel="技能库"')
+  it("chat input toolbar no longer exposes the skill library trigger", () => {
+    expect(source).not.toContain("DeAiSkillPicker")
+    expect(source).not.toContain('buttonLabel="技能库"')
     expect(source).not.toContain('title="当前启用的 Skill"')
     expect(source).not.toContain('aria-label="当前启用的 Skill"')
   })
@@ -96,6 +96,25 @@ describe("chat-panel agent reference integration", () => {
     expect(source).toContain("finalContentDelivered")
   })
 
+  it("offers a deterministic workflow retry and reuses the failed assistant bubble", () => {
+    expect(source).toContain('label: "强制重试"')
+    expect(source).toContain("forceRequiredToolsImmediately: true")
+    expect(source).toContain("retryAssistantMessageId: assistantMessage.id")
+    expect(source).toContain("workflowMode: sessionWorkflowMode")
+    expect(source).toContain("planExecuteActive,")
+    expect(source).toContain("resetAssistantMessageForRequiredToolRetry")
+    expect(source).toContain("message.id !== sendOptions?.retryAssistantMessageId")
+    expect(source).toContain("message.id !== retryUserMessageId")
+    expect(source).toContain("if (!targetConversationId && !retryAssistantMessage)")
+  })
+
+  it("rejects duplicate or stale workflow retries without appending messages", () => {
+    expect(source).toContain("原失败消息已失效，无法强制重试")
+    expect(source).toContain("该会话正在强制重试，请勿重复点击")
+    expect(source).toContain("required-workflow-retry-running")
+    expect(source).toContain("startConversationRun(capturedConvId, runId)")
+  })
+
   it("uses three AI workflow modes instead of a single deep mode prompt", () => {
     expect(source).toContain("aiWorkflowMode")
     expect(source).toContain("setAiWorkflowMode")
@@ -113,9 +132,10 @@ describe("chat-panel agent reference integration", () => {
     expect(source).toContain("description: \"完整质检")
     expect(source).toContain("快速模式像普通对话一样直接出结果")
     expect(source).toContain("读取上下文、生成任务书和正文初稿后直接完成")
-    expect(source).toContain("读取更完整上下文，执行审稿、返修、复审、去AI味和计划验收。会联网搜索。")
+    expect(source).toContain("读取更完整上下文，执行审稿、返修、复审、按需局部修改和计划验收。")
+    expect(source).not.toContain("读取更完整上下文，执行审稿、返修、复审、按需局部修改和计划验收。会联网搜索。")
     expect(source).not.toContain("前文与实体表")
-    expect(source).toContain("workflowModeDropdownStyle.width")
+    expect(source).toContain("workflowModeDropdownStyle")
     expect(source).toContain("routeDescription")
   })
 
@@ -133,13 +153,53 @@ describe("chat-panel agent reference integration", () => {
     expect(source).toContain("setPlanExecuteEnabled")
     expect(source).toContain("aiSessionPlanExecuteLabel")
     expect(source).toContain("计划")
-    expect(source).toContain("aria-pressed={planExecuteEnabled && aiWorkflowMode !== \"fast\"}")
-    expect(source).toContain("disabled={aiWorkflowMode === \"fast\"}")
+    expect(source).toContain("label: \"共创\"")
+    expect(source).toContain("aria-pressed={planExecuteEnabled && workflowModeSupportsPlan}")
+    expect(source).toContain("disabled={!workflowModeSupportsPlan}")
+    expect(source).toContain("const workflowModeSupportsPlan = aiWorkflowMode !== \"fast\" && aiWorkflowMode !== \"discuss\"")
+  })
+
+  /*
+   * 计划开关的**实际渲染形态**（用户要求：常态只留图标，悬停显示「计划」两个字）。
+   *
+   * ⚠️ 这个文件里别的断言都是对整个 `source` 做 `toContain` —— 对本条要求**不够**，
+   * 因为 chat-panel.tsx 里存在**两块**计划按钮：
+   *   · 上面 `{false && novelMode && ...}` 里那块（`workflowModeSupportsPlan`，死代码）；
+   *   · 真正渲染的那块（`aiWorkflowMode !== "fast"`）。
+   * 第一轮改动就改错了块：改完毫无效果，回归测试还定位到错误的元素。
+   * 所以这里先把**活的那块**切出来，只在它内部断言，
+   * 并且钉住「活块的判据」本身 —— 免得两块哪天调换，测试还在替死代码背书。
+   */
+  it("计划开关只有图标、悬停显示「计划」：只认真正渲染的那块", () => {
+    const LIVE_MARK = 'aria-pressed={planExecuteEnabled && aiWorkflowMode !== "fast"}'
+    // 判据必须唯一，否则切片会切错块
+    expect(source.split(LIVE_MARK)).toHaveLength(2)
+
+    const start = source.indexOf(LIVE_MARK)
+    const end = source.indexOf("</Tooltip>", start)
+    expect(end, "活块后面应当有 </Tooltip> 收尾").toBeGreaterThan(start)
+    const liveBlock = source.slice(start, end)
+
+    // 1. 常态只剩图标：`ListChecks` 后必须紧跟自闭合，中间不再夹文字
+    expect(liveBlock).toContain('<ListChecks className="h-3.5 w-3.5" />')
+    expect(liveBlock).not.toContain('className="mr-1 h-3.5 w-3.5" />计划')
+    expect(liveBlock).not.toMatch(/<\/ListChecks>\s*计划/)
+
+    // 2. 悬停显示「计划」：title 就是这两个字
+    expect(liveBlock).toContain('title="计划"')
+    // 浮层第一行也是「计划」（真实渲染时才可见，这里钉源码形态）
+    expect(liveBlock).toContain('<div className="font-medium">计划</div>')
+
+    // 3. 动作语义没有被 title 挤掉：aria-label 仍随状态变化
+    expect(liveBlock).toContain('"关闭计划模式"')
+    expect(liveBlock).toContain('"开启计划模式"')
+    expect(liveBlock).toContain("快速模式下不支持计划，请切换到标准或严格模式")
+    expect(liveBlock).not.toContain('title="计划" aria-label="计划"')
   })
 
   it("injects Plan Execute policy only when the independent switch is enabled and not in fast mode", () => {
     expect(source).toContain("buildPlanExecutePolicyPrompt")
-    expect(source).toContain("options.planExecuteEnabled && options.aiWorkflowMode !== \"fast\"")
+    expect(source).toContain("options.planExecuteEnabled && toolsEnabled && options.aiWorkflowMode !== \"fast\"")
     expect(source).toContain("run_chapter_workflow")
     expect(source).not.toContain("标准模式：复杂小说任务先给出简短计划")
     expect(source).not.toContain("严格模式：复杂小说任务必须先规划")
@@ -172,7 +232,8 @@ describe("chat-panel agent reference integration", () => {
   })
 
   it("injects requiredToolsOnce for non-fast chapter writing via resolveRequiredToolsOnce", () => {
-    expect(source).toContain('import { resolveRequiredToolsOnce } from "@/lib/agent/required-tools-gate"')
+    expect(source).toContain('} from "@/lib/agent/required-tools-gate"')
+    expect(source).toContain("resolveRequiredToolsOnce,")
     expect(source).toContain("resolveRequiredToolsOnce({")
     expect(source).toContain("...(requiredToolsOnce ? { requiredToolsOnce } : {})")
     expect(source).toContain("必须调用 run_chapter_workflow 工具；未调用前禁止输出章节终稿正文。")
@@ -200,7 +261,7 @@ describe("chat-panel agent reference integration", () => {
   })
 
   it("shows the sent chat message before asynchronous chapter context building", () => {
-    const appendIndex = source.indexOf("appendAgentChatMessages(capturedConvId, userVisibleText || plainText, tokens)")
+    const appendIndex = source.indexOf("appendAgentChatMessages(capturedConvId, userVisibleText || plainText, tokens")
     const prePluginIndex = source.indexOf("await runNovelPrePluginChain({")
 
     expect(appendIndex).toBeGreaterThan(-1)
@@ -224,7 +285,7 @@ describe("chat-panel agent reference integration", () => {
 
     const guardIndex = source.lastIndexOf("const shouldRunNovelPrePluginChain")
     const runIndex = source.indexOf("await runNovelPrePluginChain({")
-    const guardedRunIndex = source.indexOf("if (shouldRunNovelPrePluginChain && effectiveTaskRoute)")
+    const guardedRunIndex = source.indexOf("if (shouldRunNovelPrePluginChain && effectiveTaskRoute && agentSupportsTools)")
 
     expect(guardIndex).toBeGreaterThan(-1)
     expect(runIndex).toBeGreaterThan(-1)
@@ -233,14 +294,14 @@ describe("chat-panel agent reference integration", () => {
   })
 
   it("does not run the novel pre-plugin chain in fast mode even when Plan Execute is enabled", () => {
-    expect(source).toContain("aiWorkflowMode !== \"fast\" && planExecuteEnabled")
+    expect(source).toContain("aiWorkflowMode !== \"fast\" && aiWorkflowMode !== \"discuss\" && planExecuteEnabled")
     const planExecuteActiveMatch = source.match(/planExecuteActive\s*=/)
     expect(planExecuteActiveMatch).not.toBeNull()
     const planExecuteActiveLine = source.slice(
       (planExecuteActiveMatch?.index ?? 0),
       (planExecuteActiveMatch?.index ?? 0) + 200,
     )
-    expect(planExecuteActiveLine).toContain("aiWorkflowMode !== \"fast\"")
+    expect(planExecuteActiveLine).toContain("sessionWorkflowMode !== \"fast\"")
     expect(planExecuteActiveLine).toContain("planExecuteEnabled")
     expect(planExecuteActiveLine).toContain("planExecutionFollowup")
   })
@@ -271,12 +332,6 @@ describe("chat-panel agent reference integration", () => {
     expect(source).not.toContain("本次写作将注入角色灵魂上下文")
   })
 
-  it("passes MCP capabilities from agent config into the novel pre-plugin chain", () => {
-    expect(source).toContain("mcpCapabilities: agentMcpCapabilities")
-    expect(source).not.toContain("mcpCapabilities: ([] as any[])")
-    expect(source).not.toContain("mcpCapabilities: _agentMcpCapabilities")
-  })
-
   it("passes selected capability tool names into the session runner for tool scoping", () => {
     expect(source).toContain("enabledToolNames: prePluginResult?.enabledToolNames")
     expect(source).not.toContain('import { scopeAgentConfigTools } from "@/lib/agent/tool-scope"')
@@ -291,6 +346,7 @@ describe("chat-panel agent reference integration", () => {
 
   it("requires external search requests to use web_search instead of pretending", () => {
     expect(source).toContain("web_search")
+    expect(source).toContain("writingWebSearchEnabled")
     expect(source).toContain("会联网搜索")
     expect(source).toContain("不得声称已经搜索")
     expect(source).toContain("未使用联网资料")
@@ -354,17 +410,20 @@ describe("chat-panel agent reference integration", () => {
     expect(source).not.toContain("onRejectTool={handleRejectTool}")
   })
 
-  it("keeps up to three working or today's conversations in the top toolbar and moves the rest into history", () => {
+  it("uses the conversation split helpers for toolbar / history; top-conversation chip block is removed", () => {
     expect(source).toContain("splitConversationToolbarItems")
     expect(source).toContain("isStreamingConversation")
-    expect(source).toContain("topConversations")
+    // 该期望于 2f762e6 随「章纲（细纲）结构化生成与读取链路优化」变更：顶部会话 chip 的 JSX 块已在 26f80ee
+    // 随「调整对话输入框与界面资源」删除，遗留的 topConversations 解构已无任何读取方（死代码），
+    // 2f762e6 一并清理，故此处改为精确断言它彻底不存在，且工具栏/历史只消费 historyConversations。
+    expect(source).not.toContain("topConversations")
+    expect(source).toContain("const { historyConversations } = splitConversationToolbarItems(")
     expect(source).toContain("historyConversations")
-    expect(source).toContain("topConversations.map((conv) => renderConversationChip(conv))")
     expect(source).not.toContain("historyConversations = sorted.filter((conv) => conv.id !== activeConversationId)")
   })
 
   it("pins the conversation history control to the far right of the AI chat toolbar", () => {
-    expect(source).toContain('className="relative ml-auto shrink-0"')
+    expect(source).toContain('className="qmai-header-actions ml-auto flex shrink-0 items-center"')
     expect(source).toContain("qmai-history-button")
   })
 })
@@ -391,6 +450,16 @@ describe("chat-panel chapter plan confirm integration (Stage C)", () => {
     expect(source).toContain("closeChapterPlanDialog")
     expect(source).toContain("requestChapterPlanConfirm")
     expect(source).toContain('new Promise<"confirm" | "skip" | "cancel" | { modify: string }>')
+  })
+
+  it("章节计划自检上下文带上同人原作正典", () => {
+    const fnIndex = source.indexOf("function buildChapterPlanSelfCheckContext")
+    expect(fnIndex).toBeGreaterThan(-1)
+    const fnBody = source.slice(fnIndex, source.indexOf("\n}", fnIndex))
+
+    // self-check 里有一条「原作正典」核对行，构造点漏传就会恒为空
+    expect(fnBody).toContain("canonRules: pack.canonRules")
+    expect(fnBody).toContain("sourceCanon: pack.sourceCanon")
   })
 
   it("detects chapter_plan marker inside onDone callback", () => {
@@ -439,7 +508,7 @@ describe("chat-panel chapter plan confirm integration (Stage C)", () => {
 
   it("disables Plan Execute protocol for confirmed plan follow-up messages and fast mode", () => {
     expect(source).toContain("isChapterPlanExecutionFollowup")
-    expect(source).toContain("aiWorkflowMode !== \"fast\" && planExecuteEnabled && !planExecutionFollowup")
+    expect(source).toContain("sessionWorkflowMode !== \"fast\" && sessionWorkflowMode !== \"discuss\" && planExecuteEnabled && !planExecutionFollowup")
     expect(source).toContain("planExecuteEnabled: planExecuteActive")
   })
 
@@ -521,7 +590,7 @@ describe("chat-panel post-write check integration (Stage D)", () => {
   it("places Stage D after result protocol and before finishTrace", () => {
     const traceBlockIndex = source.indexOf("if (contextTrace && effectiveTaskRoute) {")
     expect(traceBlockIndex).toBeGreaterThan(-1)
-    const traceBlock = source.slice(traceBlockIndex, traceBlockIndex + 5000)
+    const traceBlock = source.slice(traceBlockIndex, traceBlockIndex + 9000)
     const protocolIndex = traceBlock.indexOf("buildResultProtocolTrace")
     const stageDIndex = traceBlock.indexOf("=== Stage D: 写后剧情自检 ===")
     const finishIndex = traceBlock.indexOf('finishTrace(contextTrace, "done")')

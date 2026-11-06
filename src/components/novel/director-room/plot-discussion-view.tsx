@@ -156,7 +156,7 @@ function DirectionItem({
         </div>
       ) : null}
       {direction.tradeoff ? (
-        <div className="mt-2 text-[11px] leading-4 text-muted-foreground">代价：{direction.tradeoff}</div>
+        <div className="mt-2 text-[0.6875rem] leading-4 text-muted-foreground">代价：{direction.tradeoff}</div>
       ) : null}
     </div>
   )

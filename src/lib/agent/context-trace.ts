@@ -1,12 +1,12 @@
 import type { NovelTaskIntent } from "@/lib/novel/task-router"
 import type { DataSourceCategory, RouteSource } from "@/lib/novel/classification"
-import type { ToolCallStatus } from "./types"
+import type { RequiredToolRunDiagnostics, ToolCallStatus } from "./types"
 import type { AiWorkflowMode } from "./workflow-mode"
 import type { SkillKind, SkillMode, SkillStage } from "@/lib/novel/skill-library"
 import type { CapabilityKind, CapabilityPermission } from "./capabilities/types"
 import type { ContextHubStats } from "@/lib/context-hub/types"
 
-export type TraceToolCategory = "read" | "write" | "action" | "virtual"
+type TraceToolCategory = "read" | "write" | "action" | "virtual"
 
 export interface TraceToolCall {
   id: string
@@ -35,6 +35,7 @@ export interface TraceContextBudget {
 export interface TraceSelectedSkill {
   id: string
   name: string
+  displayName?: string
   description: string
   kind: SkillKind[]
   stages: SkillStage[]
@@ -51,16 +52,6 @@ export interface TraceWebSearch {
   sources: string[]
   message?: string
   searchedAt: number
-}
-
-export interface TraceMcpCall {
-  serverId: string
-  serverName: string
-  toolName: string
-  status: "ok" | "error"
-  summary?: string
-  message?: string
-  calledAt: number
 }
 
 export interface TraceSelectedCapability {
@@ -117,11 +108,11 @@ export interface ClassificationVersionInfo {
   selectedSkills?: TraceSelectedSkill[]
   selectedCapabilities?: TraceSelectedCapability[]
   webSearches?: TraceWebSearch[]
-  mcpCalls?: TraceMcpCall[]
   retrievalHits: TraceRetrievalHit[]
   trimmedSections: string[]
   contextBudget?: TraceContextBudget
   contextHub?: ContextHubStats
+    requiredToolDiagnostics?: RequiredToolRunDiagnostics
     resultProtocol?: TraceResultProtocol
     postWriteCheck?: PostWriteCheck
     fallbackReason?: string
@@ -147,26 +138,6 @@ export function createContextTrace(id: string): ContextTrace {
     startedAt: Date.now(),
     toolCalls: [],
     status: "running",
-  }
-}
-
-export function addToolCallToTrace(trace: ContextTrace, toolCall: TraceToolCall): ContextTrace {
-  return {
-    ...trace,
-    toolCalls: [...trace.toolCalls, toolCall],
-  }
-}
-
-export function updateToolCallInTrace(
-  trace: ContextTrace,
-  callId: string,
-  updates: Partial<TraceToolCall>,
-): ContextTrace {
-  return {
-    ...trace,
-    toolCalls: trace.toolCalls.map((call) =>
-      call.id === callId ? { ...call, ...updates } : call,
-    ),
   }
 }
 

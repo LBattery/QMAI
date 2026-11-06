@@ -1,19 +1,17 @@
-import { useMemo, useState, type ReactNode } from "react"
+import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
-import { Info } from "lucide-react"
+import { ChevronDown, Info, Play } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useWikiStore } from "@/stores/wiki-store"
-import { saveNovelConfig, saveDefaultLlmModel, saveRevisionFeedbackWindowConfig, saveMaxHistoryMessages } from "@/lib/project-store"
-import { getFirstAvailableModelKey, hasAvailableModels } from "@/lib/llm-model-keys"
+import { saveNovelConfig, saveRevisionFeedbackWindowConfig, saveMaxHistoryMessages } from "@/lib/project-store"
 import { notifyDeAiChapterConcurrencyChanged } from "@/lib/novel/de-ai-batch/chapter-concurrency"
 import { CHAPTER_TARGET_CHARS_MAX, CHAPTER_TARGET_CHARS_MIN } from "@/lib/novel/deep-chapter-prompts"
 import { useChatStore } from "@/stores/chat-store"
-
-import { testNovelModel, type TestableNovelModelTask } from "@/lib/novel/novel-model-test"
-import { ChatModelSelector } from "@/components/chat/chat-model-selector"
+import { useGuideStore } from "@/lib/guide/guide-store"
+import { GUIDE_RESTART_EVENT } from "@/lib/guide/guide-events"
 import type { SettingsDraft, DraftSetter } from "../settings-types"
 import type { NovelConfig, RevisionFeedbackWindowConfig } from "@/stores/wiki-store"
 
@@ -22,81 +20,27 @@ interface Props {
   setDraft: DraftSetter
 }
 
-const MODEL_PICKER_BLOCK_CLASS = "space-y-3 rounded-lg border border-border/60 p-4"
-
-interface NovelModelPickerBlockProps {
-  title: string
-  hintKey?: string
-  footnote?: string
-  followChecked: boolean
-  onFollowChange: (checked: boolean) => void
-  modelValue: string
-  onModelChange: (model: string) => void
-  renderHint?: (hintKey: string) => ReactNode
-  testState?: { loading: boolean; message: string; success: boolean }
-  onTest?: () => void
-  testLoadingLabel: string
-  testLabel: string
-  followLabel: string
-}
-
-function NovelModelPickerBlock({
-  title,
-  hintKey,
-  footnote,
-  followChecked,
-  onFollowChange,
-  modelValue,
-  onModelChange,
-  renderHint,
-  testState,
-  onTest,
-  testLoadingLabel,
-  testLabel,
-  followLabel,
-}: NovelModelPickerBlockProps) {
+/**
+ * 可折叠分组。
+ *
+ * 这一页原来把所有开关和数字堆在同一个大卡片里（14 个控件、无分组），
+ * 用户反馈「比较乱」。现在按功能分组成 `<details>`：
+ *   · 默认全部展开 —— 设置项不能藏起来让人找；
+ *   · 收起后只剩一行标题，长页面也能一眼扫完；
+ *   · 用原生 `<details>` 而不是自建折叠，键盘/读屏/焦点都免费拿到。
+ */
+function SettingGroup({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
-    <div className={MODEL_PICKER_BLOCK_CLASS}>
-      <div className="flex items-center gap-1.5">
-        <Label>{title}</Label>
-        {hintKey && renderHint?.(hintKey)}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="flex shrink-0 items-center gap-2">
-          <input
-            type="checkbox"
-            checked={followChecked}
-            onChange={(e) => onFollowChange(e.target.checked)}
-            className="h-4 w-4"
-          />
-          <span className="text-sm">{followLabel}</span>
-        </label>
-        <ChatModelSelector
-          value={modelValue}
-          onChange={onModelChange}
-          disabled={followChecked}
+    <details open data-novel-group={id} className="group rounded-lg border border-border/60">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
+        <span className="min-w-0 truncate">{title}</span>
+        <ChevronDown
+          aria-hidden="true"
+          className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180"
         />
-        {onTest ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={testState?.loading}
-            onClick={onTest}
-          >
-            {testState?.loading ? testLoadingLabel : testLabel}
-          </Button>
-        ) : null}
-      </div>
-      {footnote ? (
-        <p className="text-xs leading-5 text-muted-foreground/80">{footnote}</p>
-      ) : null}
-      {testState?.message ? (
-        <p className={`text-xs ${testState.success ? "text-emerald-600" : "text-destructive"}`}>
-          {testState.message}
-        </p>
-      ) : null}
-    </div>
+      </summary>
+      <div className="grid gap-4 border-t border-border/60 px-4 py-4">{children}</div>
+    </details>
   )
 }
 
@@ -105,31 +49,22 @@ export function NovelSection({ draft, setDraft }: Props) {
   const setNovelConfigStore = useWikiStore((s) => s.setNovelConfig)
   const setRevisionFeedbackWindowConfig = useWikiStore((s) => s.setRevisionFeedbackWindowConfig)
   const setMaxHistoryMessages = useChatStore((s) => s.setMaxHistoryMessages)
-  const llmConfig = useWikiStore((s) => s.llmConfig)
-  const aiChatModel = useWikiStore((s) => s.aiChatModel)
-  const providerConfigs = useWikiStore((s) => s.providerConfigs)
   const project = useWikiStore((s) => s.project)
-  const defaultLlmModel = draft.novelConfig.defaultLlmModel
-  const isWorkflowModelFollowingChat = !defaultLlmModel.trim()
-  const displayWorkflowDefaultModel = isWorkflowModelFollowingChat ? "" : defaultLlmModel
 
-  const modelsAvailable = useMemo(
-    () => hasAvailableModels(providerConfigs),
-    [providerConfigs],
-  )
-
-  const [testStates, setTestStates] = useState<Record<TestableNovelModelTask, {
-    loading: boolean
-    message: string
-    success: boolean
-  } | undefined>>({
-    writing: undefined,
-    workflow: undefined,
-    review: undefined,
-    summary: undefined,
-    extract: undefined,
-    deAi: undefined,
-  })
+  /*
+   * 新手引导：只有一颗「播放」。
+   *
+   * 之前这里是「开关 + 播放」—— 开关负责“下次启动自动播”。用户明确说不需要
+   * 开关（“只需要有一个播放按钮就可以了”），所以整块简化成：想再看就点播放。
+   * 状态仍由 guide-store 写（`start()` 落成 running，localStorage 持久化），
+   * 与引导卡片上的跳过/取消是同一份真相。
+   */
+  const startGuide = useGuideStore((s) => s.start)
+  const playGuide = () => {
+    startGuide()
+    // 引导第一步是「在书架点设置」，所以要请外壳先把设置关掉、回到书架。
+    window.dispatchEvent(new CustomEvent(GUIDE_RESTART_EVENT))
+  }
 
   const updateNovelConfig = async (patch: Partial<NovelConfig>) => {
     const newConfig = { ...draft.novelConfig, ...patch }
@@ -154,18 +89,6 @@ export function NovelSection({ draft, setDraft }: Props) {
     await saveMaxHistoryMessages(count, project?.id, project?.path)
   }
 
-  const updateWorkflowDefaultModel = async (model: string) => {
-    await updateNovelConfig({ defaultLlmModel: model })
-    await saveDefaultLlmModel(model)
-  }
-
-  const modelItems = useMemo(() => ([
-    { task: "review", field: "reviewModel" },
-    { task: "summary", field: "summaryModel" },
-    { task: "extract", field: "extractModel" },
-    { task: "deAi", field: "deAiModel" },
-  ] as const), [])
-
   const settingTooltip = (key: string) => (
     <Tooltip>
       <TooltipTrigger
@@ -185,93 +108,29 @@ export function NovelSection({ draft, setDraft }: Props) {
     </Tooltip>
   )
 
-  const runModelTest = async (task: TestableNovelModelTask) => {
-    setTestStates((prev) => ({
-      ...prev,
-      [task]: {
-        loading: true,
-        message: t("novel.settings.testingModel"),
-        success: false,
-      },
-    }))
-
-    try {
-      const result = await testNovelModel(llmConfig, draft.novelConfig, task)
-      const suffix = result.usedFallbackModel
-        ? t("novel.settings.testUsingDefaultMainModel", { model: result.model })
-        : t("novel.settings.testUsingCurrentModel", { model: result.model })
-      setTestStates((prev) => ({
-        ...prev,
-        [task]: {
-          loading: false,
-          message: `${t("novel.settings.testSuccess")} ${suffix}`,
-          success: true,
-        },
-      }))
-    } catch (error) {
-      setTestStates((prev) => ({
-        ...prev,
-        [task]: {
-          loading: false,
-          message: t("novel.settings.testFailed", {
-            message: error instanceof Error ? error.message : String(error),
-          }),
-          success: false,
-        },
-      }))
-    }
-  }
-
   return (
     <TooltipProvider>
-      <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold">
-          {t("settings.sections.novel.title", { defaultValue: "写作设置" })}
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("settings.sections.novel.description", {
-            defaultValue:
-              "项目级写作模式和修改反馈窗口设置。",
-          })}
-        </p>
-      </div>
+      <div className="space-y-4">
+        <div>
+          <h2 className="text-xl font-semibold">
+            {t("settings.sections.novel.title", { defaultValue: "写作设置" })}
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t("settings.sections.novel.description", {
+              defaultValue: "项目级写作模式和修改反馈窗口设置。",
+            })}
+          </p>
+        </div>
 
-      <div className="space-y-2">
-        <Label>{t("novel.settings.title")}</Label>
-        <div className="grid gap-4 rounded-lg border p-4">
-          {modelsAvailable && (
-            <NovelModelPickerBlock
-              title={t("novel.settings.defaultLlmModel")}
-              hintKey="defaultLlmModelHint"
-              footnote={t("novel.settings.defaultLlmModelScopeNote")}
-              followChecked={isWorkflowModelFollowingChat}
-              onFollowChange={(checked) => {
-                if (checked) {
-                  void updateWorkflowDefaultModel("")
-                } else {
-                  void updateWorkflowDefaultModel(
-                    aiChatModel.trim() || getFirstAvailableModelKey(providerConfigs),
-                  )
-                }
-              }}
-              modelValue={displayWorkflowDefaultModel}
-              onModelChange={(model) => void updateWorkflowDefaultModel(model)}
-              renderHint={settingTooltip}
-              testState={testStates.workflow}
-              onTest={() => runModelTest("workflow")}
-              followLabel={t("novel.settings.followChatModel")}
-              testLoadingLabel={t("novel.settings.testingModel")}
-              testLabel={t("novel.settings.testModel")}
-            />
-          )}
-
-          <div className="space-y-2">
+        {/* ── 写作上下文：带多少前文、检索几条、聊天记几轮 ── */}
+        <SettingGroup id="context" title={t("settings.sections.novel.groups.context", { defaultValue: "写作上下文" })}>
+          <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-1.5">
               <Label>{t("novel.settings.recentSummaryWindow")}</Label>
               {settingTooltip("recentSummaryWindowHint")}
             </div>
             <Input
+              aria-label={t("novel.settings.recentSummaryWindow")}
               type="number"
               min={1}
               max={30}
@@ -285,30 +144,11 @@ export function NovelSection({ draft, setDraft }: Props) {
 
           <div className="space-y-2">
             <div className="flex items-center gap-1.5">
-              <Label htmlFor="de-ai-batch-concurrency-setting">{t("novel.settings.deAiBatchConcurrency")}</Label>
-              {settingTooltip("deAiBatchConcurrencyHint")}
-            </div>
-            <Input
-              id="de-ai-batch-concurrency-setting"
-              aria-label={t("novel.settings.deAiBatchConcurrency")}
-              type="number"
-              min={1}
-              max={5}
-              value={draft.novelConfig.deAiBatchConcurrency}
-              onChange={(e) => updateNovelConfig({
-                deAiBatchConcurrency: Math.max(1, Math.min(5, Math.floor(Number(e.target.value) || 3))),
-              })}
-              className="w-24"
-            />
-            <p className="text-xs text-muted-foreground">{t("novel.settings.deAiBatchConcurrencyHint")}</p>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center gap-1.5">
               <Label>{t("novel.settings.searchTopK")}</Label>
               {settingTooltip("searchTopKHint")}
             </div>
             <Input
+              aria-label={t("novel.settings.searchTopK")}
               type="number"
               min={1}
               max={20}
@@ -351,26 +191,32 @@ export function NovelSection({ draft, setDraft }: Props) {
               })}
             </p>
           </div>
+        </SettingGroup>
 
+        {/* ── 章节生成：一章写多长、写作时查不查网、评审多用力 ── */}
+        <SettingGroup id="generation" title={t("settings.sections.novel.groups.generation", { defaultValue: "章节生成" })}>
           <div className="space-y-2">
-            <div className="flex items-center gap-1.5">
-              <Label>{t("novel.settings.chapterTargetChars")}</Label>
-              {settingTooltip("chapterTargetCharsHint")}
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5">
+                <Label>{t("novel.settings.chapterTargetChars")}</Label>
+                {settingTooltip("chapterTargetCharsHint")}
+              </div>
+              <Input
+                aria-label={t("novel.settings.chapterTargetChars")}
+                type="number"
+                min={CHAPTER_TARGET_CHARS_MIN}
+                max={CHAPTER_TARGET_CHARS_MAX}
+                step={100}
+                value={draft.novelConfig.chapterTargetChars}
+                onChange={(e) => updateNovelConfig({
+                  chapterTargetChars: Math.max(
+                    CHAPTER_TARGET_CHARS_MIN,
+                    Math.min(CHAPTER_TARGET_CHARS_MAX, Number(e.target.value) || 3000),
+                  ),
+                })}
+                className="w-32"
+              />
             </div>
-            <Input
-              type="number"
-              min={CHAPTER_TARGET_CHARS_MIN}
-              max={CHAPTER_TARGET_CHARS_MAX}
-              step={100}
-              value={draft.novelConfig.chapterTargetChars}
-              onChange={(e) => updateNovelConfig({
-                chapterTargetChars: Math.max(
-                  CHAPTER_TARGET_CHARS_MIN,
-                  Math.min(CHAPTER_TARGET_CHARS_MAX, Number(e.target.value) || 3000),
-                ),
-              })}
-              className="w-32"
-            />
             <p className="text-xs text-muted-foreground">
               {t("novel.settings.chapterTargetCharsHint")}
             </p>
@@ -378,19 +224,21 @@ export function NovelSection({ draft, setDraft }: Props) {
 
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-1.5">
-              <Label>{t("novel.settings.autoIngestOnSave")}</Label>
-              {settingTooltip("autoIngestOnSaveHint")}
+              <Label>{t("novel.settings.writingWebSearchEnabled")}</Label>
+              {settingTooltip("writingWebSearchEnabledHint")}
             </div>
             <button
               type="button"
-              onClick={() => updateNovelConfig({ autoIngestOnSave: !draft.novelConfig.autoIngestOnSave })}
+              aria-label={t("novel.settings.writingWebSearchEnabled")}
+              aria-pressed={draft.novelConfig.writingWebSearchEnabled}
+              onClick={() => updateNovelConfig({ writingWebSearchEnabled: !draft.novelConfig.writingWebSearchEnabled })}
               className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                draft.novelConfig.autoIngestOnSave ? "bg-primary" : "bg-input"
+                draft.novelConfig.writingWebSearchEnabled ? "bg-primary" : "bg-input"
               }`}
             >
               <span
                 className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
-                  draft.novelConfig.autoIngestOnSave ? "translate-x-5" : "translate-x-0"
+                  draft.novelConfig.writingWebSearchEnabled ? "translate-x-5" : "translate-x-0"
                 }`}
               />
             </button>
@@ -403,6 +251,8 @@ export function NovelSection({ draft, setDraft }: Props) {
             </div>
             <button
               type="button"
+              aria-label={t("novel.settings.deepPreviousChaptersAnalysis")}
+              aria-pressed={draft.novelConfig.deepPreviousChaptersAnalysis}
               onClick={() => updateNovelConfig({ deepPreviousChaptersAnalysis: !draft.novelConfig.deepPreviousChaptersAnalysis })}
               className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
                 draft.novelConfig.deepPreviousChaptersAnalysis ? "bg-primary" : "bg-input"
@@ -441,7 +291,57 @@ export function NovelSection({ draft, setDraft }: Props) {
               })}
             </div>
           </div>
+        </SettingGroup>
 
+        {/* ── 界面提示：这两个只影响写作界面上的小提示，不参与生成 ── */}
+        <SettingGroup id="hints" title={t("settings.sections.novel.groups.hints", { defaultValue: "界面提示" })}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-1.5">
+              <Label>{t("novel.settings.draftMemoryHintEnabled")}</Label>
+              {settingTooltip("draftMemoryHintEnabledHint")}
+            </div>
+            <button
+              type="button"
+              aria-label={t("novel.settings.draftMemoryHintEnabled")}
+              aria-pressed={draft.novelConfig.draftMemoryHintEnabled}
+              onClick={() => updateNovelConfig({ draftMemoryHintEnabled: !draft.novelConfig.draftMemoryHintEnabled })}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                draft.novelConfig.draftMemoryHintEnabled ? "bg-primary" : "bg-input"
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
+                  draft.novelConfig.draftMemoryHintEnabled ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-1.5">
+              <Label>{t("novel.settings.inspirationHintEnabled")}</Label>
+              {settingTooltip("inspirationHintEnabledHint")}
+            </div>
+            <button
+              type="button"
+              aria-label={t("novel.settings.inspirationHintEnabled")}
+              aria-pressed={draft.novelConfig.inspirationHintEnabled}
+              onClick={() => updateNovelConfig({ inspirationHintEnabled: !draft.novelConfig.inspirationHintEnabled })}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                draft.novelConfig.inspirationHintEnabled ? "bg-primary" : "bg-input"
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${
+                  draft.novelConfig.inspirationHintEnabled ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+        </SettingGroup>
+
+        {/* ── 社区摘要：章节写多了自动归纳 ── */}
+        <SettingGroup id="community" title={t("settings.sections.novel.groups.community", { defaultValue: "社区摘要" })}>
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-1.5">
               <Label>{t("novel.settings.communitySummaryEnabled")}</Label>
@@ -449,6 +349,8 @@ export function NovelSection({ draft, setDraft }: Props) {
             </div>
             <button
               type="button"
+              aria-label={t("novel.settings.communitySummaryEnabled")}
+              aria-pressed={draft.novelConfig.communitySummaryEnabled}
               onClick={() => updateNovelConfig({ communitySummaryEnabled: !draft.novelConfig.communitySummaryEnabled })}
               className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
                 draft.novelConfig.communitySummaryEnabled ? "bg-primary" : "bg-input"
@@ -464,12 +366,13 @@ export function NovelSection({ draft, setDraft }: Props) {
 
           {draft.novelConfig.communitySummaryEnabled && (
             <>
-              <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-1.5">
                   <Label>{t("novel.settings.communitySummaryInterval")}</Label>
                   {settingTooltip("communitySummaryIntervalHint")}
                 </div>
                 <Input
+                  aria-label={t("novel.settings.communitySummaryInterval")}
                   type="number"
                   min={1}
                   max={50}
@@ -488,6 +391,8 @@ export function NovelSection({ draft, setDraft }: Props) {
                 </div>
                 <button
                   type="button"
+                  aria-label={t("novel.settings.communitySummaryAsync")}
+                  aria-pressed={draft.novelConfig.communitySummaryAsync}
                   onClick={() => updateNovelConfig({ communitySummaryAsync: !draft.novelConfig.communitySummaryAsync })}
                   className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
                     draft.novelConfig.communitySummaryAsync ? "bg-primary" : "bg-input"
@@ -502,60 +407,35 @@ export function NovelSection({ draft, setDraft }: Props) {
               </div>
             </>
           )}
+        </SettingGroup>
 
-          <div className="space-y-1 border-t border-border/60 pt-4">
-            <Label>{t("novel.settings.taskModelsTitle")}</Label>
-            <p className="text-xs leading-5 text-muted-foreground">
-              {t("novel.settings.taskModelsHint")}
-            </p>
-          </div>
-
-          {modelItems.map((item) => {
-            const state = testStates[item.task]
-            const modelValue = draft.novelConfig[item.field] || ""
-            const isFollowingChat = !modelValue
-            const displayValue = isFollowingChat ? "" : modelValue
-
-            return (
-              <NovelModelPickerBlock
-                key={item.task}
-                title={t(`novel.settings.${item.field}`)}
-                hintKey={`${item.field}Hint`}
-                followChecked={isFollowingChat}
-                onFollowChange={(checked) => {
-                  if (checked) {
-                    updateNovelConfig({
-                      [item.field]: "",
-                    } as Partial<NovelConfig>)
-                  } else {
-                    updateNovelConfig({
-                      [item.field]: aiChatModel || " ",
-                    } as Partial<NovelConfig>)
-                  }
-                }}
-                modelValue={displayValue}
-                onModelChange={(model) => updateNovelConfig({
-                  [item.field]: model,
-                } as Partial<NovelConfig>)}
-                renderHint={settingTooltip}
-                testState={state}
-                onTest={() => runModelTest(item.task)}
-                followLabel={t("novel.settings.followDefaultModel")}
-                testLoadingLabel={t("novel.settings.testingModel")}
-                testLabel={t("novel.settings.testModel")}
+        {/* ── 性能与并发：出问题时才需要动 ── */}
+        <SettingGroup id="performance" title={t("settings.sections.novel.groups.performance", { defaultValue: "性能与并发" })}>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5">
+                <Label htmlFor="de-ai-batch-concurrency-setting">{t("novel.settings.deAiBatchConcurrency")}</Label>
+                {settingTooltip("deAiBatchConcurrencyHint")}
+              </div>
+              <Input
+                id="de-ai-batch-concurrency-setting"
+                aria-label={t("novel.settings.deAiBatchConcurrency")}
+                type="number"
+                min={1}
+                max={5}
+                value={draft.novelConfig.deAiBatchConcurrency}
+                onChange={(e) => updateNovelConfig({
+                  deAiBatchConcurrency: Math.max(1, Math.min(5, Math.floor(Number(e.target.value) || 3))),
+                })}
+                className="w-24"
               />
-            )
-          })}
-        </div>
-      </div>
+            </div>
+            <p className="text-xs text-muted-foreground">{t("novel.settings.deAiBatchConcurrencyHint")}</p>
+          </div>
+        </SettingGroup>
 
-      <div className="space-y-2">
-        <Label>
-          {t("settings.sections.novel.feedbackWindow.title", {
-            defaultValue: "修改反馈窗口",
-          })}
-        </Label>
-        <div className="grid gap-4 rounded-lg border p-4">
+        {/* ── 修改反馈窗口：写下一章时往回带多少"上次怎么改的" ── */}
+        <SettingGroup id="feedback" title={t("settings.sections.novel.feedbackWindow.title", { defaultValue: "修改反馈窗口" })}>
           <div className="space-y-2">
             <div className="flex items-center gap-1.5">
               <Label>
@@ -566,6 +446,9 @@ export function NovelSection({ draft, setDraft }: Props) {
               {settingTooltip("feedbackWindowLookbackChapterCountHelp")}
             </div>
             <input
+              aria-label={t("settings.sections.novel.feedbackWindow.lookbackChapterCount", {
+                defaultValue: "回溯章节数量",
+              })}
               type="number"
               min={0}
               value={draft.revisionFeedbackWindowConfig.lookbackChapterCount}
@@ -601,6 +484,10 @@ export function NovelSection({ draft, setDraft }: Props) {
             </div>
             <button
               type="button"
+              aria-label={t("settings.sections.novel.feedbackWindow.currentChapterIncludeShouldImprove", {
+                defaultValue: "包含当前章节改进建议",
+              })}
+              aria-pressed={draft.revisionFeedbackWindowConfig.currentChapterIncludeShouldImprove}
               onClick={() => void updateFeedbackWindow({
                 currentChapterIncludeShouldImprove: !draft.revisionFeedbackWindowConfig.currentChapterIncludeShouldImprove,
               })}
@@ -635,6 +522,10 @@ export function NovelSection({ draft, setDraft }: Props) {
             </div>
             <button
               type="button"
+              aria-label={t("settings.sections.novel.feedbackWindow.previousChapterCarryEnabled", {
+                defaultValue: "读取上一章延续事项",
+              })}
+              aria-pressed={draft.revisionFeedbackWindowConfig.previousChapterCarryEnabled}
               onClick={() => void updateFeedbackWindow({
                 previousChapterCarryEnabled: !draft.revisionFeedbackWindowConfig.previousChapterCarryEnabled,
               })}
@@ -669,6 +560,10 @@ export function NovelSection({ draft, setDraft }: Props) {
             </div>
             <button
               type="button"
+              aria-label={t("settings.sections.novel.feedbackWindow.lookbackIncludeMustFixOnly", {
+                defaultValue: "回溯章节仅保留必须修复项",
+              })}
+              aria-pressed={draft.revisionFeedbackWindowConfig.lookbackIncludeMustFixOnly}
               onClick={() => void updateFeedbackWindow({
                 lookbackIncludeMustFixOnly: !draft.revisionFeedbackWindowConfig.lookbackIncludeMustFixOnly,
               })}
@@ -683,8 +578,32 @@ export function NovelSection({ draft, setDraft }: Props) {
               />
             </button>
           </div>
+        </SettingGroup>
+
+        {/* ── 新手引导：只有一颗「播放」 ── */}
+        <div data-novel-guide="true" className="rounded-lg border border-border/60 px-4 py-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">{t("settings.sections.novel.guide.title", { defaultValue: "新手引导" })}</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {t("settings.sections.novel.guide.hint", {
+                  defaultValue: "点「播放」从头看一遍引导，会一步步告诉你每一项在哪里、怎么设置。",
+                })}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              aria-label={t("settings.sections.novel.guide.play", { defaultValue: "播放新手引导" })}
+              onClick={playGuide}
+            >
+              <Play className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+              {t("settings.sections.novel.guide.playLabel", { defaultValue: "播放" })}
+            </Button>
+          </div>
         </div>
-      </div>
       </div>
     </TooltipProvider>
   )

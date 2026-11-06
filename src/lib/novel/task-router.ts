@@ -21,15 +21,16 @@ export type NovelTaskIntent =
   | "story_framework_generate"  // 故事框架生成
   | "multi_agent_simulate"      // 多智能体推演
   | "character_interview"       // 角色采访
+  | "scenario_simulate"         // 舞台情景（人物对话模拟）
 
-export const MODIFY_INTENTS: Set<NovelTaskIntent> = new Set([
+const MODIFY_INTENTS: Set<NovelTaskIntent> = new Set([
   "rewrite_chapter",
   "polish_chapter",
   "review_chapter",
   "lint_chapter",
 ])
 
-export function isModifyIntent(intent: NovelTaskIntent): boolean {
+function isModifyIntent(intent: NovelTaskIntent): boolean {
   return MODIFY_INTENTS.has(intent)
 }
 
@@ -217,6 +218,22 @@ const INTENT_PATTERNS: IntentPattern[] = [
       /(角色采访|采访角色|问角色)/,
     ],
     keywords: ["角色采访", "采访角色", "问角色"],
+    weight: 10,
+  },
+  {
+    intent: "scenario_simulate",
+    patterns: [
+      /^(舞台情景|模拟情景|情景模拟)/,
+      /(舞台情景|模拟情景|情景模拟|让角色辩论|角色辩论|角色对话模拟)/,
+    ],
+    keywords: [
+      "舞台情景",
+      "模拟情景",
+      "情景模拟",
+      "角色辩论",
+      "让角色辩论",
+      "角色对话模拟",
+    ],
     weight: 10,
   },
 ]
@@ -433,6 +450,10 @@ const CHAPTER_WRITING_INTENTS = new Set<NovelTaskIntent>([
   "polish_chapter",
 ])
 
+export function isChapterWritingIntent(intent?: string | null): boolean {
+  return Boolean(intent && CHAPTER_WRITING_INTENTS.has(intent as NovelTaskIntent))
+}
+
 export function buildTaskDirective(route: TaskRouteResult): string {
   const directives: Record<NovelTaskIntent, string> = {
     write_chapter: "用户要求生成新章节。请根据上下文包中的大纲、人物状态和伏笔状态，生成完整的章节正文。注意保持人设一致，结尾留有钩子。",
@@ -452,6 +473,7 @@ export function buildTaskDirective(route: TaskRouteResult): string {
     story_framework_generate: "用户要求生成故事框架。请跳转到剧情推演室进行框架生成。",
     multi_agent_simulate: "用户要求多智能体推演。请跳转到剧情推演室进行推演。",
     character_interview: "用户要求角色采访。请跳转到剧情推演室进行角色采访。",
+    scenario_simulate: "用户要求舞台情景模拟。请跳转到剧情推演室的「舞台情景」配置角色与情景规则。",
   }
 
   const directive = directives[route.intent]
@@ -498,6 +520,7 @@ function intentToLabel(intent: NovelTaskIntent): string {
     story_framework_generate: "故事框架生成",
     multi_agent_simulate: "多智能体推演",
     character_interview: "角色采访",
+    scenario_simulate: "舞台情景",
   }
   return labels[intent] || "未知"
 }

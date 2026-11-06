@@ -29,6 +29,7 @@ describe("dismantling library implementation", () => {
 
     expect(sidebarSource).toContain("BookAnalysisSidebarPanel")
     expect(bookSidebarSource).toContain("BookAnalysisInputDialog")
-    expect(bookSidebarSource).toContain("BookAnalysisImportTaskPanel")
+    expect(bookSidebarSource).toContain("useBookAnalysisImportStore")
+    expect(bookSidebarSource).toContain("createBatch")
   })
 })

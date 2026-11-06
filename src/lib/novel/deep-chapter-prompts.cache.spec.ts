@@ -7,6 +7,7 @@ import {
   buildDeepChapterRevisionPrompt,
 } from "./deep-chapter-prompts"
 import type { NovelReviewResult } from "./review-adapter"
+import { DE_AI_GENERATION_RULES } from "./de-ai-generation-rules"
 
 /**
  * 阶段二回归护栏：深度章节生成的各阶段提示词必须以"大纲 + 上下文包"组成的
@@ -35,7 +36,7 @@ const stages: Record<string, string> = {
   draft: buildDeepChapterDraftPrompt(outline, contextPrompt, "写作任务书", "生成第3章", 3),
   expansion: buildDeepChapterExpansionPrompt(outline, contextPrompt, "写作任务书", "过短正文", "生成第3章", 3),
   revision: buildDeepChapterRevisionPrompt(outline, contextPrompt, "写作任务书", "初稿正文", reviewResults, "生成第3章", 3),
-  polish: buildDeepChapterFinalPolishPrompt(outline, contextPrompt, "写作任务书", "当前正文", "生成第3章", 3),
+  polish: buildDeepChapterFinalPolishPrompt(outline, contextPrompt, "写作任务书", "当前正文", reviewResults, "生成第3章", 3),
 }
 const stageList = Object.values(stages)
 // buildStableContextPrefix(outline, contextPrompt) 的输出：[outline,"上下文：",contextPrompt].join("\n")
@@ -56,8 +57,8 @@ describe("deep chapter prompts share a stable cacheable prefix (stage 2)", () =>
     // ── 测量报告（chars/4 估算 token，与 context-budget.ts 同口径）──
     const prefixChars = stableBlock.length
     const estTok = (chars: number) => Math.round(chars / 4)
-    // 写作侧实际会重复携带这段前缀的阶段：任务书 / 初稿 /（扩写）/（返修）/ 去AI味。
-    // 取最常见路径：任务书 + 初稿 + 去AI味 = 3 次必然发生，扩写/返修按需。
+    // 写作侧实际会重复携带这段前缀的阶段：任务书 / 初稿 /（扩写）/（返修）/ 阶段6局部修改。
+    // 取最常见路径：任务书 + 初稿 + 阶段6局部修改 = 3 次，扩写/返修/阶段6按需。
     const writingStages = 3
     const repeatedPrefixChars = prefixChars * (writingStages - 1) // 第2、3次重复携带
     // 自动前缀缓存命中后，重复前缀约按 1/10 计费。
@@ -70,5 +71,23 @@ describe("deep chapter prompts share a stable cacheable prefix (stage 2)", () =>
     console.log(`[stage2] 写作侧3阶段重复携带前缀：旧 ${estTok(oldBilled)} tok 全价 → 新 ≈ ${estTok(newBilled)} tok（缓存命中价）`)
     console.log(`[stage2] 仅"重复前缀"一项每章约省 ${savedTok} 输入 tok（按 3 写作阶段、命中价 10% 估算）`)
     console.log(`[stage1] 审稿调用：旧 4 次串行 → 新 1 次（省 3 次完整审查 prompt + 1 次重复 buildContextPack）`)
+  })
+
+  it("反 AI 腔规则块整体排在公共前缀之后（加规则不得截断缓存前缀）", () => {
+    const sharedLens = stageList.slice(1).map((p) => commonPrefixLength(stageList[0], p))
+    const minShared = Math.min(...sharedLens)
+    // 初稿 / 扩写 / 返修现在都带规则块，它们必须落在阶段专属区里。
+    const withRules = ["draft", "expansion", "revision"].map((name) => [name, stages[name]] as const)
+    for (const [name, prompt] of withRules) {
+      const index = prompt.indexOf(DE_AI_GENERATION_RULES)
+      expect(index, `${name} 没有带上反 AI 腔规则块`).toBeGreaterThan(0)
+      expect(index, `${name} 的规则块落进了跨阶段公共前缀`).toBeGreaterThanOrEqual(minShared)
+    }
+    // 规则不得放进任务书与阶段 6：它们不是正文生成阶段（阶段 6 见 42727a9）。
+    expect(stages.brief).not.toContain(DE_AI_GENERATION_RULES)
+    expect(stages.polish).not.toContain(DE_AI_GENERATION_RULES)
+    // 公共前缀仍完整覆盖「大纲 + 上下文」：插入规则后它不得被截短。
+    // （它止于各阶段共用的一句开场白，与规则无关；这里只钉住下界，避免把前缀长度写成脆断言。）
+    expect(minShared).toBeGreaterThanOrEqual(stableBlock.length)
   })
 })

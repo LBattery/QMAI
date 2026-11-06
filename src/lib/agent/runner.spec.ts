@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest"
-import { AgentRunner, ModelDoesNotSupportToolsError } from "./runner"
+import { AgentRunner } from "./runner"
 import { ToolRegistry } from "./registry"
 import type { AgentConfig, AgentMessage } from "./types"
 import type { Tool } from "./types"
@@ -16,7 +16,6 @@ const breakpointMocks = vi.hoisted(() => ({
     usedSkills: [],
     usedTools: [],
     searches: [],
-    mcpCalls: [],
     createdAt: 0,
     updatedAt: 0,
   })),
@@ -209,6 +208,325 @@ describe("AgentRunner", () => {
     expect(callbacks.onError.mock.calls[0][0].name).toBe("RequiredToolsNotCalledError")
     expect(result.finalText).toBe("")
     expect(tool.execute).not.toHaveBeenCalled()
+  })
+
+  it("deterministically executes a mandatory finalizing tool when the model returns prose", async () => {
+    const tool: Tool = {
+      name: "run_chapter_workflow",
+      description: "workflow",
+      category: "action",
+      finalizesRun: true,
+      buildRequiredToolFallbackParams: ({ taskGoal }) => ({ userRequest: taskGoal }),
+      parameters: {},
+      execute: vi.fn(async (_params, _signal, context) => {
+        context?.onFinalContent?.("第1章\n\n确定性兜底正文")
+        return "章节工作流完成"
+      }),
+    }
+    registry.register(tool)
+    mockStreamChat.mockImplementation(async (_config: unknown, _msgs: unknown[], cb: StreamCallbacks) => {
+      cb.onToken("模型绕过工作流直出正文")
+      cb.onFinishReason?.("stop")
+      cb.onDone()
+    })
+    const callbacks = {
+      onText: vi.fn(),
+      onToolCall: vi.fn(),
+      onToolResult: vi.fn(),
+      onToolError: vi.fn(),
+      onFinalContent: vi.fn(),
+      onDone: vi.fn(),
+      onError: vi.fn(),
+    }
+
+    const result = await runner.run({
+      maxRounds: 2,
+      tools: [tool],
+      systemPrompt: "",
+      llmConfig: mockLlmConfig,
+      taskGoal: "写第1章",
+      requiredToolsOnce: ["run_chapter_workflow"],
+    }, registry, [systemMsg, userMsg], callbacks)
+
+    expect(tool.execute).toHaveBeenCalledWith(
+      { userRequest: "写第1章" },
+      undefined,
+      expect.any(Object),
+    )
+    expect(callbacks.onText).not.toHaveBeenCalled()
+    expect(callbacks.onFinalContent).toHaveBeenCalledWith("第1章\n\n确定性兜底正文")
+    expect(callbacks.onDone).toHaveBeenCalledOnce()
+    expect(callbacks.onError).not.toHaveBeenCalled()
+    expect(result.finalText).toBe("第1章\n\n确定性兜底正文")
+    expect(result.requiredToolDiagnostics).toEqual(expect.objectContaining({
+      satisfiedTools: ["run_chapter_workflow"],
+      missingTools: [],
+      fallbackAttempted: true,
+      fallbackStatus: "success",
+      finishReasons: ["stop"],
+    }))
+  })
+
+  it("executes run_chapter_workflow when it is the second parallel DeepSeek tool call", async () => {
+    const readTool: Tool = {
+      name: "read_outline",
+      description: "read outline",
+      category: "read",
+      parameters: {},
+      execute: vi.fn(async () => "卷纲"),
+    }
+    const workflowTool: Tool = {
+      name: "run_chapter_workflow",
+      description: "workflow",
+      category: "action",
+      finalizesRun: true,
+      buildRequiredToolFallbackParams: ({ taskGoal }) => ({ userRequest: taskGoal }),
+      parameters: {},
+      execute: vi.fn(async (_params, _signal, context) => {
+        context?.onFinalContent?.("第二个工具交付的正文")
+        return "ok"
+      }),
+    }
+    registry.register(readTool)
+    registry.register(workflowTool)
+    mockStreamChat.mockImplementation(async (_config: unknown, _msgs: unknown[], cb: StreamCallbacks) => {
+      cb.onToolCallDelta?.({ index: 0, id: "parallel-read", name: "read_outline" })
+      cb.onToolCallDelta?.({ index: 1, id: "parallel-workflow", name: "run_chapter_workflow" })
+      cb.onToolCallDelta?.({ index: 0, arguments: "{}" })
+      cb.onToolCallDelta?.({ index: 1, arguments: '{"userRequest":"写第45章"}' })
+      cb.onFinishReason?.("tool_calls")
+      cb.onDone()
+    })
+    const callbacks = {
+      onText: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onToolError: vi.fn(),
+      onFinalContent: vi.fn(), onDone: vi.fn(), onError: vi.fn(),
+    }
+
+    const result = await runner.run({
+      maxRounds: 2,
+      tools: [readTool, workflowTool],
+      systemPrompt: "",
+      llmConfig: mockLlmConfig,
+      taskGoal: "写第45章",
+      requiredToolsOnce: ["run_chapter_workflow"],
+    }, registry, [systemMsg, userMsg], callbacks)
+
+    expect(result.toolCalls.map((call) => call.name)).toEqual([
+      "read_outline",
+      "run_chapter_workflow",
+    ])
+    expect(workflowTool.execute).toHaveBeenCalledOnce()
+    expect(result.finalText).toBe("第二个工具交付的正文")
+    expect(result.requiredToolDiagnostics?.fallbackAttempted).toBe(false)
+    expect(result.requiredToolDiagnostics?.observedToolCalls).toEqual([
+      { round: 1, index: 0, name: "read_outline" },
+      { round: 1, index: 1, name: "run_chapter_workflow" },
+    ])
+  })
+
+  it("does not treat malformed tool arguments as fulfillment and falls back with trusted params", async () => {
+    const tool: Tool = {
+      name: "run_chapter_workflow",
+      description: "workflow",
+      category: "action",
+      finalizesRun: true,
+      buildRequiredToolFallbackParams: ({ taskGoal }) => ({ userRequest: taskGoal }),
+      parameters: {},
+      execute: vi.fn(async (_params, _signal, context) => {
+        context?.onFinalContent?.("合法正文")
+        return "ok"
+      }),
+    }
+    registry.register(tool)
+    mockStreamChat
+      .mockImplementationOnce(async (_config: unknown, _msgs: unknown[], cb: StreamCallbacks) => {
+        cb.onToolCallDelta?.({ index: 0, id: "bad-args", name: "run_chapter_workflow" })
+        cb.onToolCallDelta?.({ index: 0, arguments: "{bad json" })
+        cb.onDone()
+      })
+      .mockImplementationOnce(async (_config: unknown, _msgs: unknown[], cb: StreamCallbacks) => {
+        cb.onToken("仍然直出")
+        cb.onDone()
+      })
+    const callbacks = {
+      onText: vi.fn(),
+      onToolCall: vi.fn(),
+      onToolResult: vi.fn(),
+      onToolError: vi.fn(),
+      onFinalContent: vi.fn(),
+      onDone: vi.fn(),
+      onError: vi.fn(),
+    }
+
+    const result = await runner.run({
+      maxRounds: 3,
+      tools: [tool],
+      systemPrompt: "",
+      llmConfig: mockLlmConfig,
+      taskGoal: "续写第2章",
+      requiredToolsOnce: ["run_chapter_workflow"],
+    }, registry, [systemMsg, userMsg], callbacks)
+
+    expect(callbacks.onToolError).toHaveBeenCalledWith("bad-args", expect.stringContaining("不是合法 JSON"))
+    expect(tool.execute).toHaveBeenCalledOnce()
+    expect(tool.execute).toHaveBeenCalledWith(
+      { userRequest: "续写第2章" },
+      undefined,
+      expect.any(Object),
+    )
+    expect(result.toolCalls.map((call) => call.status)).toEqual(["error", "done"])
+    expect(result.requiredToolDiagnostics?.satisfiedTools).toEqual(["run_chapter_workflow"])
+  })
+
+  it("runs the required fallback outside the ordinary round budget", async () => {
+    const readTool: Tool = {
+      name: "read_outline",
+      description: "read",
+      category: "read",
+      parameters: {},
+      execute: vi.fn(async () => "大纲"),
+    }
+    const workflowTool: Tool = {
+      name: "run_chapter_workflow",
+      description: "workflow",
+      category: "action",
+      finalizesRun: true,
+      buildRequiredToolFallbackParams: ({ taskGoal }) => ({ userRequest: taskGoal }),
+      parameters: {},
+      execute: vi.fn(async (_params, _signal, context) => {
+        context?.onFinalContent?.("预算外兜底正文")
+        return "ok"
+      }),
+    }
+    registry.register(readTool)
+    registry.register(workflowTool)
+    mockStreamChat.mockImplementation(async (_config: unknown, _msgs: unknown[], cb: StreamCallbacks) => {
+      cb.onToolCallDelta?.({ index: 0, id: "read-1", name: "read_outline", arguments: "{}" })
+      cb.onDone()
+    })
+    const callbacks = {
+      onText: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onToolError: vi.fn(),
+      onFinalContent: vi.fn(), onDone: vi.fn(), onError: vi.fn(),
+    }
+
+    const result = await runner.run({
+      maxRounds: 1,
+      tools: [readTool, workflowTool],
+      systemPrompt: "",
+      llmConfig: mockLlmConfig,
+      taskGoal: "写第3章",
+      requiredToolsOnce: ["run_chapter_workflow"],
+    }, registry, [systemMsg, userMsg], callbacks)
+
+    expect(result.roundsUsed).toBe(1)
+    expect(readTool.execute).toHaveBeenCalledOnce()
+    expect(workflowTool.execute).toHaveBeenCalledOnce()
+    expect(result.finalText).toBe("预算外兜底正文")
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+
+  it("forceRequiredToolsImmediately bypasses the outer model and reports empty final delivery", async () => {
+    const tool: Tool = {
+      name: "run_chapter_workflow",
+      description: "workflow",
+      category: "action",
+      finalizesRun: true,
+      buildRequiredToolFallbackParams: ({ taskGoal }) => ({ userRequest: taskGoal }),
+      parameters: {},
+      execute: vi.fn(async () => "执行完成但没有交付正文"),
+    }
+    registry.register(tool)
+    const callbacks = {
+      onText: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onToolError: vi.fn(),
+      onFinalContent: vi.fn(), onDone: vi.fn(), onError: vi.fn(),
+    }
+
+    const result = await runner.run({
+      maxRounds: 3,
+      tools: [tool],
+      systemPrompt: "",
+      llmConfig: mockLlmConfig,
+      taskGoal: "写第4章",
+      requiredToolsOnce: ["run_chapter_workflow"],
+      forceRequiredToolsImmediately: true,
+    }, registry, [systemMsg, userMsg], callbacks)
+
+    expect(mockStreamChat).not.toHaveBeenCalled()
+    expect(callbacks.onDone).not.toHaveBeenCalled()
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
+      name: "RequiredToolFallbackError",
+      message: expect.stringContaining("没有交付终稿正文"),
+    }))
+    expect(result.requiredToolDiagnostics?.fallbackStatus).toBe("error")
+  })
+
+  it("does not count approval_required as successful required-tool fulfillment", async () => {
+    const tool: Tool = {
+      name: "required_action",
+      description: "requires confirmation",
+      category: "write",
+      permission: "confirm",
+      buildRequiredToolFallbackParams: () => ({ value: "trusted" }),
+      parameters: {},
+      execute: vi.fn(async () => "preview only"),
+    }
+    registry.register(tool)
+    const callbacks = {
+      onText: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onToolError: vi.fn(),
+      onDone: vi.fn(), onError: vi.fn(),
+    }
+
+    const result = await runner.run({
+      maxRounds: 2,
+      tools: [tool],
+      systemPrompt: "",
+      llmConfig: mockLlmConfig,
+      taskGoal: "执行动作",
+      requiredToolsOnce: ["required_action"],
+      forceRequiredToolsImmediately: true,
+    }, registry, [systemMsg, userMsg], callbacks)
+
+    expect(mockStreamChat).not.toHaveBeenCalled()
+    expect(result.toolCalls[0]?.status).toBe("approval_required")
+    expect(result.requiredToolDiagnostics?.satisfiedTools).toEqual([])
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
+      name: "RequiredToolFallbackError",
+    }))
+  })
+
+  it("surfaces the underlying required workflow execution failure", async () => {
+    const tool: Tool = {
+      name: "run_chapter_workflow",
+      description: "workflow",
+      category: "action",
+      finalizesRun: true,
+      buildRequiredToolFallbackParams: ({ taskGoal }) => ({ userRequest: taskGoal }),
+      parameters: {},
+      execute: vi.fn(async () => {
+        throw new Error("DeepSeek 下游生成超时")
+      }),
+    }
+    registry.register(tool)
+    const callbacks = {
+      onText: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onToolError: vi.fn(),
+      onDone: vi.fn(), onError: vi.fn(),
+    }
+
+    const result = await runner.run({
+      maxRounds: 2,
+      tools: [tool],
+      systemPrompt: "",
+      llmConfig: mockLlmConfig,
+      taskGoal: "写第5章",
+      requiredToolsOnce: ["run_chapter_workflow"],
+      forceRequiredToolsImmediately: true,
+    }, registry, [systemMsg, userMsg], callbacks)
+
+    expect(result.requiredToolDiagnostics?.fallbackError).toContain("DeepSeek 下游生成超时")
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
+      name: "RequiredToolFallbackError",
+      message: expect.stringContaining("DeepSeek 下游生成超时"),
+    }))
   })
 
   it("does not block no-tool finals when requiredToolsOnce is unset", async () => {
@@ -405,7 +723,10 @@ describe("AgentRunner", () => {
       { onText: vi.fn(), onToolCall: vi.fn(), onToolResult: vi.fn(), onToolError: vi.fn(), onDone: vi.fn(), onError: vi.fn() },
     )
 
-    expect(mockStreamChat.mock.calls[0][1][0]).toEqual(cacheableSystem)
+    const sent = mockStreamChat.mock.calls[0][1] as AgentMessage[]
+    expect(sent[0]).toEqual({ ...cacheableSystem, content: [{ type: "text", text: "稳定核心", cacheControl: true }] })
+    expect(JSON.stringify(sent[sent.length - 1].content)).toContain("动态上下文")
+    expect(JSON.stringify(sent[sent.length - 1].content)).toContain("任务契约")
   })
 
   it("aggregates provider usage across agent rounds", async () => {
@@ -489,55 +810,6 @@ describe("AgentRunner", () => {
     expect(callbacks.onToolCall).toHaveBeenCalledOnce()
     expect(callbacks.onToolResult).toHaveBeenCalledOnce()
     expect(result.finalText).toBe("Got it!")
-    expect(result.roundsUsed).toBe(2)
-  })
-
-  it("parses text JSON tool calls for cursor-cli providers", async () => {
-    const tool: Tool = {
-      name: "read_chapter",
-      description: "read",
-      category: "read",
-      parameters: { name: { type: "string", description: "name" } },
-      execute: vi.fn().mockResolvedValue("Chapter content"),
-    }
-    registry.register(tool)
-
-    let callCount = 0
-    mockStreamChat.mockImplementation(async (_config: unknown, _msgs: unknown[], cb: StreamCallbacks) => {
-      callCount++
-      if (callCount === 1) {
-        cb.onToken('{"name":"read_chapter","arguments":{"name":"ch1"}}')
-        cb.onDone()
-      } else {
-        cb.onToken("完成")
-        cb.onDone()
-      }
-    })
-
-    const callbacks = {
-      onText: vi.fn(),
-      onToolCall: vi.fn(),
-      onToolResult: vi.fn(),
-      onToolError: vi.fn(),
-      onDone: vi.fn(),
-      onError: vi.fn(),
-    }
-
-    const config: AgentConfig = {
-      maxRounds: 3,
-      tools: [tool],
-      systemPrompt: "You are helpful",
-      llmConfig: { ...mockLlmConfig, provider: "cursor-cli" },
-    }
-    const result = await runner.run(config, registry, [systemMsg, userMsg], callbacks, undefined)
-
-    expect(tool.execute).toHaveBeenCalledWith(
-      { name: "ch1" },
-      undefined,
-      expect.objectContaining({ toolName: "read_chapter" }),
-    )
-    expect(callbacks.onToolCall).toHaveBeenCalledOnce()
-    expect(result.finalText).toBe("完成")
     expect(result.roundsUsed).toBe(2)
   })
 
@@ -1402,7 +1674,7 @@ describe("AgentRunner", () => {
     expect(callbacks.onError).not.toHaveBeenCalled()
   })
 
-  it("emits ModelDoesNotSupportToolsError when tool-less retry still fails", async () => {
+  it("preserves the real upstream error when tool-less retry fails for a different reason", async () => {
     const tool: Tool = {
       name: "read_chapter",
       description: "read",
@@ -1443,7 +1715,7 @@ describe("AgentRunner", () => {
     )
 
     expect(mockStreamChat).toHaveBeenCalledTimes(2)
-    expect(callbacks.onError).toHaveBeenCalledWith(expect.any(ModelDoesNotSupportToolsError))
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: "upstream 500" }))
   })
 
   it("does not treat unrelated unsupported errors as missing function calling", async () => {

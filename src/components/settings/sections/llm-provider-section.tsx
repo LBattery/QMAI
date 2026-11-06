@@ -1,5 +1,16 @@
+import { confirmModelAction } from "@/components/uitest/models/model-confirm"
+import { ModelSecretInput } from "@/components/uitest/models/model-secret-input"
+import { useUiTestProviderBatch } from "@/components/uitest/models/provider-batch"
+import { isProviderAvailable } from "@/lib/llm-model-keys"
+import { useProviderDraft } from "@/components/uitest/models/provider-draft"
+import { useModelDraftGuard } from "@/components/uitest/models/model-draft-guard"
+import { deleteUiTestProvider } from "@/components/uitest/models/provider-save"
+import { validateProviderDraft } from "@/components/uitest/models/provider-data"
+import { safeModelError } from "@/components/uitest/models/model-feedback"
+import "@/components/uitest/models/model-settings.css"
 import { useEffect, useMemo, useState, useRef } from "react"
-import { ChevronDown, ChevronRight, AlertCircle, CheckCircle2, Loader2, XCircle } from "lucide-react"
+import { AlertCircle, CheckCircle2, Loader2, XCircle, X, Trash2 } from "lucide-react"
+import { ModelConfigTitle, ProviderBrandIcon, modelEnableLabel, modelSaveLabel } from "../provider-brand-icon"
 import { useTranslation } from "react-i18next"
 import { invoke } from "@tauri-apps/api/core"
 import { Input } from "@/components/ui/input"
@@ -12,22 +23,29 @@ import { resolveConfig } from "../preset-resolver"
 import { normalizeEndpoint } from "@/lib/endpoint-normalizer"
 import { isTauri } from "@/lib/platform"
 import { AZURE_OPENAI_API_VERSION } from "@/lib/azure-openai"
-import { testLlmConnection, testLlmFunction, type ProviderTestResult } from "@/lib/connection-tests"
+import type { ProviderTestResult } from "@/lib/connection-tests"
 import { fetchLlmModelList } from "@/lib/settings-model-list"
-import { useBatchModelTest } from "../hooks/use-batch-model-test"
-import { ModelSelectInput } from "../model-select-input"
-import { SavedModelsManager } from "./saved-models-manager"
-import { CustomProviderCards } from "./custom-provider-cards"
-import { ResourceLink } from "../resource-link"
+import { mergeProviderModels, removeProviderModel } from "@/components/uitest/models/provider-data"
+import { UiTestProviderCard } from "@/components/uitest/models/provider-custom"
 import {
   MIN_USER_LLM_CONTEXT_SIZE,
-  normalizeProviderOverride,
   normalizeUserLlmMaxOutputTokens,
 } from "@/lib/llm-context-size"
 import { thinkingMinMaxTokens } from "@/lib/llm-providers"
 import { resolveCodexCliTimeoutMinutes } from "@/lib/codex-cli-timeout"
+import { resolveCodexSpeedMode } from "@/lib/codex-cli-speed"
 
-const MODEL_PARAM_DOCS_URL = "https://global.modelmesh.info/model"
+const UI_TEST_PROVIDER_HINTS: Record<string, string> = {
+  anthropic: "官方 Claude API",
+  "claude-code-cli": "使用本机 claude 命令及其登录状态，无需 API Key",
+  "codex-cli": "使用本机 codex 命令及其登录状态，无需 API Key",
+  "cursor-cli": "通过 cursor-api-proxy 使用本机 agent 命令，无需官方 API Key",
+  "antigravity-cli": "使用 local agy 命令及其登录状态，无需 API Key",
+  openai: "官方 OpenAI API",
+  google: "Google 生成式语言 API",
+  azure: "Azure OpenAI 资源接口；模型字段填写部署名称",
+  "ollama-local": "本机部署的 llama.cpp / Ollama 服务",
+}
 
 /**
  * Raise the declared output ceiling when the chosen reasoning level needs more
@@ -50,127 +68,48 @@ export function withOutputRoomForReasoning(
 }
 
 export function LlmProviderSection() {
-  const { t } = useTranslation()
   const providerConfigs = useWikiStore((s) => s.providerConfigs)
-  const setProviderConfigs = useWikiStore((s) => s.setProviderConfigs)
-  const activePresetId = useWikiStore((s) => s.activePresetId)
-  const setActivePresetId = useWikiStore((s) => s.setActivePresetId)
-  const setLlmConfig = useWikiStore((s) => s.setLlmConfig)
-  const llmConfig = useWikiStore((s) => s.llmConfig)
-
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  const [savedId, setSavedId] = useState<string | null>(null)
+  const [uiTestSource, setUiTestSource] = useState<"library" | "custom" | "presets">("library")
+  // 目录里没有任何默认选中项：必须先由用户挑一个提供方，才生成它的配置卡。
+  const [selectedPresetId, setSelectedPresetId] = useState("")
+  const [customDraftIds, setCustomDraftIds] = useState<string[]>([])
+  const [presetDraftIds, setPresetDraftIds] = useState<string[]>([])
+  const selectPreset = (id: string) => {
+    setSelectedPresetId(id)
+    setPresetDraftIds(ids => ids.includes(id) ? ids : [...ids, id])
+    setExpanded({ [id]: true })
+    // 选中具体提供方后收起目录，直接进入它的模型填写页。
+    setUiTestSource("library")
+  }
 
   function toggleExpand(id: string) {
-    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }))
+    setExpanded((prev) => ({ [id]: !prev[id] }))
   }
 
-  async function persist(newConfigs: typeof providerConfigs, newActive: string | null) {
-    const { saveProviderConfigs, saveActivePresetId, saveLlmConfig } = await import(
-      "@/lib/project-store"
-    )
-    await saveProviderConfigs(newConfigs)
-    await saveActivePresetId(newActive)
-    if (newActive) {
-      const preset = LLM_PRESETS.find((p) => p.id === newActive)
-      if (preset) {
-        const resolved = resolveConfig(preset, newConfigs[newActive], llmConfig)
-        setLlmConfig(resolved)
-        await saveLlmConfig(resolved)
-      }
-    }
-  }
-
-  function updateOverride(id: string, patch: ProviderOverride) {
-    const current = useWikiStore.getState().providerConfigs
-    const currentActive = useWikiStore.getState().activePresetId
-    const merged: ProviderOverride = normalizeProviderOverride({
-      ...(current[id] ?? {}),
-      ...patch,
-    })
-    const next = { ...current, [id]: merged }
-    setProviderConfigs(next)
-    persist(next, currentActive).catch(() => {})
-    // If this preset is active, refresh the resolved LlmConfig live.
-    if (id === currentActive) {
-      const preset = LLM_PRESETS.find((p) => p.id === id)
-      if (preset) setLlmConfig(resolveConfig(preset, merged, llmConfig))
-    }
-    setSavedId(id)
-    setTimeout(() => setSavedId((cur) => (cur === id ? null : cur)), 1500)
-  }
-
-  function toggleActive(id: string) {
-    const currentActive = useWikiStore.getState().activePresetId
-    const next = id === currentActive ? null : id
-    setActivePresetId(next)
-    persist(useWikiStore.getState().providerConfigs, next).catch(() => {})
-  }
-
-  function toggleEnabled(id: string) {
-    const current = useWikiStore.getState().providerConfigs
-    const currentActive = useWikiStore.getState().activePresetId
-    const entry = current[id]
-    const currentEnabled = entry?.enabled === true
-    const merged: ProviderOverride = { ...(entry ?? {}), enabled: !currentEnabled }
-    const next = { ...current, [id]: merged }
-    setProviderConfigs(next)
-    persist(next, currentActive).catch(() => {})
-  }
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold">{t("settings.sections.llm.title")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("settings.sections.llm.description")}
-        </p>
-      </div>
-
-      <div className="flex gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-200">
-        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-        <div className="min-w-0 space-y-1.5">
-          <div className="font-medium">
-            {t("settings.sections.llm.longWritingContextTitle")}
-          </div>
-          <p className="text-xs leading-relaxed text-emerald-800/80 dark:text-emerald-200/75">
-            {t("settings.sections.llm.longWritingContextHint")}
-          </p>
-          <ResourceLink
-            href={MODEL_PARAM_DOCS_URL}
-            title={t("settings.sections.llm.longWritingContextDocs")}
-          >
-            {t("settings.sections.llm.longWritingContextDocs")}
-          </ResourceLink>
+  const configured = [...new Set([...Object.keys(providerConfigs), ...customDraftIds, ...presetDraftIds])]
+    const presets = LLM_PRESETS.filter((preset) => preset.id !== "custom")
+    return (
+      <div data-ui="llm-library">
+        <div className="model-library-heading"><h3>我的模型配置</h3><span>{configured.length} 个配置</span></div>
+        <div className="model-library-list">
+          {configured.map((id) => {
+            const config = providerConfigs[id] ?? {}
+            const preset = LLM_PRESETS.find((item) => item.id === id)
+            return <div key={id}>{id.startsWith("custom-") ? <UiTestProviderCard id={id} isNew={customDraftIds.includes(id)} expanded={!!expanded[id]} onToggle={() => toggleExpand(id)} onRemoved={() => setCustomDraftIds((ids) => ids.filter((item) => item !== id))} /> : preset ? <UiTestPresetCard preset={{ ...preset, hint: UI_TEST_PROVIDER_HINTS[preset.id] ?? preset.hint }} expanded={!!expanded[id]} onToggle={() => toggleExpand(id)} onRemoved={() => setPresetDraftIds(ids => ids.filter(item => item !== id))} /> : <div className="model-library-item"><div><strong>{config.label || "自定义模型"}</strong><small>{config.model || "未选择模型"}</small></div></div>}</div>
+          })}
+          {!configured.length && <p>还没有模型配置。</p>}
         </div>
+        <div className="model-add-row">
+          <button type="button" className="model-add-card" data-guide="model.add-provider" onClick={() => setUiTestSource(uiTestSource === "presets" ? "library" : "presets")}>＋ 添加提供方</button>
+          <button type="button" className="model-add-card" data-guide="model.add-custom" onClick={() => { const id = `custom-${crypto.randomUUID()}`; setCustomDraftIds((ids) => [...ids, id]); setExpanded({ [id]: true }); setUiTestSource("library") }}>＋ 添加自定义模型</button>
+        </div>
+        {uiTestSource === "presets" && <div className="model-add-panel">
+          <div className="model-provider-grid">{presets.map((preset) => <button type="button" key={preset.id} data-guide={`model.preset.${preset.id}`} className={preset.id === selectedPresetId ? "is-selected" : ""} onClick={() => selectPreset(preset.id)}><span className="model-provider-grid-name"><ProviderBrandIcon presetId={preset.id} /><strong>{preset.label}</strong></span><small>{UI_TEST_PROVIDER_HINTS[preset.id] ?? preset.hint}</small></button>)}</div>
+        </div>}
       </div>
+    )
 
-      {/* Custom Provider Cards - 放在顶部 */}
-      <CustomProviderCards />
-
-      {/* Keep every provider; each provider defaults to at least the writing floor. */}
-      <div className="space-y-2">
-        {LLM_PRESETS.filter((p) => p.id !== "custom").map((preset) => {
-          const ov = providerConfigs[preset.id]
-          return (
-            <PresetRow
-              key={preset.id}
-              preset={preset}
-              override={ov}
-              isActive={activePresetId === preset.id}
-              isEnabled={ov?.enabled === true}
-              isExpanded={!!expanded[preset.id]}
-              savedHere={savedId === preset.id}
-              onToggleActive={() => toggleActive(preset.id)}
-              onToggleEnabled={() => toggleEnabled(preset.id)}
-              onToggleExpand={() => toggleExpand(preset.id)}
-              onChange={(patch) => updateOverride(preset.id, patch)}
-            />
-          )
-        })}
-      </div>
-    </div>
-  )
 }
 
 interface PresetRowProps {
@@ -179,11 +118,62 @@ interface PresetRowProps {
   isActive: boolean
   isEnabled: boolean
   isExpanded: boolean
-  savedHere: boolean
+  persisted: boolean
+  dirty: boolean
   onToggleActive: () => void
   onToggleEnabled: () => void
   onToggleExpand: () => void
   onChange: (patch: ProviderOverride) => void
+  manual: string
+  onManualChange: (value: string) => void
+  onReasoningModeChange: (mode: ReasoningMode) => void
+}
+
+function UiTestProviderModelInput({ model, savedModels, options, failedModels, onChange, manual, onManualChange: setManual }: { model: string; savedModels: SavedModel[]; options: string[]; failedModels: string[]; onChange: (patch: ProviderOverride) => void; manual: string; onManualChange: (value: string) => void }) {
+  const add = (values: string[], includeManual = false) => {
+    const source = includeManual ? { model, savedModels } : { model: "", savedModels }
+    const next = mergeProviderModels(source, values)
+    onChange({ model: next.model, savedModels: next.savedModels })
+    setManual("")
+  }
+  return <div className="model-field full"><span>模型</span><div className="model-tag-input">
+    {savedModels.map(item => <span key={item.id} className={failedModels.includes(item.model) ? "is-failed" : ""}>{item.model}<button type="button" aria-label={`移除模型${item.model}`} onClick={() => onChange(removeProviderModel({ model, savedModels }, item.model))}><X /></button></span>)}
+    <div className="model-tag-compose">
+      <input aria-label="模型" value={manual} onChange={event => setManual(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); add(manual.split(/[,，\n]+/), true) } }} placeholder={savedModels.length ? "输入模型名称，按回车添加" : "输入模型名称或拉取后选择"} spellCheck={false} />
+      <button type="button" className="model-button" disabled={!manual.trim()} onClick={() => add(manual.split(/[,，\n]+/), true)}>添加</button>
+    </div>
+  </div>{!!options.length && <div className="model-catalog"><div className="model-section-heading"><p>已拉取 {options.length} 个模型 · 已选择 {savedModels.length} 个</p><div className="model-actions"><button type="button" className="model-button ghost" onClick={() => add(options)}>全选</button><button type="button" className="model-button ghost" onClick={() => onChange({ savedModels: [], model: "" })}>清空</button></div></div><p className="model-note">点击模型加入上方输入框，再次点击可取消。</p><div className="model-catalog-list">{options.map(item => { const selected = savedModels.some(saved => saved.model === item); return <button type="button" key={item} aria-pressed={selected} className={failedModels.includes(item) ? "is-failed" : ""} onClick={() => selected ? onChange(removeProviderModel({ model, savedModels }, item)) : add([item])}>{item}</button> })}</div></div>}</div>
+}
+
+function UiTestPresetCard({ preset, expanded, onToggle, onRemoved }: { preset: LlmPreset; expanded: boolean; onToggle: () => void; onRemoved: () => void }) {
+  const initial = useMemo<ProviderOverride>(() => ({ model: preset.defaultModel ?? "", baseUrl: preset.baseUrl, apiMode: preset.apiMode, maxContextSize: preset.suggestedContextSize ?? MIN_USER_LLM_CONTEXT_SIZE, maxOutputTokens: preset.suggestedMaxOutputTokens ?? 131072 }), [preset.id])
+  const { draft, saved, dirty, saving, status, update, save, saveSwitch, reset, setStatus } = useProviderDraft(preset.id, initial)
+  const [manual, setManual] = useState("")
+  const [deleting, setDeleting] = useState(false)
+  const deletingRef = useRef(false)
+  const localCli = preset.provider === "claude-code" || preset.provider === "codex-cli" || preset.provider === "cursor-cli" || preset.provider === "antigravity-cli"
+  const enabled = isProviderAvailable(preset.id, saved ?? {})
+  const hasDraft = dirty || Boolean(manual.trim())
+  const saveConfig = () => save(manual.trim() ? "还有未加入列表的模型 ID，请先点击“添加”，再保存配置。" : validateProviderDraft(draft, { endpointRequired: !localCli && ["custom", "azure", "ollama"].includes(preset.provider), modelRequired: !localCli }))
+  const discard = () => { reset(); setManual("") }
+  useModelDraftGuard(`provider:${preset.id}`, "提供方配置", hasDraft, saving || deleting, saveConfig, discard)
+  async function remove() {
+    if (deletingRef.current || saving) return
+    deletingRef.current = true; setDeleting(true)
+    try { if (await deleteUiTestProvider(preset.id, saved, preset.label, hasDraft)) onRemoved() }
+    catch (error) { setStatus({ error: true, text: `删除失败：${safeModelError(error, [draft.apiKey ?? "", saved?.apiKey ?? ""])}；配置和当前输入已保留。` }) }
+    finally { deletingRef.current = false; setDeleting(false) }
+  }
+  const change = (patch: ProviderOverride) => {
+    if (Object.keys(patch).length && Object.keys(patch).every(key => ["enabled", "functionCallingEnabled", "localCliIsolation", "codexSpeedMode"].includes(key))) void saveSwitch(patch)
+    else update(patch)
+  }
+  return <div className="model-preset-card" data-model-provider={preset.id}>
+    <fieldset disabled={saving || deleting}>
+      <PresetRow preset={preset} override={draft} isActive={false} isEnabled={enabled} isExpanded={expanded} persisted={Boolean(saved)} dirty={hasDraft} onToggleActive={() => {}} onToggleEnabled={() => void saveSwitch({ enabled: !enabled })} onToggleExpand={onToggle} onChange={change} manual={manual} onManualChange={setManual} onReasoningModeChange={mode => void saveSwitch(withOutputRoomForReasoning({ ...saved?.reasoning, mode }, saved?.maxOutputTokens ?? initial.maxOutputTokens))} />
+    </fieldset>
+    {(expanded || hasDraft || status) && <div className="model-save-footer"><div><p role="status" aria-live="polite" className={status?.error ? "model-feedback error" : "model-feedback"}>{status?.text ?? (manual.trim() ? "还有未加入列表的模型 ID，请先点击“添加”。" : hasDraft ? "有未保存修改，开关已独立保存。" : saved ? "当前配置已保存。" : "提供方模型，尚未启用。")}</p><small>测试不会自动保存。</small></div><div className="model-actions"><button type="button" className="model-icon-button danger" title="删除配置" aria-label="删除配置" disabled={saving || deleting} onClick={() => void remove()}><Trash2 /></button>{hasDraft && <button type="button" className="model-button ghost" disabled={saving || deleting} onClick={async () => { if (await confirmModelAction("放弃本项未保存修改？")) discard() }}>放弃修改</button>}<button type="button" className="model-button primary" data-guide="model.save" disabled={!hasDraft || saving || deleting || Boolean(manual.trim())} onClick={() => void saveConfig()}>{saving ? "正在保存…" : "保存配置"}</button></div></div>}
+  </div>
 }
 
 type ProviderTestState =
@@ -201,11 +191,15 @@ function PresetRow({
   isActive: _isActive,
   isEnabled,
   isExpanded,
-  savedHere,
+  persisted,
+  dirty,
   onToggleActive: _onToggleActive,
   onToggleEnabled,
   onToggleExpand,
   onChange,
+  manual,
+  onManualChange,
+  onReasoningModeChange,
 }: PresetRowProps) {
   const { t } = useTranslation()
   const ov = override ?? {}
@@ -222,15 +216,24 @@ function PresetRow({
   const reasoning = ov.reasoning ?? { mode: "auto" as const }
   const localCliIsolation = ov.localCliIsolation === true
   const codexCliTimeoutMinutes = resolveCodexCliTimeoutMinutes(ov.codexCliTimeoutMinutes)
+  const codexSpeedMode = resolveCodexSpeedMode(ov.codexSpeedMode)
+  const codexFastEnabled = codexSpeedMode === "fast"
   const showLocalCliIsolation = preset.provider === "claude-code"
   const isCursorCliProvider = preset.provider === "cursor-cli"
-  const [testState, setTestState] = useState<ProviderTestState>({ kind: "idle" })
+  const [, setTestState] = useState<ProviderTestState>({ kind: "idle" })
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [modelListState, setModelListState] = useState<ModelActionState>(null)
-  const [isModelSelectionExpanded, setIsModelSelectionExpanded] = useState(false)
-  const savedModelsTextareaRef = useRef<HTMLTextAreaElement>(null)
-  const { modelTestState, runBatchTest, retryFailed } = useBatchModelTest(t)
-  const hasConfig = !!apiKey || !!ov.baseUrl || !!ov.model || !!ov.azureApiVersion || !!ov.azureModelFamily
+  const [, setIsModelSelectionExpanded] = useState(false)
+  const uiTestCurrentOverride = useRef(JSON.stringify(ov))
+  const uiTestRevision = useRef(0), uiTestMounted = useRef(true)
+  if (uiTestCurrentOverride.current !== JSON.stringify(ov)) {
+    uiTestCurrentOverride.current = JSON.stringify(ov)
+    uiTestRevision.current++
+  }
+  useEffect(() => { uiTestMounted.current = true; return () => { uiTestMounted.current = false; uiTestRevision.current++ } }, [])
+  useEffect(() => { setTestState({ kind: "idle" }); setModelListState(null) }, [ov])
+  const uiTestBatch = useUiTestProviderBatch(ov, true)
+  const { modelTestState, runBatchTest, retryFailed } = uiTestBatch
   // Local CLI providers authenticate via their own existing login state
   // (inherited by the spawned subprocess), so no API key field is shown.
   // Ollama ditto for its local-only model. Cursor CLI uses cursor-api-proxy;
@@ -239,7 +242,8 @@ function PresetRow({
     preset.provider !== "ollama" &&
     preset.provider !== "claude-code" &&
     preset.provider !== "codex-cli" &&
-    preset.provider !== "cursor-cli"
+    preset.provider !== "cursor-cli" &&
+    preset.provider !== "antigravity-cli"
 
   const resolvedConfig = useMemo(
     () => resolveConfig(preset, ov, useWikiStore.getState().llmConfig),
@@ -251,20 +255,8 @@ function PresetRow({
     setModelListState(null)
   }, [apiKey, apiMode, baseUrl, preset.id, preset.provider])
 
-  async function runProviderTest(kind: "connection" | "function") {
-    setTestState({
-      kind: "running",
-      label: kind === "connection"
-        ? t("settings.sections.llm.testingConnection")
-        : t("settings.sections.llm.testingFunction"),
-    })
-    const result = kind === "connection"
-      ? await testLlmConnection(resolvedConfig)
-      : await testLlmFunction(resolvedConfig)
-    setTestState({ kind: "done", result })
-  }
-
   async function loadModelOptions() {
+    const captured = uiTestRevision.current
     setModelListState({
       loading: true,
       success: false,
@@ -273,6 +265,7 @@ function PresetRow({
 
     try {
       const result = await fetchLlmModelList(resolvedConfig)
+      if (!uiTestMounted.current || uiTestRevision.current !== captured) return
       setModelOptions(result.models)
 
       // 拉取成功后自动展开模型选择区域
@@ -284,6 +277,7 @@ function PresetRow({
         message: t("settings.sections.shared.modelListSuccess", { count: result.models.length }),
       })
     } catch (error) {
+      if (!uiTestMounted.current || uiTestRevision.current !== captured) return
       setModelListState({
         loading: false,
         success: false,
@@ -292,30 +286,6 @@ function PresetRow({
         }),
       })
     }
-  }
-
-  function toggleModelSelection(modelId: string) {
-    const currentSaved = ov.savedModels ?? []
-    const isSelected = currentSaved.some((m) => m.model === modelId)
-
-    let updatedModels: SavedModel[]
-
-    if (isSelected) {
-      updatedModels = currentSaved.filter((m) => m.model !== modelId)
-    } else {
-      const newModel: SavedModel = {
-        id: `model-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        name: modelId,
-        model: modelId,
-        apiKey: apiKey || undefined,
-        // Cursor CLI endpoint is managed dynamically — never bake 8765 into saved models.
-        customEndpoint: isCursorCliProvider ? undefined : (baseUrl || undefined),
-        createdAt: Date.now(),
-      }
-      updatedModels = [...currentSaved, newModel]
-    }
-
-    onChange({ savedModels: updatedModels })
   }
 
   async function runSelectedModelTest() {
@@ -332,72 +302,33 @@ function PresetRow({
         isEnabled ? "border-primary/60 bg-primary/5" : "border-border"
       }`}
     >
-      {/* Outer row — always visible */}
-      <div className="flex items-center gap-3 px-3 py-2.5">
-        <button
-          type="button"
-          onClick={onToggleExpand}
-          className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent"
+      <div className="model-provider-head">
+        <ModelConfigTitle
+          expanded={isExpanded}
+          onToggle={onToggleExpand}
+          name={preset.label}
+          saveLabel={modelSaveLabel(persisted, dirty)}
+          enableLabel={modelEnableLabel(isEnabled)}
+          hint={preset.hint}
+          mark={<ProviderBrandIcon presetId={preset.id} />}
           title={isExpanded ? t("settings.sections.llm.collapse") : t("settings.sections.llm.expand")}
-        >
-          {isExpanded ? (
-            <ChevronDown className="h-4 w-4" />
-          ) : (
-            <ChevronRight className="h-4 w-4" />
-          )}
-        </button>
-
+        />
         <button
           type="button"
-          onClick={onToggleExpand}
-          className="min-w-0 flex-1 text-left"
-        >
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium">{preset.label}</span>
-            {hasConfig && !isEnabled && (
-              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                {t("settings.sections.llm.configuredBadge")}
-              </span>
-            )}
-            {isEnabled && (ov.savedModels ?? []).length > 0 && (
-              <span className="shrink-0 rounded-full bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                {t("settings.sections.llm.enabledBadge", { count: (ov.savedModels ?? []).length })}
-              </span>
-            )}
-            {savedHere && (
-              <span className="shrink-0 text-[10px] text-emerald-600">{t("settings.sections.llm.savedBadge")}</span>
-            )}
-          </div>
-          {preset.hint && (
-            <div className="mt-0.5 truncate text-xs text-muted-foreground">
-              {preset.hint}
-            </div>
-          )}
-        </button>
-
-        {/* Toggle switch — 启用/停用 */}
-        <button
-          type="button"
+          role="switch"
+          aria-checked={isEnabled}
           onClick={onToggleEnabled}
-          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors ${
-            isEnabled
-              ? "border-primary bg-primary"
-              : "border-muted-foreground/30 bg-muted-foreground/20 hover:bg-muted-foreground/30"
-          }`}
+          className="model-switch"
           title={isEnabled ? t("settings.sections.llm.toggleOff") : t("settings.sections.llm.toggleOn")}
           aria-label={isEnabled ? t("settings.sections.llm.deactivate") : t("settings.sections.llm.activate")}
         >
-          <span
-            className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm ring-1 ring-black/10 transition-transform ${
-              isEnabled ? "translate-x-4" : "translate-x-0.5"
-            }`}
-          />
+          <span />
         </button>
       </div>
 
       {/* Expanded config panel */}
       {isExpanded && (
-        <div className="space-y-4 border-t bg-background/50 px-4 py-3">
+        <div className="model-preset-body space-y-4 border-t bg-background/50">
           {preset.provider === "custom" && (
             <div className="space-y-2">
               <Label>{t("settings.sections.llm.apiMode")}</Label>
@@ -480,6 +411,7 @@ function PresetRow({
 
           {preset.provider === "claude-code" && <ClaudeCliStatusPill />}
           {preset.provider === "codex-cli" && <CodexCliStatusPill />}
+          {preset.provider === "antigravity-cli" && <AntigravityCliStatusPill />}
           {isCursorCliProvider && <CursorCliStatusPill />}
 
           {isCursorCliProvider && (
@@ -540,6 +472,46 @@ function PresetRow({
 
           {preset.provider === "codex-cli" && (
             <div className="space-y-2 rounded-md border p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">
+                    {t("settings.sections.llm.codexSpeed")}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {codexFastEnabled
+                      ? t("settings.sections.llm.codexSpeedFast")
+                      : t("settings.sections.llm.codexSpeedStandard")}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={codexFastEnabled}
+                  aria-label={t("settings.sections.llm.codexSpeed")}
+                  onClick={() => onChange({
+                    codexSpeedMode: codexFastEnabled ? "standard" : "fast",
+                  })}
+                  className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors ${
+                    codexFastEnabled
+                      ? "border-primary bg-primary"
+                      : "border-muted-foreground/30 bg-muted-foreground/20 hover:bg-muted-foreground/30"
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm ring-1 ring-black/10 transition-transform ${
+                      codexFastEnabled ? "translate-x-4" : "translate-x-0.5"
+                    }`}
+                  />
+                </button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.sections.llm.codexSpeedHint")}
+              </p>
+            </div>
+          )}
+
+          {preset.provider === "codex-cli" && (
+            <div className="space-y-2 rounded-md border p-3">
               <Label>{t("settings.sections.llm.codexCliTimeout")}</Label>
               <div className="flex items-center gap-2">
                 <Input
@@ -568,116 +540,27 @@ function PresetRow({
           )}
 
           {needsApiKey && (
-            <div className="space-y-2">
+            <div className="space-y-2" data-guide="model.api-key">
               <Label>{t("settings.sections.llm.apiKey")}</Label>
-              <Input
-                type="password"
-                value={apiKey}
-                onChange={(e) => onChange({ apiKey: e.target.value })}
-                placeholder={
-                  preset.provider === "custom"
-                    ? t("settings.sections.llm.apiKeyPlaceholderCustom")
-                    : t("settings.sections.llm.apiKeyPlaceholder")
-                }
-              />
+              <ModelSecretInput value={apiKey} onChange={(apiKey) => onChange({ apiKey })} />
             </div>
           )}
 
-          <div className="space-y-2">
-            <Label>
-              {preset.provider === "azure"
-                ? t("settings.sections.llm.deploymentName", "Deployment name")
-                : t("settings.sections.llm.model")}
-            </Label>
-            <ModelPicker
-              value={model}
-              suggestions={preset.suggestedModels ?? []}
-              fetchedModels={modelOptions}
-              placeholder={preset.defaultModel ?? "e.g. gpt-4o"}
-              selectPlaceholder={t("settings.sections.shared.modelSelectPlaceholder")}
-              inputPlaceholder={t("settings.sections.shared.modelManualPlaceholder")}
-              onChange={(v) => onChange({ model: v })}
-            />
-          </div>
-
-          {/* 拉取模型后的多选标签区域 */}
-          {modelOptions.length > 0 && (
-            <div className="space-y-2 border-t pt-4">
-              <div className="flex items-center justify-between">
-                <button
-                  type="button"
-                  onClick={() => setIsModelSelectionExpanded(!isModelSelectionExpanded)}
-                  className="flex items-center gap-2 text-xs font-medium hover:text-primary"
-                >
-                  <span>{t("settings.sections.llm.fetchedModelsCount", { count: modelOptions.length })}</span>
-                  <span className="text-muted-foreground">{t("settings.sections.llm.selectedModelsCount", { count: (ov.savedModels ?? []).length })}</span>
-                </button>
-              </div>
-
-              {isModelSelectionExpanded && (
-                <>
-                  <div className="text-xs text-muted-foreground">
-                    {t("settings.sections.llm.toggleModelHint")}
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {modelOptions.map((modelId) => {
-                      const isSelected = (ov.savedModels ?? []).some((m) => m.model === modelId)
-                      return (
-                        <button
-                          key={modelId}
-                          type="button"
-                          onClick={() => toggleModelSelection(modelId)}
-                          className={`rounded-md border px-2 py-1 text-xs transition-colors ${
-                            isSelected
-                              ? "border-primary bg-primary text-primary-foreground"
-                              : "border-border bg-background hover:bg-accent"
-                          }`}
-                        >
-                          {modelId}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* 已选模型显示 */}
-          {(ov.savedModels ?? []).length > 0 && (
-            <div className="space-y-2">
-              <Label className="text-xs">{t("settings.sections.llm.selectedModels")}</Label>
-              <textarea
-                ref={savedModelsTextareaRef}
-                value={(ov.savedModels ?? []).map((m) => m.model).join(", ")}
-                readOnly
-                placeholder={t("settings.sections.llm.pleaseFetchModels")}
-                className="flex min-h-[40px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
-                rows={1}
-              />
-            </div>
-          )}
-
-          <SavedModelsManager
+          <UiTestProviderModelInput
+            manual={manual}
+            onManualChange={onManualChange}
+            model={model}
             savedModels={ov.savedModels ?? []}
-            onChange={(models) => onChange({ savedModels: models })}
-            hideEndpoint={isCursorCliProvider}
-            buildTestConfig={(saved) => ({
-              ...resolvedConfig,
-              model: saved.model,
-              apiKey: saved.apiKey?.trim() || resolvedConfig.apiKey,
-              // Cursor CLI ignores saved endpoints; other providers may override.
-              customEndpoint: isCursorCliProvider
-                ? resolvedConfig.customEndpoint
-                : (saved.customEndpoint?.trim() || resolvedConfig.customEndpoint),
-            })}
+            options={modelOptions}
+            failedModels={modelTestState?.failedModels ?? []}
+            onChange={onChange}
           />
 
           <div className="space-y-2">
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
+                data-guide="model.fetch"
                 onClick={() => void loadModelOptions()}
                 disabled={modelListState?.loading || modelTestState?.loading}
                 className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
@@ -688,6 +571,7 @@ function PresetRow({
               </button>
               <button
                 type="button"
+                data-guide="model.test"
                 onClick={() => void runSelectedModelTest()}
                 disabled={modelListState?.loading || modelTestState?.loading}
                 className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
@@ -699,13 +583,13 @@ function PresetRow({
             </div>
             {modelListState?.message ? (
               <p className={`text-xs ${modelListState.success ? "text-emerald-600" : "text-destructive"}`}>
-                {modelListState.message}
+                {safeModelError(modelListState.message, [apiKey])}
               </p>
             ) : null}
             {modelTestState?.message ? (
               <div className="space-y-1.5">
                 <p className={`text-xs ${modelTestState.success ? "text-emerald-600" : "text-destructive"}`}>
-                  {modelTestState.message}
+                  {safeModelError(modelTestState.message, [apiKey])}
                 </p>
                 {modelTestState.failedModels && modelTestState.failedModels.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2">
@@ -732,7 +616,7 @@ function PresetRow({
             ) : null}
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-2" data-guide="model.context">
             <Label>{t("settings.sections.llm.contextWindow")}</Label>
             <ContextSizeSelector
               value={context}
@@ -740,7 +624,7 @@ function PresetRow({
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-2" data-guide="model.output">
             <Label>{t("settings.sections.llm.maxOutputTokens")}</Label>
             <OutputTokensSelector
               value={maxOutputTokens}
@@ -749,58 +633,18 @@ function PresetRow({
             />
           </div>
 
-          <ReasoningControls
-            value={reasoning}
-            onChange={(next) => onChange(withOutputRoomForReasoning(next, maxOutputTokens))}
-          />
+          {preset.provider !== "cursor-cli" && preset.provider !== "antigravity-cli" && (
+            <ReasoningControls
+              value={reasoning}
+              onChange={(next) => onChange(withOutputRoomForReasoning(next, maxOutputTokens))}
+              onModeChange={onReasoningModeChange}
+            />
+          )}
 
           <FunctionCallingControls
             enabled={ov.functionCallingEnabled !== false}
             onChange={(functionCallingEnabled) => onChange({ functionCallingEnabled })}
           />
-
-          <div className="space-y-2 rounded-md border p-3">
-            <div>
-              <div className="text-sm font-medium">
-                {t("settings.sections.llm.providerTests")}
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t("settings.sections.llm.providerTestsHint")}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void runProviderTest("connection")}
-                disabled={testState.kind === "running"}
-                className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {t("settings.sections.llm.testConnection")}
-              </button>
-              <button
-                type="button"
-                onClick={() => void runProviderTest("function")}
-                disabled={testState.kind === "running"}
-                className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {t("settings.sections.llm.testFunction")}
-              </button>
-            </div>
-            {testState.kind === "running" && (
-              <p className="text-xs text-muted-foreground">{testState.label}</p>
-            )}
-            {testState.kind === "done" && (
-              <div
-                className={`rounded-md border px-3 py-2 text-xs ${
-                  testState.result.ok
-                    ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
-                    : "border-destructive/40 bg-destructive/5 text-destructive"
-                }`}
-              >
-                {testState.result.message}
-              </div>
-            )}
-          </div>
         </div>
       )}
     </div>
@@ -830,7 +674,7 @@ export function FunctionCallingControls({
         <div className="text-xs text-muted-foreground">
           {t(
             "settings.sections.llm.functionCalling.hint",
-            "关闭后，使用该供应商时请求不携带 tools/tool_choice（含内置工具与 MCP），用于兼容不支持工具调用的中转或本地模型。",
+            "关闭后，使用该供应商时请求不携带 tools/tool_choice（含内置工具），用于兼容不支持工具调用的中转或本地模型。",
           )}
         </div>
       </div>
@@ -870,9 +714,11 @@ export function FunctionCallingControls({
 export function ReasoningControls({
   value,
   onChange,
+  onModeChange,
 }: {
   value: ReasoningConfig
   onChange: (value: ReasoningConfig) => void
+  onModeChange: (mode: ReasoningMode) => void
 }) {
   const { t } = useTranslation()
   const modes: { value: ReasoningMode; label: string }[] = [
@@ -895,7 +741,7 @@ export function ReasoningControls({
             <button
               key={m.value}
               type="button"
-              onClick={() => onChange({ ...value, mode: m.value })}
+              onClick={() => onModeChange(m.value)}
               className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
                 active
                   ? "border-primary bg-primary text-primary-foreground"
@@ -1003,96 +849,11 @@ function EndpointField({ value, mode, placeholder, onChange }: EndpointFieldProp
   )
 }
 
-interface ModelPickerProps {
-  value: string
-  suggestions: string[]
-  fetchedModels: string[]
-  placeholder: string
-  selectPlaceholder: string
-  inputPlaceholder: string
-  onChange: (value: string) => void
-}
-
-/**
- * Model input with a chip-based suggestion row above it. The input stays
- * free-text so users can always type unlisted models (fine-tunes, preview
- * IDs, local Ollama tags, etc.). Clicking a chip just fills the input.
- *
- * The currently-selected chip (if the value matches one of the suggestions)
- * gets the accent highlight so users can see at a glance which preset
- * model is active without reading the text field. Presets with no
- * `suggestedModels` render the input alone.
- */
-function ModelPicker({
-  value,
-  suggestions,
-  fetchedModels,
-  placeholder,
-  selectPlaceholder,
-  inputPlaceholder,
-  onChange,
-}: ModelPickerProps) {
-  const { t } = useTranslation()
-  const hasSuggestions = suggestions.length > 0
-  const isCustom = hasSuggestions && value.length > 0 && !suggestions.includes(value)
-  const mergedOptions = useMemo(
-    () => Array.from(new Set([...fetchedModels, value].map((item) => item.trim()).filter(Boolean))),
-    [fetchedModels, value],
-  )
-
-  return (
-    <div className="space-y-2">
-      {hasSuggestions && (
-        <div className="flex flex-wrap gap-1.5">
-          {suggestions.map((m) => {
-            const active = m === value
-            return (
-              <button
-                key={m}
-                type="button"
-                onClick={() => onChange(m)}
-                className={`rounded-md border px-2 py-0.5 text-xs font-mono transition-colors ${
-                  active
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border bg-background hover:bg-accent hover:text-accent-foreground"
-                }`}
-                title={t("settings.sections.llm.useModel", { model: m })}
-              >
-                {m}
-              </button>
-            )
-          })}
-          <button
-            type="button"
-            onClick={() => onChange("")}
-            className={`rounded-md border px-2 py-0.5 text-xs transition-colors ${
-              isCustom
-                ? "border-primary/60 bg-primary/10 text-primary"
-                : "border-dashed border-muted-foreground/40 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            }`}
-            title={t("settings.sections.llm.typeCustomModel")}
-          >
-            {isCustom
-              ? t("settings.sections.llm.customModelBadge", { model: value })
-              : t("settings.sections.llm.customModel")}
-          </button>
-        </div>
-      )}
-      <ModelSelectInput
-        value={value}
-        options={mergedOptions}
-        onChange={onChange}
-        selectPlaceholder={selectPlaceholder}
-        inputPlaceholder={inputPlaceholder || placeholder}
-      />
-    </div>
-  )
-}
-
 interface DetectResult {
   installed: boolean
   version: string | null
   path: string | null
+  model?: string | null
   appServerReady?: boolean
   dynamicToolsReady?: boolean
   models?: string[]
@@ -1106,6 +867,108 @@ interface DetectResult {
  * panel. The error message comes straight from the Rust side — it
  * already tailors the hint (macOS quarantine, missing binary, etc).
  */
+function AntigravityCliStatusPill() {
+  const { t } = useTranslation()
+  const [state, setState] = useState<"loading" | "ok" | "err">("loading")
+  const [result, setResult] = useState<DetectResult | null>(null)
+
+  async function detect() {
+    setState("loading")
+    if (!isTauri()) {
+      setResult({ installed: false, version: null, path: null, error: t("settings.sections.llm.cliStatus.desktopOnly") })
+      setState("err")
+      return
+    }
+    try {
+      const detected = await invoke<DetectResult>("antigravity_cli_detect")
+      setResult(detected)
+      setState(detected.installed && (detected.models?.length ?? 0) > 0 && !detected.error ? "ok" : "err")
+    } catch (error) {
+      setResult({
+        installed: false,
+        version: null,
+        path: null,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      setState("err")
+    }
+  }
+
+  useEffect(() => {
+    void detect()
+  }, [])
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <Label className="m-0">{t("settings.sections.llm.cliStatus.title")}</Label>
+        <button
+          type="button"
+          onClick={() => void detect()}
+          className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          disabled={state === "loading"}
+        >
+          {state === "loading"
+            ? t("settings.sections.llm.cliStatus.checking")
+            : t("settings.sections.llm.cliStatus.recheck")}
+        </button>
+      </div>
+      <div
+        className={`flex items-start gap-1.5 rounded-md border px-2 py-1.5 text-xs ${
+          state === "ok"
+            ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
+            : state === "err"
+              ? "border-rose-500/40 bg-rose-500/5 text-rose-700 dark:text-rose-400"
+              : "border-border bg-background/50 text-muted-foreground"
+        }`}
+      >
+        {state === "loading" && <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />}
+        {state === "ok" && <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+        {state === "err" && <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+        <div className="min-w-0 flex-1 space-y-0.5">
+          {state === "loading" && <div>{t("settings.sections.llm.cliStatus.antigravityDetecting")}</div>}
+          {state === "ok" && (
+            <>
+              <div>
+                {t("settings.sections.llm.cliStatus.antigravityReady", {
+                  versionSuffix: result?.version ? ` ${result.version}` : "",
+                })}
+              </div>
+              {result?.path && (
+                <div className="truncate font-mono text-[0.625rem] text-muted-foreground">
+                  {result.path}
+                </div>
+              )}
+              {result?.model && (
+                <div className="text-muted-foreground">当前默认模型：{result.model}</div>
+              )}
+              <div className="text-muted-foreground">
+                {t("settings.sections.llm.cliStatus.authErrorPrefix")}{" "}
+                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[0.625rem]">
+                  agy
+                </code>{" "}
+                {t("settings.sections.llm.cliStatus.antigravityAuthErrorSuffix")}
+              </div>
+            </>
+          )}
+          {state === "err" && (
+            <>
+              <div>{result?.error ?? t("settings.sections.llm.cliStatus.antigravityUnavailable")}</div>
+              <div className="text-muted-foreground">
+                {t("settings.sections.llm.cliStatus.installPrefix")}{" "}
+                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[0.625rem]">
+                  curl -fsSL https://antigravity.google/cli/install.sh | bash
+                </code>{" "}
+                {t("settings.sections.llm.cliStatus.installSuffix")}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ClaudeCliStatusPill() {
   const { t } = useTranslation()
   const [state, setState] = useState<"loading" | "ok" | "err">("loading")
@@ -1174,7 +1037,7 @@ function ClaudeCliStatusPill() {
                 })}
               </div>
               {result?.path && (
-                <div className="truncate font-mono text-[10px] text-muted-foreground">
+                <div className="truncate font-mono text-[0.625rem] text-muted-foreground">
                   {result.path}
                 </div>
               )}
@@ -1185,7 +1048,7 @@ function ClaudeCliStatusPill() {
                   Wiki bug. */}
               <div className="text-muted-foreground">
                 {t("settings.sections.llm.cliStatus.authErrorPrefix")}{" "}
-                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[10px]">
+                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[0.625rem]">
                   claude
                 </code>{" "}
                 {t("settings.sections.llm.cliStatus.claudeAuthErrorSuffix")}
@@ -1197,7 +1060,7 @@ function ClaudeCliStatusPill() {
               <div>{result?.error ?? t("settings.sections.llm.cliStatus.claudeUnavailable")}</div>
               <div className="text-muted-foreground">
                 {t("settings.sections.llm.cliStatus.installPrefix")}{" "}
-                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[10px]">
+                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[0.625rem]">
                   npm i -g @anthropic-ai/claude-code
                 </code>{" "}
                 {t("settings.sections.llm.cliStatus.installSuffix")}
@@ -1278,13 +1141,13 @@ function CodexCliStatusPill() {
                 })}
               </div>
               {result?.path && (
-                <div className="truncate font-mono text-[10px] text-muted-foreground">
+                <div className="truncate font-mono text-[0.625rem] text-muted-foreground">
                   {result.path}
                 </div>
               )}
               <div className="text-muted-foreground">
                 {t("settings.sections.llm.cliStatus.authErrorPrefix")}{" "}
-                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[10px]">
+                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[0.625rem]">
                   codex
                 </code>{" "}
                 {t("settings.sections.llm.cliStatus.codexAuthErrorSuffix")}
@@ -1296,7 +1159,7 @@ function CodexCliStatusPill() {
               <div>{result?.error ?? t("settings.sections.llm.cliStatus.codexUnavailable")}</div>
               <div className="text-muted-foreground">
                 {t("settings.sections.llm.cliStatus.installPrefix")}{" "}
-                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[10px]">
+                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[0.625rem]">
                   npm install -g @openai/codex
                 </code>{" "}
                 {t("settings.sections.llm.cliStatus.installSuffix")}
@@ -1316,10 +1179,19 @@ function CursorCliStatusPill() {
   const [proxyError, setProxyError] = useState<string | null>(null)
   const [proxyHealthy, setProxyHealthy] = useState(false)
   const [proxyBase, setProxyBase] = useState<string | null>(null)
+  const [agentAction, setAgentAction] = useState<"idle" | "checking" | "updating">("idle")
+  const [updateNote, setUpdateNote] = useState<{
+    kind: "ok" | "info" | "err"
+    text: string
+  } | null>(null)
 
-  async function detect() {
-    setState("loading")
-    setProxyError(null)
+  const actionBusy = agentAction !== "idle"
+
+  async function detect(opts?: { silent?: boolean }) {
+    if (!opts?.silent) {
+      setState("loading")
+      setProxyError(null)
+    }
     if (!isTauri()) {
       setAgent({
         installed: false,
@@ -1367,24 +1239,136 @@ function CursorCliStatusPill() {
     }
   }
 
+  async function checkAgentUpdate() {
+    if (actionBusy) return
+    setAgentAction("checking")
+    setUpdateNote(null)
+    try {
+      const { checkCursorAgentUpdate } = await import("@/lib/cursor-cli-proxy")
+      const about = await checkCursorAgentUpdate()
+      if (about.version) {
+        setAgent((prev) => ({
+          installed: true,
+          version: about.version,
+          path: about.path ?? prev?.path ?? null,
+          error: about.error,
+        }))
+      }
+      if (!about.installed) {
+        setUpdateNote({
+          kind: "err",
+          text: about.error ?? t("settings.sections.llm.cliStatus.cursorAgentUnavailable"),
+        })
+        return
+      }
+      if (about.latest_status === "up_to_date") {
+        setUpdateNote({
+          kind: "ok",
+          text: t("settings.sections.llm.cliStatus.cursorLatestUpToDate"),
+        })
+        return
+      }
+      if (about.latest_status === "update_available") {
+        setUpdateNote({
+          kind: "info",
+          text: t("settings.sections.llm.cliStatus.cursorLatestAvailable", {
+            version: about.latest_version ?? "?",
+          }),
+        })
+        return
+      }
+      setUpdateNote({
+        kind: "err",
+        text: about.error ?? t("settings.sections.llm.cliStatus.cursorLatestUnknown"),
+      })
+    } catch (e) {
+      setUpdateNote({
+        kind: "err",
+        text: e instanceof Error ? e.message : String(e),
+      })
+    } finally {
+      setAgentAction("idle")
+    }
+  }
+
+  async function runAgentUpdate() {
+    if (actionBusy) return
+    setAgentAction("updating")
+    setUpdateNote(null)
+    try {
+      const { updateCursorAgent } = await import("@/lib/cursor-cli-proxy")
+      const result = await updateCursorAgent()
+      if (result.ok) {
+        setUpdateNote({
+          kind: "ok",
+          text: t("settings.sections.llm.cliStatus.cursorUpdateOk", {
+            version: result.version ?? "?",
+          }),
+        })
+        await detect({ silent: true })
+        return
+      }
+      const busy = /already running/i.test(result.error ?? "")
+      setUpdateNote({
+        kind: "err",
+        text: busy
+          ? t("settings.sections.llm.cliStatus.cursorUpdateBusy")
+          : t("settings.sections.llm.cliStatus.cursorUpdateFailed", {
+              message: result.error ?? result.output,
+            }),
+      })
+    } catch (e) {
+      setUpdateNote({
+        kind: "err",
+        text: t("settings.sections.llm.cliStatus.cursorUpdateFailed", {
+          message: e instanceof Error ? e.message : String(e),
+        }),
+      })
+    } finally {
+      setAgentAction("idle")
+    }
+  }
+
   useEffect(() => {
     void detect()
   }, [])
 
+  const pillBusy = state === "loading" || actionBusy
+
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Label className="m-0">{t("settings.sections.llm.cliStatus.title")}</Label>
         <button
           type="button"
           onClick={() => void detect()}
-          className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          disabled={state === "loading"}
+          className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+          disabled={pillBusy}
         >
           {state === "loading"
             ? t("settings.sections.llm.cliStatus.checking")
             : t("settings.sections.llm.cliStatus.recheck")}
         </button>
+        {agent?.installed && (
+          <>
+            <button
+              type="button"
+              onClick={() => void checkAgentUpdate()}
+              className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+              disabled={pillBusy}
+            >
+              {t("settings.sections.llm.cliStatus.cursorCheckUpdate")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void runAgentUpdate()}
+              className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+              disabled={pillBusy}
+            >
+              {t("settings.sections.llm.cliStatus.cursorUpdateNow")}
+            </button>
+          </>
+        )}
       </div>
       <div
         className={`flex items-start gap-1.5 rounded-md border px-2 py-1.5 text-xs ${
@@ -1410,7 +1394,7 @@ function CursorCliStatusPill() {
                   : (agent?.error ?? t("settings.sections.llm.cliStatus.cursorAgentUnavailable"))}
               </div>
               {agent?.path && (
-                <div className="truncate font-mono text-[10px] text-muted-foreground">
+                <div className="truncate font-mono text-[0.625rem] text-muted-foreground">
                   {agent.path}
                 </div>
               )}
@@ -1423,15 +1407,47 @@ function CursorCliStatusPill() {
               </div>
               <div className="text-muted-foreground">
                 {t("settings.sections.llm.cliStatus.authErrorPrefix")}{" "}
-                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[10px]">
+                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[0.625rem]">
                   agent login
                 </code>{" "}
                 {t("settings.sections.llm.cliStatus.cursorAuthErrorSuffix")}
               </div>
+              {agent?.installed && (
+                <div className="text-muted-foreground">
+                  {t("settings.sections.llm.cliStatus.cursorUpdatePrefix")}{" "}
+                  <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[0.625rem]">
+                    agent update
+                  </code>{" "}
+                  {t("settings.sections.llm.cliStatus.cursorUpdateSuffix")}
+                </div>
+              )}
+              {agentAction === "checking" && (
+                <div className="text-muted-foreground">
+                  {t("settings.sections.llm.cliStatus.cursorUpdateChecking")}
+                </div>
+              )}
+              {agentAction === "updating" && (
+                <div className="text-muted-foreground">
+                  {t("settings.sections.llm.cliStatus.cursorUpdating")}
+                </div>
+              )}
+              {updateNote && (
+                <div
+                  className={
+                    updateNote.kind === "err"
+                      ? "text-rose-700 dark:text-rose-400"
+                      : updateNote.kind === "ok"
+                        ? "text-emerald-700 dark:text-emerald-400"
+                        : "text-muted-foreground"
+                  }
+                >
+                  {updateNote.text}
+                </div>
+              )}
               {!agent?.installed && (
                 <div className="text-muted-foreground">
                   {t("settings.sections.llm.cliStatus.installPrefix")}{" "}
-                  <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[10px]">
+                  <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[0.625rem]">
                     curl https://cursor.com/install -fsS | bash
                   </code>{" "}
                   {t("settings.sections.llm.cliStatus.installSuffix")}
@@ -1439,11 +1455,7 @@ function CursorCliStatusPill() {
               )}
               {agent?.installed && !proxyHealthy && (
                 <div className="text-muted-foreground">
-                  {t("settings.sections.llm.cliStatus.installPrefix")}{" "}
-                  <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[10px]">
-                    npx cursor-api-proxy
-                  </code>{" "}
-                  {t("settings.sections.llm.cliStatus.installSuffix")}
+                  {t("settings.sections.llm.cliStatus.cursorProxyNpxHint")}
                 </div>
               )}
             </>

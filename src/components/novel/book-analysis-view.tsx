@@ -1,7 +1,9 @@
+import "@/components/uitest/ui-test-tools.css"
+import type { LlmRequestCacheTrace } from "@/lib/llm-request-trace"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { BookAnalysisInputDialog } from "./book-analysis-input-dialog"
-import { BookAnalysisImportTaskPanel } from "./book-analysis-import-task-panel"
+import { BookAnalysisWorkbench } from "./book-analysis-workbench"
 import { BookAnalysisLibraryLayout } from "./book-analysis-library-layout"
 import { BookAnalysisResultViewer } from "./book-analysis-result-viewer"
 import { ChapterSelectionPanel } from "./chapter-selection-panel"
@@ -10,7 +12,8 @@ import { useBookAnalysisImportStore } from "@/stores/book-analysis-import-store"
 import { useBookAnalysisPipelineStore } from "@/stores/book-analysis-pipeline-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { resolveDefaultModel } from "@/lib/novel/model-resolver"
-import { streamChat, type ChatMessage } from "@/lib/llm-client"
+import type { ChatMessage } from "@/lib/llm-client"
+import { callAnalysisModelText } from "@/lib/novel/book-analysis/analysis-model-call"
 import { yieldToBrowserFrame } from "@/lib/novel/yield-to-browser"
 import {
   toBookAnalysisResult,
@@ -18,11 +21,10 @@ import {
   type BookAnalysisLibraryBook,
 } from "@/lib/novel/book-analysis/library-state"
 import { toast } from "@/lib/toast"
-import { BookOpen, Check, Loader2, Plus, X } from "lucide-react"
+import { Plus } from "lucide-react"
 import type {
   AnalysisDepth,
-  SixDimensionProgressItem,
-  SixDimensionStatus,
+  ExtractedCharacter,
   RecognizedCharacter,
 } from "@/lib/novel/book-analysis/types"
 import { useCharacterExtraction, type ChapterSelectionData } from "./hooks/use-character-extraction"
@@ -35,12 +37,14 @@ import {
   loadBookStoryFrameworkChapters,
 } from "@/lib/novel/book-analysis/story-framework-extraction"
 import { loadPlotFrameworkLibrary, upsertPlotFramework } from "@/lib/novel/plot-framework-library"
+import { bridgePlotFrameworkToStoryFramework } from "@/lib/novel/story-simulation/plot-framework-bridge"
 import type { PlotFramework } from "@/lib/novel/plot-framework"
 import type { BatchImportCandidate } from "@/lib/novel/book-analysis/batch-import-types"
 import {
   analysisProgressKey,
   type AnalysisChapterRange,
   type AnalysisSkill,
+  type StyleAnalysisDepth,
 } from "@/lib/novel/book-analysis/analysis-pipeline-types"
 import { loadChapterList } from "@/lib/novel/book-analysis/analysis-engine"
 import { BookAnalysisRunDialog } from "./book-analysis-run-dialog"
@@ -48,43 +52,26 @@ import { BookAnalysisCharacterSkillDialog } from "./book-analysis-character-skil
 import { CharacterSelectionPanel } from "./character-selection-panel"
 import { OutlineCreatorDialog } from "./outline-editor"
 import { generateSkillsForCharacters } from "@/lib/novel/book-analysis/skill-generator"
-import { selectCharacterCandidates } from "@/lib/novel/book-analysis/character-candidate-selection"
-import { loadBookAnalysisResult } from "@/lib/novel/book-analysis/result-loader"
-import { readFile } from "@/commands/fs"
+import {
+  recognizedCharacterToExtracted,
+  selectCharacterCandidates,
+} from "@/lib/novel/book-analysis/character-candidate-selection"
+import { analysisTabForSkills, type BookAnalysisModuleTab } from "./book-analysis-module-view"
+import { readFile, fileExists, deleteFile } from "@/commands/fs"
 import { joinPath } from "@/lib/path-utils"
 import { saveRecognizedCharacters } from "@/lib/novel/book-analysis/recognized-character-store"
+import { deleteStoryMapHistory } from "@/lib/novel/book-analysis/story-map-history"
 
 interface StoryFrameworkSelectionData {
   book: BookAnalysisLibraryBook
   chapters: ChapterSelectionData["chapters"]
 }
 
-/** 6 维度状态图标的视觉映射 */
-function DimensionStatusIcon({ status }: { status: SixDimensionStatus }) {
-  if (status === "done") {
-    return <Check className="h-3.5 w-3.5 text-emerald-500" />
-  }
-  if (status === "failed") {
-    return <X className="h-3.5 w-3.5 text-destructive" />
-  }
-  if (status === "running") {
-    return <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-  }
-  return <span className="h-3.5 w-3.5 inline-block rounded-full border border-muted-foreground/40" />
-}
-
-/** 6 维度状态文字颜色 */
-function dimensionTextClass(
-  status: SixDimensionStatus,
-  isCurrent: boolean
-): string {
-  if (status === "running" || isCurrent) return "text-foreground font-medium"
-  if (status === "done") return "text-muted-foreground"
-  if (status === "failed") return "text-destructive"
-  return "text-muted-foreground/60"
-}
-
 export function BookAnalysisView() {
+  return <BookAnalysisWorkbench />
+}
+
+export function LegacyBookAnalysisView() {
   const [inputDialogOpen, setInputDialogOpen] = useState(false)
   const [viewingResultPath, setViewingResultPath] = useState<string | null>(null)
   const [chapterSelectionData, setChapterSelectionData] = useState<ChapterSelectionData | null>(null)
@@ -106,6 +93,8 @@ export function BookAnalysisView() {
     initialSkills: AnalysisSkill[]
     lockedSkills?: AnalysisSkill[]
     initialRange?: AnalysisChapterRange | null
+    initialModelKey?: string
+    initialStyleDepth?: StyleAnalysisDepth
   } | null>(null)
   const [characterSkillDialogOpen, setCharacterSkillDialogOpen] = useState(false)
   const [characterSkillGenerating, setCharacterSkillGenerating] = useState(false)
@@ -114,8 +103,14 @@ export function BookAnalysisView() {
     selectedIds: string[]
   } | null>(null)
   const [pipelineCharacterConfirming, setPipelineCharacterConfirming] = useState(false)
+  // fix/view-result-routing：任务完成「查看结果」路由到对应 Skill 页签（受控页签）
+  const [moduleActiveTab, setModuleActiveTab] = useState<BookAnalysisModuleTab>("characters")
+  // fix/view-result-routing：故事任务完成后递增，触发故事页签重新读取历史导图
+  const [storyMapRefreshKey, setStoryMapRefreshKey] = useState(0)
 
   const currentProject = useWikiStore((s) => s.project)
+  const setActiveView = useWikiStore((s) => s.setActiveView)
+  const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
   const storeSelectedBookId = useBookAnalysisStore((s) => s.selectedLibraryBookId)
   const sidebarRefreshCounter = useBookAnalysisStore((s) => s.sidebarRefreshCounter)
   const pendingRecognitionTaskId = useBookAnalysisStore((s) => s.pendingRecognitionTaskId)
@@ -127,17 +122,9 @@ export function BookAnalysisView() {
   const setShowResultViewer = useBookAnalysisStore((s) => s.setShowResultViewer)
   const importBatches = useBookAnalysisImportStore((s) => s.batches)
   const importTasks = useBookAnalysisImportStore((s) => s.tasks)
-  const importPanelCollapsed = useBookAnalysisImportStore((s) => s.panelCollapsed)
   const importRevision = useBookAnalysisImportStore((s) => s.revision)
   const initializeImportProject = useBookAnalysisImportStore((s) => s.initializeProject)
   const createImportBatch = useBookAnalysisImportStore((s) => s.createBatch)
-  const continueImportTask = useBookAnalysisImportStore((s) => s.continueTask)
-  const regenerateImportTask = useBookAnalysisImportStore((s) => s.regenerateTask)
-  const cancelImportTask = useBookAnalysisImportStore((s) => s.cancelTask)
-  const cancelAllQueuedImportTasks = useBookAnalysisImportStore((s) => s.cancelAllQueued)
-  const deleteFailedImportTask = useBookAnalysisImportStore((s) => s.deleteFailedTask)
-  const renameCompletedImportTask = useBookAnalysisImportStore((s) => s.renameCompletedTask)
-  const setImportPanelCollapsed = useBookAnalysisImportStore((s) => s.setPanelCollapsed)
   const pipelineTasks = useBookAnalysisPipelineStore((s) => s.tasks)
   const pipelineChunks = useBookAnalysisPipelineStore((s) => s.chunks)
   const pipelineProgresses = useBookAnalysisPipelineStore((s) => s.progresses)
@@ -183,6 +170,13 @@ export function BookAnalysisView() {
     [libraryState.books, selectedBookId],
   )
 
+  const recordBookRequestTrace = useCallback((bookPath: string, stage: string, trace: LlmRequestCacheTrace) => {
+    const state = useBookAnalysisPipelineStore.getState()
+    const task = state.tasks.filter((item) => item.bookPath === bookPath).sort((a, b) => b.updatedAt - a.updatedAt)[0]
+    if (task) void state.recordTaskRequestTrace(task.id, { ...trace, stage })
+      .catch(() => console.warn("拆书附属请求用量保存失败"))
+  }, [])
+
   const reloadStoryFrameworks = useCallback(async () => {
     if (!currentProject?.path || !selectedLibraryBook) {
       setStoryFrameworks([])
@@ -198,13 +192,13 @@ export function BookAnalysisView() {
 
   // 作品库操作钩子
   const {
-    styleExtracting,
     addingToSoul,
     reloadLibraryState,
-    handleLibraryExtractStyle,
     handleLibraryToggleStyle,
     handleLibraryAddSkillsToSoul,
     handleLibraryDeleteBook,
+    handleLibraryDeleteStyle,
+    handleLibraryDeleteCharacter,
     handleLibraryReextractCharacters,
   } = useLibraryOperations({
     currentProjectPath: currentProject?.path ?? null,
@@ -213,6 +207,7 @@ export function BookAnalysisView() {
     setLibraryState,
     setSelectedBookId,
     setSelectedCharacterId,
+    selectedCharacterId,
     setChapterSelectionData,
     llmConfig,
     providerConfigs,
@@ -225,20 +220,47 @@ export function BookAnalysisView() {
 
   const handleGenerateSelectedCharacterSkills = useCallback(async (characterIds: string[]) => {
     if (!selectedLibraryBook || characterIds.length === 0) return
-    const selected = selectCharacterCandidates(selectedLibraryBook.characters).filter((character) => characterIds.includes(character.id))
-    if (selected.length === 0) return
+    // fix/generate-in-background：立即关闭弹窗，生成转入后台执行，
+    // 避免多个角色逐个 LLM 生成时长长地卡在「正在生成」弹窗里。
     setCharacterSkillGenerating(true)
+    setCharacterSkillDialogOpen(false)
     try {
-      await generateSkillsForCharacters(selected, selectedLibraryBook.metadata, selectedLibraryBook.path, llmConfig)
+      const extractedCandidates = selectCharacterCandidates(selectedLibraryBook.characters)
+      let selected: ExtractedCharacter[]
+      if ((selectedLibraryBook.recognizedCharacters?.length ?? 0) > 0) {
+        // fix/recognized-in-dialog：弹窗展示的是「已识别角色」，按 id 选出；
+        // 优先复用该角色的深度分析结果（数据更全），没有则用识别角色兜底。
+        selected = selectedLibraryBook.recognizedCharacters
+          .filter((character) => characterIds.includes(character.id))
+          .map((recognized) =>
+            extractedCandidates.find((candidate) => candidate.name === recognized.name)
+              ?? recognizedCharacterToExtracted(recognized),
+          )
+        // 持久化为角色档案（characters/{id}.json），之后弹窗/角色面板直接可读
+        if (selected.length > 0) {
+          const { persistCharacterToDisk } = await import("@/lib/novel/book-analysis/character-disk-store")
+          for (const character of selected) {
+            await persistCharacterToDisk(selectedLibraryBook.path, character)
+          }
+        }
+      } else {
+        // 兼容旧数据：无识别记录时从深度分析角色推导
+        selected = extractedCandidates.filter((character) => characterIds.includes(character.id))
+      }
+      if (selected.length === 0) {
+        toast.info("没有匹配到可生成的角色。")
+        return
+      }
+      await generateSkillsForCharacters(selected, selectedLibraryBook.metadata, selectedLibraryBook.path, llmConfig,
+        undefined, undefined, (trace) => recordBookRequestTrace(selectedLibraryBook.path, "skill-generation", trace))
       await reloadLibraryState()
-      setCharacterSkillDialogOpen(false)
       toast.success(`已生成 ${selected.length} 个角色 Skill，可在角色面板中查看并加入自定义灵魂库。`)
     } catch (error) {
       toast.error(`角色 Skill 生成失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setCharacterSkillGenerating(false)
     }
-  }, [llmConfig, reloadLibraryState, selectedLibraryBook])
+  }, [llmConfig, reloadLibraryState, selectedLibraryBook, recordBookRequestTrace])
 
   // 角色识别钩子
   const {
@@ -260,16 +282,25 @@ export function BookAnalysisView() {
     providerConfigs,
   })
 
-  // 角色特征提取钩子
-  const {
-    handleResumeFailedExtraction,
-  } = useCharacterExtraction({
+  // 提取钩子仍要挂载（内部有副作用）；旧的「继续生成」按钮随死代码一起删除后，
+  // 返回值已无人使用，就不再解构。
+  useCharacterExtraction({
     chapterSelectionData,
     setChapterSelectionData,
     recognizedCharacters,
     selectedCharacterIds,
     reloadLibraryState,
   })
+
+  const handleSelectBook = useCallback((bookId: string) => {
+    const book = libraryState.books.find((item) => item.id === bookId)
+    setSelectedBookId(bookId)
+    setSelectedCharacterId(null)
+    clearRecognition()
+    const analysisStore = useBookAnalysisStore.getState()
+    analysisStore.setSelectedLibraryBookId(bookId)
+    if (book) analysisStore.setCurrentResult(toBookAnalysisResult(book))
+  }, [clearRecognition, libraryState.books])
 
   useEffect(() => {
     if (!currentProject?.path) return
@@ -321,24 +352,42 @@ export function BookAnalysisView() {
       if (task.status === "completed" && !notifiedPipelineTaskIdsRef.current.has(`${task.id}:completed`)) {
         notifiedPipelineTaskIdsRef.current.add(`${task.id}:completed`)
         void reloadLibraryState()
+        // 故事任务完成：递增刷新键，故事页签的历史导图自动重新读取
+        if (task.selectedSkills.includes("story")) {
+          setStoryMapRefreshKey((key) => key + 1)
+        }
         if (task.batchId) continue
         if (task.selectedSkills.includes("characters") && task.selectedSkills.length === 1) {
           toast.success("角色信息已提取完成，可选择角色生成 Skill。", {
             persistent: true,
-            action: { label: "打开角色信息", onClick: handleOpenCharacterSkillSelection },
+            action: {
+              label: "打开角色信息",
+              onClick: () => {
+                // fix/view-result-routing：定位到任务所属作品后再打开弹窗
+                if (libraryState.books.some((book) => book.id === task.bookId)) {
+                  handleSelectBook(task.bookId)
+                } else {
+                  setSelectedBookId(task.bookId)
+                }
+                setCharacterSkillDialogOpen(true)
+              },
+            },
           })
         } else {
+          // fix/view-result-routing：按任务技能路由到对应 Skill 页签，
+          // 直接展示角色/故事/文风的生成结果（旧版查看器不再使用）
+          const tab = analysisTabForSkills(task.selectedSkills)
           toast.success("拆书任务已完成，结果已更新。", {
             persistent: true,
             action: {
               label: "查看结果",
-              onClick: async () => {
-                const loadedResult = await loadBookAnalysisResult(task.projectPath, task.bookId)
-                if (loadedResult) {
-                  useBookAnalysisStore.getState().setCurrentResult(loadedResult)
+              onClick: () => {
+                if (libraryState.books.some((book) => book.id === task.bookId)) {
+                  handleSelectBook(task.bookId)
+                } else {
+                  setSelectedBookId(task.bookId)
                 }
-                setViewingResultPath(task.projectPath)
-                setShowResultViewer(true)
+                setModuleActiveTab(tab)
               },
             },
           })
@@ -351,7 +400,7 @@ export function BookAnalysisView() {
         }
       }
     }
-  }, [currentProject?.path, pipelineTasks, reloadLibraryState, handleOpenCharacterSkillSelection])
+  }, [currentProject?.path, pipelineTasks, reloadLibraryState, handleOpenCharacterSkillSelection, handleSelectBook, libraryState.books])
 
   useEffect(() => {
     const projectPath = currentProject?.path ?? null
@@ -530,15 +579,10 @@ export function BookAnalysisView() {
         },
         { role: "user", content: prompt },
       ]
-      let output = ""
-      await new Promise<void>((resolve, reject) => {
-        void streamChat(llmConfig, messages, {
-          onToken: (token) => {
-            output += token
-          },
-          onDone: resolve,
-          onError: reject,
-        })
+      // 思考-only 的流在 HTTP 层是成功的，这里原先没有任何重试，
+      // 用户只会拿到一条 17K 字符的思考诊断 toast。交给共享实现重试一次。
+      const output = await callAnalysisModelText(llmConfig, messages, {
+        cancelMessage: "用户取消故事框架提取",
       })
       const now = Date.now()
       const framework = buildPlotFrameworkDraftFromBookStoryOutput({
@@ -552,7 +596,14 @@ export function BookAnalysisView() {
         toast.error("故事框架提取失败：AI 输出缺少钩子/铺垫/爽点/结尾钩子。")
         return
       }
-      await upsertPlotFramework(currentProject.path, framework)
+      const saved = await upsertPlotFramework(currentProject.path, framework)
+      /*
+       * 这是第三个发布方（workbench 版本确认、story-analysis-adapter 之外的那个「旧框架入口」）。
+       * 只写跨作品库的话，从这里提取的故事框架同样进不了 storyFrameworkBinding —— 也就是没打通。
+       * 桥接 id 由 framework.id 派生，而这个 id 本身带 createdAt，所以每次提取各自一份，
+       * 与跨作品库里「每次提取新增一条」的行为一致。
+       */
+      await bridgePlotFrameworkToStoryFramework(currentProject.path, saved)
       await reloadStoryFrameworks()
       useBookAnalysisStore.getState().triggerSidebarRefresh()
       toast.success("故事框架已提取并入库。")
@@ -572,6 +623,9 @@ export function BookAnalysisView() {
     .filter((task) => task.bookId === selectedLibraryBook?.id)
     .sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null
 
+  // 同书所有分析任务（含并行运行的多个）；默认聚焦最新任务，其余在「并行分析任务」区各自显示进度
+  const bookAnalysisTasks = pipelineTasks.filter((task) => task.bookId === selectedLibraryBook?.id)
+
   const openPipelineDialog = useCallback(async (skill: AnalysisSkill) => {
     if (!selectedLibraryBook) return
     const existingModule = selectedLibraryBook.analysisManifest?.modules[skill]
@@ -580,6 +634,7 @@ export function BookAnalysisView() {
       bookPath: selectedLibraryBook.path,
       selectedSkills: [skill],
       forceNew: true,
+      forceRefresh: true,
     })
     if (!created) return
     setPipelineDialog({
@@ -588,8 +643,11 @@ export function BookAnalysisView() {
       initialSkills: [skill],
       lockedSkills: [skill],
       initialRange: existingModule?.range ?? null,
+      // 沿用上一次该书用过的模型与深度，省得每次重选
+      initialModelKey: selectedPipelineTask?.modelKey ?? "",
+      initialStyleDepth: selectedPipelineTask?.styleDepth,
     })
-  }, [createAwaitingRangeTask, selectedLibraryBook])
+  }, [createAwaitingRangeTask, selectedLibraryBook, selectedPipelineTask])
 
   const openExistingPipelineDialog = useCallback(async () => {
     if (!selectedLibraryBook || !selectedPipelineTask) return
@@ -598,6 +656,8 @@ export function BookAnalysisView() {
       chapters: await loadChapterList(selectedLibraryBook.path),
       initialSkills: selectedPipelineTask.selectedSkills,
       initialRange: selectedPipelineTask.range,
+      initialModelKey: selectedPipelineTask.modelKey ?? "",
+      initialStyleDepth: selectedPipelineTask.styleDepth,
     })
   }, [selectedLibraryBook, selectedPipelineTask])
 
@@ -674,7 +734,12 @@ export function BookAnalysisView() {
       const recognized = await llmRecognizeCharacters({
         chapters: chapterContents,
         llmConfig,
-        sourceBook: bookPath,
+        sourceBook: bookPath, bookPath,
+        forceRefresh: useBookAnalysisPipelineStore.getState().tasks.find((task) => task.id === taskId)?.forceRefresh,
+        onRequestTrace: (trace) => {
+          void useBookAnalysisPipelineStore.getState().recordTaskRequestTrace(taskId, { ...trace, stage: "recognition" })
+            .catch(() => console.warn("角色识别用量保存失败"))
+        },
       })
       if (recognized.length === 0) {
         throw new Error("AI 没有识别出角色，请确认所选章节包含人物，或更换模型后重试")
@@ -702,90 +767,76 @@ export function BookAnalysisView() {
     }
   }, [failPipelineTask, llmConfig, openPipelineCharacterPicker, providerConfigs, setRuntimeProgress, setTaskRecognizedCharacters])
 
-  const runImportTaskAction = useCallback((action: () => Promise<void>, failureMessage: string) => {
-    void action().catch((error) => {
-      console.error(failureMessage, error)
-      toast.error(`${failureMessage}：${error instanceof Error ? error.message : String(error)}`)
-    })
-  }, [])
-
-  const handleContinueImportTask = useCallback((taskId: string) => {
-    runImportTaskAction(() => continueImportTask(taskId), "继续导入失败")
-  }, [continueImportTask, runImportTaskAction])
-
-  const handleRegenerateImportTask = useCallback((taskId: string) => {
-    runImportTaskAction(() => regenerateImportTask(taskId), "重新生成失败")
-  }, [regenerateImportTask, runImportTaskAction])
-
-  const handleCancelImportTask = useCallback((taskId: string) => {
-    runImportTaskAction(() => cancelImportTask(taskId), "取消导入失败")
-  }, [cancelImportTask, runImportTaskAction])
-
-  const handleCancelAllQueuedImportTasks = useCallback((batchId: string) => {
-    runImportTaskAction(() => cancelAllQueuedImportTasks(batchId), "取消等待任务失败")
-  }, [cancelAllQueuedImportTasks, runImportTaskAction])
-
-  const handleDeleteFailedImportTask = useCallback((taskId: string) => {
-    runImportTaskAction(() => deleteFailedImportTask(taskId), "删除失败任务失败")
-  }, [deleteFailedImportTask, runImportTaskAction])
-
-  const handleRenameCompletedImportTask = useCallback((taskId: string, title: string) => {
-    runImportTaskAction(() => renameCompletedImportTask(taskId, title), "重命名作品失败")
-  }, [renameCompletedImportTask, runImportTaskAction])
-
-  const handleSelectBook = useCallback((bookId: string) => {
-    const book = libraryState.books.find((item) => item.id === bookId)
-    setSelectedBookId(bookId)
-    setSelectedCharacterId(null)
-    clearRecognition()
-    const analysisStore = useBookAnalysisStore.getState()
-    analysisStore.setSelectedLibraryBookId(bookId)
-    if (book) analysisStore.setCurrentResult(toBookAnalysisResult(book))
-  }, [clearRecognition, libraryState.books])
-
-  const handleOpenImportedBook = useCallback((bookId: string) => {
-    if (!libraryState.books.some((item) => item.id === bookId)) {
-      toast.error("未找到已导入作品，请刷新后重试。")
-      return
+  const handleDeleteStoryMap = useCallback(async (id: string) => {
+    if (!currentProject?.path || !selectedLibraryBook) return
+    try {
+      if (id === "legacy") {
+        // 旧格式：仅根目录 story-map.{json,html}，直接删除这两份引用文件
+        for (const name of ["story-map.json", "story-map.html"]) {
+          const target = joinPath(selectedLibraryBook.path, name)
+          if (await fileExists(target)) await deleteFile(target)
+        }
+      } else {
+        await deleteStoryMapHistory(selectedLibraryBook.path, id)
+      }
+      useBookAnalysisStore.getState().triggerSidebarRefresh()
+      toast.success("已删除该故事导图。")
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error("[删除故事导图失败]", msg)
+      toast.error(`删除故事导图失败：${msg}`)
     }
-    handleSelectBook(bookId)
-  }, [handleSelectBook, libraryState.books])
+  }, [currentProject?.path, selectedLibraryBook])
 
-  const libraryLayout = (
+  const libraryContent = (
     <>
     <BookAnalysisLibraryLayout
       state={libraryState}
       selectedBookId={selectedLibraryBook?.id ?? selectedBookId}
       selectedCharacterId={selectedCharacterId}
-      extractingStyle={styleExtracting}
+      extractingStyle={
+        selectedPipelineTask?.status === "running" && selectedPipelineTask.currentSkill === "style"
+      }
       extractingCharacters={chapterSelectionData !== null}
       extractingStoryFramework={storyFrameworkExtracting}
       addingToSoul={addingToSoul}
       storyFrameworks={storyFrameworks}
-      importTaskPanel={
-        <BookAnalysisImportTaskPanel
-          batches={importBatches}
-          tasks={importTasks}
-          collapsed={importPanelCollapsed}
-          onCollapsedChange={setImportPanelCollapsed}
-          onContinue={handleContinueImportTask}
-          onRegenerate={handleRegenerateImportTask}
-          onCancel={handleCancelImportTask}
-          onCancelAllQueued={handleCancelAllQueuedImportTasks}
-          onDeleteFailed={handleDeleteFailedImportTask}
-          onRenameCompleted={handleRenameCompletedImportTask}
-          onOpenBook={handleOpenImportedBook}
-        />
-      }
       analysisTask={selectedPipelineTask}
-      analysisChunks={pipelineChunks.filter((chunk) => chunk.taskId === selectedPipelineTask?.id)}
+      analysisChunks={pipelineChunks}
       analysisProgresses={pipelineProgresses}
+      analysisTasks={bookAnalysisTasks}
+      analysisActiveTab={moduleActiveTab}
+      onAnalysisActiveTabChange={setModuleActiveTab}
+      storyMapRefreshKey={storyMapRefreshKey}
+      onDeleteCharacter={handleLibraryDeleteCharacter}
+      onDeleteStyle={handleLibraryDeleteStyle}
+      onDeleteStoryMap={handleDeleteStoryMap}
+      onParallelPauseTask={(taskId) => {
+        void pausePipelineTask(taskId).catch((error) => {
+          toast.error(`暂停失败：${error instanceof Error ? error.message : String(error)}`)
+        })
+      }}
+      onParallelContinueTask={(taskId) => {
+        void continuePipelineTask(taskId).catch((error) => {
+          toast.error(`继续失败：${error instanceof Error ? error.message : String(error)}`)
+        })
+      }}
+      onParallelCancelTask={(taskId) => {
+        void cancelPipelineTask(taskId).catch((error) => {
+          toast.error(`取消失败：${error instanceof Error ? error.message : String(error)}`)
+        })
+      }}
       onSelectBook={handleSelectBook}
       onSelectCharacter={setSelectedCharacterId}
       onImportNovel={() => setInputDialogOpen(true)}
-      onExtractStyle={handleLibraryExtractStyle}
+      onExtractStyle={() => void openPipelineDialog("style")}
       onExtractStoryFramework={handleOpenStoryFrameworkSelection}
       onCreateOutlineFromFramework={(frameworkId) => setOutlineCreatorFrameworkId(frameworkId)}
+      onOpenStoryMap={(bookPath) => {
+        setSelectedFile(null)
+        setActiveView("wiki")
+        setSelectedFile(`${bookPath}/story-map.html`)
+      }}
       onToggleStyle={handleLibraryToggleStyle}
       onAddSelectedSkillsToSoul={handleLibraryAddSkillsToSoul}
       onOpenSkillSelection={handleOpenCharacterSkillSelection}
@@ -801,22 +852,13 @@ export function BookAnalysisView() {
             )
           : undefined
       }
-      onPauseAnalysisTask={selectedPipelineTask ? () => {
-        void pausePipelineTask(selectedPipelineTask.id).catch((error) => {
-          toast.error(`暂停失败：${error instanceof Error ? error.message : String(error)}`)
-        })
-      } : undefined}
-      onContinueAnalysisTask={selectedPipelineTask ? () => {
-        void continuePipelineTask(selectedPipelineTask.id).catch((error) => {
-          toast.error(`继续失败：${error instanceof Error ? error.message : String(error)}`)
-        })
-      } : undefined}
-      onRetryAnalysisTask={selectedPipelineTask ? () => {
-        const skill = selectedPipelineTask.currentSkill
-        const failedChunkId = skill ? selectedPipelineTask.modules[skill].failedChunkId : null
+      onParallelRetryTask={selectedPipelineTask ? (taskId) => {
+        const target = bookAnalysisTasks.find((t) => t.id === taskId) ?? selectedPipelineTask
+        const skill = target.currentSkill
+        const failedChunkId = skill ? target.modules[skill].failedChunkId : null
         const retry = skill && failedChunkId
-          ? retryPipelineChunk(selectedPipelineTask.id, skill, failedChunkId)
-          : continuePipelineTask(selectedPipelineTask.id)
+          ? retryPipelineChunk(target.id, skill, failedChunkId)
+          : continuePipelineTask(target.id)
         void retry.catch((error) => toast.error(`重试失败：${error instanceof Error ? error.message : String(error)}`))
       } : undefined}
       onRetryAnalysisChunk={selectedPipelineTask ? (skill, chunkId) => {
@@ -824,12 +866,8 @@ export function BookAnalysisView() {
           toast.error(`重试区块失败：${error instanceof Error ? error.message : String(error)}`)
         })
       } : undefined}
-      onCancelAnalysisTask={selectedPipelineTask ? () => {
-        void cancelPipelineTask(selectedPipelineTask.id).catch((error) => {
-          toast.error(`取消失败：${error instanceof Error ? error.message : String(error)}`)
-        })
-      } : undefined}
       onDeleteBook={(bookId) => handleLibraryDeleteBook(bookId, selectedBookId)}
+      hideBookHeader
     />
     {pipelineDialog && (
       <BookAnalysisRunDialog
@@ -838,12 +876,14 @@ export function BookAnalysisView() {
         initialSkills={pipelineDialog.initialSkills}
         lockedSkills={pipelineDialog.lockedSkills}
         initialRange={pipelineDialog.initialRange}
+        initialModelKey={pipelineDialog.initialModelKey}
+        initialStyleDepth={pipelineDialog.initialStyleDepth}
         onOpenChange={(open) => !open && setPipelineDialog(null)}
-        onSubmit={async ({ range, selectedSkills }) => {
+        onSubmit={async ({ range, selectedSkills, modelKey, styleDepth }) => {
           const taskId = pipelineDialog.taskId
           const chapters = pipelineDialog.chapters
           const bookPath = useBookAnalysisPipelineStore.getState().tasks.find((t) => t.id === taskId)?.bookPath
-          await configureTaskRange(taskId, range, selectedSkills)
+          await configureTaskRange(taskId, range, selectedSkills, { modelKey, styleDepth })
           setPipelineDialog(null)
           if (selectedSkills.includes("characters")) {
             if (!bookPath) {
@@ -924,72 +964,23 @@ export function BookAnalysisView() {
     </>
   )
 
+  const libraryLayout = (
+    <section data-ui-page="analysis" data-ui-state={selectedPipelineTask?.status ?? (selectedLibraryBook ? "book" : "empty")}>
+      <header data-ui="tool-heading">
+        <div>
+          <nav aria-label="面包屑" className="ui-test-breadcrumb"><span>拆书库</span><span aria-hidden="true">/</span><span aria-current="page">{selectedLibraryBook?.metadata.title ?? "作品"}</span></nav>
+          <h1 className="ui-test-page-title">读懂一个故事的构成。</h1>
+        </div>
+        <Button size="sm" onClick={() => setInputDialogOpen(true)}><Plus className="mr-1.5 h-3.5 w-3.5" />导入作品</Button>
+      </header>
+      <div data-ui="analysis-content">{libraryContent}</div>
+    </section>
+  )
+
   if (tasks.length === 0) {
     return (
       <>
         {libraryLayout}
-        {false && (
-        <div className="flex h-full items-center justify-center p-8">
-        <div className="max-w-md text-center space-y-6">
-          <div className="flex justify-center">
-            <div className="rounded-full bg-primary/10 p-6">
-              <BookOpen className="h-12 w-12 text-primary" />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <h2 className="text-2xl font-bold">拆书作品</h2>
-            <p className="text-muted-foreground">
-              从小说中提取角色信息，生成可复用的角色 Skill，添加到自定义灵魂库
-            </p>
-          </div>
-
-          <div className="space-y-3">
-            <div className="text-sm text-muted-foreground space-y-2">
-              <div className="flex items-start gap-2">
-                <div className="rounded-full bg-primary/20 w-6 h-6 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <span className="text-xs font-medium">1</span>
-                </div>
-                <div className="text-left">
-                  <div className="font-medium text-foreground">上传小说文件</div>
-                  <div>支持TXT格式，自动识别章节（可能包含500-1000章）</div>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-2">
-                <div className="rounded-full bg-primary/20 w-6 h-6 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <span className="text-xs font-medium">2</span>
-                </div>
-                <div className="text-left">
-                  <div className="font-medium text-foreground">选择分析范围</div>
-                  <div>勾选需要分析的章节，支持全选或选择特定范围</div>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-2">
-                <div className="rounded-full bg-primary/20 w-6 h-6 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <span className="text-xs font-medium">3</span>
-                </div>
-                <div className="text-left">
-                  <div className="font-medium text-foreground">提取角色与生成Skill</div>
-                  <div>全面分析角色信息，生成可复用技能，添加到自定义灵魂</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <Button onClick={() => setInputDialogOpen(true)} size="lg" className="w-full">
-            <Plus className="mr-2 h-4 w-4" />
-            选择小说并拆书
-          </Button>
-
-          <div className="text-xs text-muted-foreground">
-            支持本地TXT文件，自动识别章节结构
-          </div>
-        </div>
-        </div>
-        )}
-
         <BookAnalysisInputDialog
           open={inputDialogOpen}
           onOpenChange={setInputDialogOpen}
@@ -1032,153 +1023,6 @@ export function BookAnalysisView() {
   return (
     <div className="flex h-full flex-col">
       {libraryLayout}
-      {false && (
-      <div className="hidden">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold">拆书作品</h2>
-        <Button onClick={() => setInputDialogOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          拆书作品
-        </Button>
-      </div>
-
-      <div className="space-y-4">
-        {tasks.map((task) => (
-          <div
-            key={task.id}
-            className="border rounded-lg p-4 space-y-3 cursor-pointer transition-colors hover:bg-muted/40 focus:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-primary/30"
-            role="button"
-            tabIndex={0}
-            onClick={() => setViewingResultPath(task.projectPath)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault()
-                setViewingResultPath(task.projectPath)
-              }
-            }}
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="font-medium">
-                  {task.metadata?.title || "未命名作品"}
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  角色提取与Skill生成
-                </div>
-              </div>
-              <div className="text-sm text-muted-foreground">
-                {task.status === "running" && "进行中"}
-                {task.status === "paused" && "已暂停"}
-                {task.status === "completed" && "已完成"}
-                {task.status === "error" && "出错"}
-              </div>
-            </div>
-
-            {task.status === "running" && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">{task.progress.stageLabel}</span>
-                  <span className="font-medium">{task.progress.percentage}%</span>
-                </div>
-                <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-primary transition-all duration-300"
-                    style={{ width: `${task.progress.percentage}%` }}
-                  />
-                </div>
-                {task.progress.currentItem && (
-                  <div className="text-xs text-muted-foreground">
-                    {task.progress.currentItem}
-                  </div>
-                )}
-                {/* 6 维度细粒度进度清单（feature/book-analysis-6d-skill） */}
-                {task.progress.dimensions && task.progress.dimensions.length > 0 && (
-                  <div className="mt-2 rounded-md border bg-muted/30 p-2 space-y-1">
-                    <div className="text-xs text-muted-foreground">
-                      {task.progress.currentCharacter
-                        ? `角色「${task.progress.currentCharacter}」的 6 维度`
-                        : "6 维度进度"}
-                    </div>
-                    <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
-                      {task.progress.dimensions.map((d: SixDimensionProgressItem) => (
-                        <li
-                          key={d.key}
-                          className={`flex items-center gap-1.5 text-xs ${dimensionTextClass(
-                            d.status,
-                            d.key === task.progress.currentDimension
-                          )}`}
-                        >
-                          <DimensionStatusIcon status={d.status} />
-                          <span className="truncate">{d.label}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {/* 角色识别阶段状态（feature/character-recognition-and-simple-mode） */}
-                {task.progress.recognitionStatus === "heuristic" && (
-                  <p className="text-sm text-muted-foreground">正在启发式识别角色...</p>
-                )}
-                {task.progress.recognitionStatus === "llm_scoring" && (
-                  <p className="text-sm text-muted-foreground">正在用 LLM 评分角色重要度...</p>
-                )}
-                {task.progress.recognitionStatus === "done" && (
-                  <p className="text-sm text-muted-foreground">
-                    识别出 {task.progress.recognizedCharactersCount ?? 0} 个角色
-                  </p>
-                )}
-                {/* 停止按钮 */}
-                <div className="flex gap-2 mt-3">
-                  <button
-                    onClick={() => cancelTask(task.id)}
-                    className="flex-1 px-3 py-1.5 bg-destructive/10 text-destructive rounded-md hover:bg-destructive/20 transition-colors text-sm font-medium"
-                  >
-                    停止分析
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {task.status === "error" && task.error && (
-              <div className="text-sm text-destructive">
-                {task.error}
-              </div>
-            )}
-
-            {task.status === "completed" && (
-              <div className="flex gap-2 mt-3">
-                <button
-                  type="button"
-                  className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors text-sm font-medium"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setViewingResultPath(task.projectPath)
-                  }}
-                >
-                  查看分析结果
-                </button>
-                {/* feature/network-error-resume：失败角色时显示"继续生成"按钮 */}
-                {(() => {
-                  const failedNames = (task.metadata as any)?.failedCharacterNames as string[] | undefined
-                  if (!failedNames || failedNames.length === 0) return null
-                  return (
-                    <button
-                      onClick={() => handleResumeFailedExtraction(task.id)}
-                      className="px-4 py-2 bg-orange-500 text-white rounded-md hover:bg-orange-600 transition-colors text-sm font-medium"
-                    >
-                      继续生成（{failedNames.length}）
-                    </button>
-                  )
-                })()}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      </div>
-      )}
-
       <BookAnalysisInputDialog
         open={inputDialogOpen}
         onOpenChange={setInputDialogOpen}

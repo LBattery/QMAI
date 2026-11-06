@@ -6,7 +6,7 @@ import { DeAiBatchStartDialog, type DeAiBatchSelection } from "@/components/nove
 import { DeAiBatchTaskPanel } from "@/components/novel/de-ai-batch-task-panel"
 import { readFile } from "@/commands/fs"
 import { toast } from "@/lib/toast"
-import { buildDeAiSystemPrompt } from "@/lib/novel/de-ai-adapter"
+import { buildQmQuaiSystemPrompt } from "@/lib/novel/de-ai-adapter"
 import { loadEffectiveDeAiSkillSafely } from "@/lib/novel/de-ai-skill-library"
 import { buildDeAiBatchCatalog } from "@/lib/novel/de-ai-batch/catalog"
 import { resolveDeAiBatchModelKey } from "@/lib/novel/de-ai-batch/llm-runner"
@@ -98,7 +98,7 @@ export function DeAiBatchWorkspace() {
       }
       const effective = await loadEffectiveDeAiSkillSafely(activeProject.path)
       if (effective.warning) toast.info(effective.warning)
-      const skillContent = effective.skill?.content || buildDeAiSystemPrompt()
+      const skillContent = effective.skill?.content || buildQmQuaiSystemPrompt()
       const skillName = effective.skill?.name || "系统默认去 AI 味规则"
       const inputs: CreateDeAiBatchTaskInput[] = []
       for (const selectedWork of selection) {

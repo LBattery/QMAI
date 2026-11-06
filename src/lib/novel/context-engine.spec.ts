@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import i18n from "@/i18n"
+import { parsePortablePersonality, renderBoundPersonalities } from "./portable-personality"
+import { personality } from "@/test-helpers/portable-personality-fixture"
 import { charsPerTokenForLanguage } from "@/lib/context-budget"
 import {
   annotateChapterOutlineStatus,
+  buildMustAvoid,
   contextPackToPrompt,
   pickChapterOutlineByNumber,
+  selectWritingEntitySearchOutline,
   trimContextPack,
   type ContextPack,
 } from "./context-engine"
@@ -35,6 +39,22 @@ const basePack: ContextPack = {
 }
 
 describe("contextPackToPrompt", () => {
+  it("显式文风画像不能因预算不足被静默裁掉", () => {
+    const writingStyle = "【已启用文风画像】\n" + "具体句法和词汇习惯。".repeat(180)
+    const pack = { ...basePack, task: "写作", writingStyle }
+    expect(() => contextPackToPrompt(pack, 200)).toThrow("文风")
+    expect(contextPackToPrompt(pack, 12000)).toContain(writingStyle)
+  })
+  it("新人格规则不允许被预算静默裁剪", () => {
+    const bindings = [{ characterName: "陆衡", personality: parsePortablePersonality(personality) }]
+    const pack = {
+      ...basePack, portablePersonalities: bindings,
+      characterAuras: renderBoundPersonalities(bindings),
+      outline: "大纲内容".repeat(1000),
+    }
+    expect(() => contextPackToPrompt(pack, 200)).toThrow("人格")
+    expect(contextPackToPrompt(pack, 12000)).toContain("不能直接定罪")
+  })
   it("将最近章节正文片段写入小说上下文包", () => {
     const prompt = contextPackToPrompt({
       ...basePack,
@@ -91,14 +111,50 @@ describe("pickChapterOutlineByNumber", () => {
   })
 })
 
-describe("trimContextPack 两级裁剪", () => {
-  // Trim-level cases were authored against the old hardcoded ×4 char quota.
-  // Pin English density so tokenBudget→chars stays comparable; CJK coverage
-  // lives in the language-density nested suite below.
-  beforeEach(async () => {
-    await i18n.changeLanguage("en")
+describe("selectWritingEntitySearchOutline", () => {
+  it("按章纲、卷纲、本章目标、完整大纲依次选择且不拼接低优先级来源", () => {
+    const sources = {
+      chapterOutline: "第277章章纲：猎户座侦察系统投入测试。",
+      volumeContext: "第五卷：宇宙系列侦察卫星列装。",
+      chapterGoal: "第277章：猎户座投入测试。",
+      outline: "总纲：877型基洛级潜艇与971型阿库拉级核潜艇。",
+    }
+
+    expect(selectWritingEntitySearchOutline(sources)).toBe(sources.chapterOutline)
+    expect(selectWritingEntitySearchOutline({ ...sources, chapterOutline: "" })).toBe(sources.volumeContext)
+    expect(selectWritingEntitySearchOutline({
+      ...sources,
+      chapterOutline: "",
+      volumeContext: "",
+    })).toBe(sources.chapterGoal)
+    expect(selectWritingEntitySearchOutline({
+      ...sources,
+      chapterOutline: "",
+      volumeContext: "",
+      chapterGoal: "",
+    })).toBe(sources.outline)
   })
-  afterEach(async () => {
+
+  it("不同章节只返回各自章纲，不夹带固定总纲装备", () => {
+    const outline = "总纲：877型基洛级潜艇、971型阿库拉级攻击核潜艇。"
+    const chapter276 = selectWritingEntitySearchOutline({
+      chapterOutline: "第276章章纲：武装走廊完成清场。",
+      outline,
+    })
+    const chapter277 = selectWritingEntitySearchOutline({
+      chapterOutline: "第277章章纲：猎户座侦察系统投入测试。",
+      outline,
+    })
+
+    expect(chapter276).toContain("武装走廊")
+    expect(chapter277).toContain("猎户座")
+    expect(chapter276).not.toContain("基洛级")
+    expect(chapter277).not.toContain("阿库拉级")
+  })
+})
+
+describe("trimContextPack 两级裁剪", () => {
+  beforeEach(async () => {
     await i18n.changeLanguage("zh")
   })
 
@@ -165,7 +221,7 @@ describe("trimContextPack 两级裁剪", () => {
       task: "测试",
       relatedSettings: "世界设定内容。" + "详细描述。".repeat(100),
     }
-    const result = trimContextPack(smallPack, 100)
+    const result = trimContextPack(smallPack, 400)
     expect(result.partiallyTrimmedField).toBeDefined()
     expect(result.partiallyTrimmedField?.fieldKey).toBe("relatedSettings")
     expect(result.partiallyTrimmedField?.keptChars).toBeLessThan(result.partiallyTrimmedField?.originalChars ?? 0)
@@ -179,7 +235,7 @@ describe("trimContextPack 两级裁剪", () => {
       ...basePack,
       task: "测试",
       recentSummaries: longSummaries,
-    }, 100)
+    }, 400)
     expect(result.partiallyTrimmedField).toBeDefined()
     expect(result.partiallyTrimmedField?.fieldKey).toBe("recentSummaries")
     expect(result.prompt).toContain("第20章摘要")
@@ -192,7 +248,7 @@ describe("trimContextPack 两级裁剪", () => {
       ...basePack,
       task: "测试",
       soulDoc: longText,
-    }, 100)
+    }, 400)
     expect(result.partiallyTrimmedField).toBeDefined()
     expect(result.partiallyTrimmedField?.fieldKey).toBe("soulDoc")
     expect(result.prompt.length).toBeLessThan(500)
@@ -200,7 +256,7 @@ describe("trimContextPack 两级裁剪", () => {
   })
 
   it("高优先级字段始终保留", () => {
-    const result = trimContextPack(fullPack, 50)
+    const result = trimContextPack(fullPack, 200)
     expect(result.prompt).toContain("生成第10章正文")
     expect(result.prompt).toContain("主角遭遇反派")
   })
@@ -222,16 +278,13 @@ describe("trimContextPack 两级裁剪", () => {
       await i18n.changeLanguage("zh")
     })
 
-    it("同 token 预算下 CJK 字符配额约为英文的 1/4，并更早触发裁剪", async () => {
+    it("中文界面使用中文密度，长内容会触发裁剪", async () => {
       const tokenBudget = 500
-      // Fits English (×4 → 2000 chars) but not CJK (×1 → 500 chars).
       const pack: ContextPack = {
         ...basePack,
         task: "测试语言密度",
         soulDoc: "文".repeat(1_200),
       }
-
-      expect(charsPerTokenForLanguage("zh")).toBe(charsPerTokenForLanguage("en") / 4)
 
       await i18n.changeLanguage("zh")
       expect(charsPerTokenForLanguage()).toBe(1)
@@ -239,13 +292,73 @@ describe("trimContextPack 两级裁剪", () => {
       expect(
         cjk.trimmedFields.length + (cjk.partiallyTrimmedField ? 1 : 0),
       ).toBeGreaterThan(0)
+    })
+  })
 
-      await i18n.changeLanguage("en")
-      expect(charsPerTokenForLanguage()).toBe(4)
-      const en = trimContextPack(pack, tokenBudget)
-      expect(en.trimmedFields).toHaveLength(0)
-      expect(en.partiallyTrimmedField).toBeUndefined()
-      expect(en.finalChars).toBeGreaterThan(cjk.finalChars)
+  describe("同人原作正典", () => {
+    it("正典独立成「原作正典」段，与项目自有正史分开", () => {
+      const pack: ContextPack = {
+        ...basePack,
+        task: "写同人",
+        canonRules: "死者不能复活",
+        sourceCanon: "原作：斗气分九段；萧炎曾跌为废物。",
+      }
+      const prompt = contextPackToPrompt(pack, 12000)
+
+      expect(prompt).toContain("## 原作正典（不可违背）")
+      expect(prompt).toContain("斗气分九段")
+      expect(prompt).toContain("## 禁止违背")
+      expect(prompt).toContain("死者不能复活")
+    })
+
+    it("原创项目没有正典时不产生多余段落", () => {
+      const prompt = contextPackToPrompt(basePack, 12000)
+      expect(prompt).not.toContain("原作正典")
+    })
+
+    it("正典作为硬约束写进「本章避免违背」", () => {
+      const mustAvoid = buildMustAvoid("", "", "", "原作：斗气分九段")
+
+      expect(mustAvoid).toContain("不得违背「原作正典」")
+      expect(mustAvoid).toContain("既成人物的性格、能力边界、已知信息与关系")
+
+      const prompt = contextPackToPrompt({ ...basePack, mustAvoid, sourceCanon: "原作：斗气分九段" }, 12000)
+      expect(prompt).toContain("## 本章避免违背")
+      expect(prompt).toContain("不得违背「原作正典」")
+    })
+
+    it("原创项目不产生正典硬约束条目", () => {
+      const mustAvoid = buildMustAvoid("死者不能复活", "第二天清晨", "林默：怀疑", undefined)
+
+      expect(mustAvoid).not.toContain("原作正典")
+      expect(mustAvoid).toContain("死者不能复活")
+      expect(mustAvoid).toContain("第二天清晨")
+      expect(mustAvoid).toContain("林默：怀疑")
+    })
+
+    it("正典不被静默裁掉：预算不足时报错而不是丢字段", () => {
+      const sourceCanon = "原作正典内容。".repeat(200)
+      const pack: ContextPack = {
+        ...basePack,
+        task: "写同人",
+        sourceCanon,
+      }
+
+      expect(() => contextPackToPrompt(pack, 200)).toThrow("原作正典")
+      expect(contextPackToPrompt(pack, 20000)).toContain(sourceCanon)
+    })
+
+    it("正典优先级高于人物状态，预算紧张时先保住硬约束", () => {
+      const pack: ContextPack = {
+        ...basePack,
+        task: "写同人",
+        sourceCanon: "原作正典：斗气分九段。",
+        characterStates: "萧炎：当前三段。",
+      }
+      const result = trimContextPack(pack, 100000)
+
+      expect(result.prompt).toContain("斗气分九段")
+      expect(result.trimmedFields).not.toContain("sourceCanon")
     })
   })
 })

@@ -67,6 +67,18 @@ const DirectorRoomView = lazy(async () => {
   const mod = await import("@/components/novel/director-room/director-room-view");
   return { default: mod.DirectorRoomView };
 });
+/**
+ * 维护工具从设置里搬到这里（用户要求：放进「创作工具」）。
+ *
+ * 它是**项目级**的维护动作（重复资料合并、伏笔清理都作用于当前打开的书），
+ * 而设置里其余分类是应用级配置 —— 之前它放在设置左侧，用户在写作时
+ * 要为了清理一本书的数据离开写作现场去"设置"，语义上也别扭。
+ * 现在它和记忆中心、拆书库一样是一个正常视图，从顶栏「创作工具」进入。
+ */
+const MaintenanceView = lazy(async () => {
+  const mod = await import("@/components/settings/sections/maintenance-section");
+  return { default: mod.MaintenanceSection };
+});
 
 function LoadingView() {
   return (
@@ -116,6 +128,11 @@ export function ContentArea() {
         break;
       case "skillLibrary":
       case "writingSkillLibrary":
+      // 合并说明：两侧各自追加了技能库的内部视图，取并集 —— 都渲染同一个
+      // UnifiedSkillLibraryView，由组件内部按 activeView 决定显示哪个 tab。
+      case "writingStyleLibrary":
+      case "characterSoulLibrary":
+      case "personaSkillLibrary":
       case "skillFavorites":
         content = (
           <Suspense fallback={<LoadingView />}>
@@ -162,6 +179,19 @@ export function ContentArea() {
         content = (
           <Suspense fallback={<LoadingView />}>
             <DirectorRoomView />
+
+          </Suspense>
+        );
+        break;
+      case "maintenance":
+        content = (
+          <Suspense fallback={<LoadingView />}>
+            {/* data-ui-page 由外层提供：MaintenanceSection 是原设置页的区块，
+                它自己的根节点没有这个属性（见 ui-test-tools.css 里
+                [data-ui-page="maintenance"] 的内边距说明）。 */}
+            <div data-ui-page="maintenance">
+              <MaintenanceView />
+            </div>
           </Suspense>
         );
         break;

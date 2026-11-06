@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react"
+import { captureAppException } from "@/instrument"
 import { isTauri } from "@/lib/platform"
 
 interface Props {
@@ -24,6 +25,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error("ErrorBoundary caught:", error, info.componentStack)
+    captureAppException(error)
     this.setState({ componentStack: info.componentStack ?? null })
     if (isTauri()) {
       try {
@@ -51,7 +53,7 @@ export class ErrorBoundary extends Component<Props, State> {
               <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
                 错误详情
               </summary>
-              <pre className="mt-2 max-h-48 overflow-auto rounded border bg-muted/50 p-2 text-[10px] text-muted-foreground whitespace-pre-wrap break-all">
+              <pre className="mt-2 max-h-48 overflow-auto rounded border bg-muted/50 p-2 text-[0.625rem] text-muted-foreground whitespace-pre-wrap break-all">
                 {this.state.componentStack}
               </pre>
             </details>
@@ -61,7 +63,7 @@ export class ErrorBoundary extends Component<Props, State> {
               <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
                 调用栈
               </summary>
-              <pre className="mt-2 max-h-48 overflow-auto rounded border bg-muted/50 p-2 text-[10px] text-muted-foreground whitespace-pre-wrap break-all">
+              <pre className="mt-2 max-h-48 overflow-auto rounded border bg-muted/50 p-2 text-[0.625rem] text-muted-foreground whitespace-pre-wrap break-all">
                 {this.state.error.stack}
               </pre>
             </details>

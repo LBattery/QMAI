@@ -131,7 +131,7 @@ export function InspirationNotesPanel({ onClose }: { onClose: () => void }) {
           }}
         />
         <div className="mt-1 flex items-center justify-between">
-          <span className="text-[10px] text-muted-foreground">{t("novel.inspirationNotes.composerHint")}</span>
+          <span className="text-[0.625rem] text-muted-foreground">{t("novel.inspirationNotes.composerHint")}</span>
           <button
             onClick={commitComposer}
             disabled={!composer.trim()}
@@ -183,7 +183,7 @@ export function InspirationNotesPanel({ onClose }: { onClose: () => void }) {
                         }}
                       />
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] text-muted-foreground">{t("novel.inspirationNotes.editHint")}</span>
+                        <span className="text-[0.625rem] text-muted-foreground">{t("novel.inspirationNotes.editHint")}</span>
                         <div className="flex gap-1">
                           <button
                             onClick={() => commitEdit(note.id)}
@@ -208,7 +208,7 @@ export function InspirationNotesPanel({ onClose }: { onClose: () => void }) {
                         onClick={() => startEdit(note.id, note.content)}
                         className="min-w-0 flex-1 text-left"
                       >
-                        <div className="text-[10px] text-muted-foreground">
+                        <div className="text-[0.625rem] text-muted-foreground">
                           {formatTimestamp(note.updatedAt || note.createdAt)}
                         </div>
                         <div className="whitespace-pre-wrap break-words text-sm text-foreground">

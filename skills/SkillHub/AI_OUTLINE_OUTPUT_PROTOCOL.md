@@ -1,4 +1,4 @@
-﻿# AI 大纲输出协议
+# AI 大纲输出协议
 
 本协议用于 AI 大纲对话区。AI 生成任何大纲、章纲、人物、设定、伏笔内容时，必须同时给出可保存的结构化结果；系统解析后弹出确认，用户确认后才写入左侧大纲文件树。
 
@@ -24,7 +24,7 @@
 
 ## 3. 标准结果块
 
-AI 回复中必须包含一个 `outlineSaveRequest` 代码块（必须含完整 `content`）。系统优先读取此代码块，弹出确认后由用户决定是否写入；禁止静默落盘，禁止调用 `write_outline_node` 作为替代写入通道。
+AI 回复中必须包含一个 `outlineSaveRequest` 代码块。八类设定一律令 `content` 为 ""，正文由软件从结构化数据生成。系统优先读取此代码块，弹出确认后由用户决定是否写入；禁止静默落盘，禁止调用 `write_outline_node` 作为替代写入通道。
 
 ```json
 {
@@ -113,3 +113,60 @@ AI 回复中必须包含一个 `outlineSaveRequest` 代码块（必须含完整 
 - 是否没有生成正文。
 - 是否引用了题材、大纲/章纲、人物或设定 Skill。
 - 是否符合 `OUTLINE_FOLDER_STORAGE_STANDARD.md` 的目标文件夹规则。
+
+## 9. HTML 版本（系统自动渲染，AI 不要自己写 HTML）
+
+保存时每个 `.md` 都可以有一份同名 `.html` 伴生文件（自包含、无脚本）。**HTML 由系统套技能目录下的模板渲染，AI 禁止自己写 HTML/CSS/标签**，只需按类型附上结构化数据：
+
+| 类型 | 结构化数据（```json 围栏顶层字段） | 渲染模板 |
+|---|---|---|
+| 卷纲 | `volumeOutlineData` | `DagangSkill/juangangzhedieshu/template.html`（折叠树） |
+| 章纲 | `chapterOutlineData` / 分批用 `chapterOutlineBatch` | `ZhanggangSkill/zhanggangjiegouhua/template.html`（卡片流） |
+| 人物小传 | `characterProfileData`（多角色用 `characterProfiles`） | `JueseSkill/character-design/profile.html`（角色卡） |
+| 组织势力 | `factionProfileData`（多势力用 `factionProfiles`） | `SheDingSkill/faction-system/profile.html`（势力卡） |
+| 力量体系 | `powerProfileData`（多体系用 `powerProfiles`） | `SheDingSkill/power-system/profile.html`（体系卡：等级阶梯 / 代价矩阵） |
+| 伏笔计划 | `foreshadowingProfileData`（多台账用 `foreshadowingProfiles`） | `SheDingSkill/foreshadowing-suspense/profile.html`（伏笔台账：伏笔线 / 状态徽章） |
+| 金手指 | `goldenFingerProfileData`（多能力用 `goldenFingerProfiles`） | `SheDingSkill/power-system/golden-finger.html`（能力卡：系统面板） |
+| 地理设定 | `geographyProfileData`（多区域用 `geographyProfiles`） | `SheDingSkill/map-progression/profile.html`（地理卡：区域块） |
+| 地点设定 | `locationProfileData`（多地点用 `locationProfiles`） | `SheDingSkill/map-progression/location.html`（地点卡：空间规则 / 触发事件） |
+| 背景设定 | `backgroundProfileData`（多设定用 `backgroundProfiles`） | `SheDingSkill/world-rules/background.html`（背景卡：历史时间线 / 规则块） |
+| 其它未列类型（兜底） | `settingOutlineData` | `SheDingSkill/setting-cards/template.html`（卡片流） |
+
+`characterProfileData` / `factionProfileData` / `powerProfileData` / `foreshadowingProfileData` / `goldenFingerProfileData` / `geographyProfileData` / `locationProfileData` / `backgroundProfileData` 结构相同：`{ name, tag, tagline, sections[] }`；每个 section 为 `{ kind: "kv"|"list"|"table", heading, items?/head?+rows? }`（关系网络/出场记录/外部关系/等级阶梯/代价/伏笔状态/已解锁能力/区域划分/重要地点/势力分布/空间规则/可触发事件/历史沿革/核心设定规则用 table）。
+
+> 表格单元格若为常见状态枚举（未埋/已埋/推进中/已回收/已过期、高/中/低、已完成/进行中等），软件会渲染成彩色徽章——请严格使用这些取值。
+
+⚠️ 力量体系 / 金手指 / 地理设定 / 地点设定 / 背景设定 共用 `fileType=setting`，软件按 `title → 正文标题 → 文件名 → sourceIntent` 判定子类型后再选模板。
+
+`settingOutlineData` 结构：`{ title, intro, chips[], cards:[{ badge, title, subtitle, tags[], sections:[{ heading, items:[{ label, text }] }] }] }`；每个对象一张 card，写满该分项的分区。若系统未解析到结构化数据，会退回从 `content`（MD 正文）自动解析；八类设定的 `content` 由软件反推，无需模型填写。
+
+保存确认对话框中，勾选「HTML 形式」才会写入 `.html`；未生成 HTML 时该选项不可用。
+
+
+## 八类详细设定的内容等价要求
+
+第二版详细档案标准：不是展示简介。基本身份、生活与供给、运行机制、权限与例外、失败后果、当前时点、知情范围、关联对象及写作场景均须具体；每个重要机制给出可核验的条件和后果，而非只增加段落数量。
+数值闭合：组织收入、成本、利润、分配与现金流分开；人员分组与总人数吻合；同一行程的距离、速度、有效行进时长和等待时间一致；人物的收入、生活费、债务与储蓄互相成立。缺少依据时给明确假设，不硬凑精确数字。
+同一事实只设一个当前基准：说明章节或时点，将未来升级、人物出场、伏笔回收与当前状态分开。跨人物、组织、地图、地点、卷纲和章纲的名称、时间、位置与证据应能相互核对。关联对象写名称和作用，不自行捏造文件路径或链接。
+完整不是堆字数：覆盖本类全部分区与关键字段。重要对象逐项写清对象、机制、条件、代价、变化及正文用法，不能只列名词或写一句空泛评价；同一信息不反复复制充数。
+区分【已确认】【设计提案】【待确认】。新建设定允许基于题材和已有材料提出具体、内部一致的设计，不用整页待补充敷衍；补完已有设定不得改写正史。关键未知写清问题、影响与可选设计，不能编造成已确认事实。
+记录必须区分【计划】与【已发生】，注明章节或时点及依据；没有正文证据不得虚构出场、解锁、埋设或回收记录。无明确章号用阶段，作者真相不得越过人物认知边界。
+按题材适配：非营利组织解释收支平衡，无任务金手指写使用史，无分级力量写可验证能力边界；不适用项说明原因及等价约束，不硬套仙侠、系统或公司模板。
+跨档案核对人物、势力、地点名称、时间线、交通耗时、经济口径、能力边界、关系和伏笔ID；新增提案不得静默覆盖已确认内容，冲突明确列出。
+每个分区包含能够指导具体场景的细节，关键机制给触发—行动—结果—代价的示例。数字写单位、周期、依据或估算假设，不能伪造精确度；禁止省略号、略、同上、其余同理等占位。
+结构化字段必须承载完整正文：每个分区、字段、表格、说明和例子均须保留，不能缩成摘要。长说明用kv条目；表格长解释保留在对应单元格，禁止因排版删除内容。
+多个对象分别完整输出并保持名称匹配，禁止混用他人档案。输出预算不足时缩小批次或继续完成当前对象，不压缩必填分区，不把截断草稿冒充完整档案；沿用现有保存确认流程。
+
+## 第二版空间图形
+
+地理与地点的档案对象可以附带 diagram（kind=map/floorplan，title、note、nodes、regions、routes）。它必须与当前对象对应；坐标是0—100的相对位置，不是实测地理坐标。完整字段按地图推进技能契约，不输出原始SVG/HTML。没有空间依据时省略，不假造地图。
+
+第二版模板使用常驻分区目录与语义版式；不要用HTML写死装饰或引用不存在的文件链接。旧文档和项目内自定义模板不因本协议自动覆盖。
+
+## 设定类单对象低重复输出
+
+每轮最多生成一个完整对象；保留全部分区、详细字段，不减少信息深度。只输出一个完整的结构化JSON围栏，不写MD正文，最后输出 outlineSaveRequest。保存请求的 content=""，正文由软件从结构化数据生成；不要在保存请求中重复抄写正文。其余保存字段照常填写，不调用写入工具替代用户确认。多个待生成对象仅列未完成名称，等用户继续，不把多个完整对象挤入本轮。
+
+已收到正文但流式中断时仍是未完成草稿，不得声明生成或保存成功。不要为避免中断删减内容或编造已完成状态。
+
+此例外仅减少八类设定保存协议中的重复文本；卷纲、章节细纲及其他既有输出协议保持不变。

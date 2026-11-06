@@ -20,7 +20,6 @@ export interface PrePluginInput {
   planExecuteEnabled?: boolean
   availableSkills?: UserSkill[]
   selectedSkills?: UserSkill[]
-  mcpCapabilities?: AiCapability[]
   availableCapabilities?: AiCapability[]
   selectedCapabilities?: SelectedCapabilityTrace[]
   novelSystemPrompt?: string
@@ -66,7 +65,7 @@ export interface PrePluginChainResult extends PrePluginOutput {
   executedPlugins: string[]
 }
 
-export interface PrePluginChain {
+interface PrePluginChain {
   run(input: PrePluginInput, config?: PluginConfig): Promise<PrePluginChainResult>
 }
 

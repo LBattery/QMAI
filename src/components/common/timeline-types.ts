@@ -58,6 +58,8 @@ export interface ToolCallEventItem {
   params?: Record<string, unknown>
   result?: string
   error?: string
+  /** 联网搜索附加信息（目前只有 Gemini）；没有时按原样只显示 result。 */
+  searchDetail?: import("@/lib/search-display").SearchDisplayDetail | null
   startedAt?: number
   finishedAt?: number
 }
@@ -82,13 +84,6 @@ export type TimelineEvent =
   | { kind: "thinking"; data: ThinkingEventItem }
   | { kind: "tool_call"; data: ToolCallEventItem }
   | { kind: "tool_group"; data: ToolCallGroupItem }
-
-export interface EventStreamProps {
-  events: TimelineEvent[]
-  isStreaming: boolean
-  totalDurationMs?: number
-  totalTokens?: number
-}
 
 export function interleaveThinkingWithToolCalls(
   thinkingText: string,
@@ -117,7 +112,7 @@ export function interleaveThinkingWithToolCalls(
   return events
 }
 
-export interface StreamingEventBuilder {
+interface StreamingEventBuilder {
   update: (
     thinkingText: string,
     toolCalls: ToolCallEventItem[],

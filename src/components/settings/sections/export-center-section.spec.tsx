@@ -6,7 +6,7 @@ import { resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ExportDocument, ExportSource } from "@/lib/export-center/types"
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true
+;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const { collectMock, exportMock, registryMock } = vi.hoisted(() => ({
   collectMock: vi.fn(),
@@ -129,10 +129,11 @@ describe("设置中的统一导出中心", () => {
     expect((Array.from(host.querySelectorAll("button")).find((item) => item.textContent === "开始导出") as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it("以独立设置分类最小接入 settings-view", () => {
+  it("以独立分类类型接入 settings-view 并保留渲染分支", () => {
     const source = readFileSync(resolve(process.cwd(), "src/components/settings/settings-view.tsx"), "utf8")
     expect(source).toContain('| "export-center"')
-    expect(source).toContain('id: "export-center"')
     expect(source).toContain("<ExportCenterSection currentProject={project} />")
+    // 新版设置侧栏不再单独列出导出中心分类按钮，仅保留分类类型与渲染分支。
+    expect(source).not.toContain('id: "export-center"')
   })
 })

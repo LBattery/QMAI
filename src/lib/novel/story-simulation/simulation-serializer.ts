@@ -48,6 +48,8 @@ interface SerializedSimulationState {
   timelineEvents: unknown[]
   activeAgents: Record<string, SerializedNovelAgent>
   worldState: Record<string, unknown>
+  /** 旧快照可能没有该字段，反序列化时按 false 兜底 */
+  directorEnabled?: boolean
 }
 
 export interface SerializedSimulationSnapshot {
@@ -67,7 +69,7 @@ function serializeMemory(memory: AgentMemory): SerializedAgentMemory {
   }
 }
 
-export function serializeAgent(agent: NovelAgent): SerializedNovelAgent {
+function serializeAgent(agent: NovelAgent): SerializedNovelAgent {
   return {
     characterId: agent.characterId,
     name: agent.name,
@@ -101,6 +103,7 @@ export function serializeSimulationState(
         serializedAgents.map((a) => [a.characterId, a]),
       ),
       worldState: state.worldState,
+      directorEnabled: state.directorEnabled,
     },
   }
 }
@@ -117,7 +120,7 @@ function deserializeMemory(s: SerializedAgentMemory): AgentMemory {
   }
 }
 
-export function deserializeAgent(s: SerializedNovelAgent): NovelAgent {
+function deserializeAgent(s: SerializedNovelAgent): NovelAgent {
   const relationships = new Map<string, AgentRelation>()
   for (const r of s.relationships) {
     relationships.set(r.targetId, r)
@@ -154,7 +157,7 @@ export function deserializeSimulationSnapshot(
     timelineEvents: snapshot.state.timelineEvents as SimulationState["timelineEvents"],
     activeAgents,
     worldState: snapshot.state.worldState,
-    directorEnabled: false,
+    directorEnabled: snapshot.state.directorEnabled ?? false,
     nextNodeInjectionMap: new Map(),
   }
   return { agents, state }

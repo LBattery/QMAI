@@ -5,6 +5,8 @@ import { useInspirationNotesStore } from "@/stores/inspiration-notes-store"
 import { OutlineActionToolbar } from "@/components/sources/outline-action-toolbar"
 import { OutlineWorkbench } from "@/components/sources/outline-workbench"
 import { PreviewPanel } from "@/components/layout/preview-panel"
+import { openDefaultModelSettings } from "@/lib/open-settings"
+import { cn } from "@/lib/utils"
 
 const InspirationNotesPanel = lazy(async () => {
   const mod = await import("@/components/sources/inspiration-notes-panel")
@@ -17,6 +19,8 @@ export function SourcesView() {
   const notesPanelOpen = useInspirationNotesStore((s) => s.panelOpen)
   const setNotesPanelOpen = useInspirationNotesStore((s) => s.setPanelOpen)
   const [bulkIngestResult, setBulkIngestResult] = useState<string | null>(null)
+  const ingestNoLlm = t("novel.outlineGenerator.ingestNoLlm")
+  const canOpenDefaultModel = Boolean(bulkIngestResult?.includes(ingestNoLlm))
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
@@ -32,7 +36,16 @@ export function SourcesView() {
       </div>
 
       {bulkIngestResult ? (
-        <div className="whitespace-pre-line border-b px-4 py-2 text-xs text-muted-foreground">
+        <div
+          className={cn(
+            "border-b px-4 py-2 text-xs whitespace-pre-line",
+            canOpenDefaultModel
+              ? "cursor-pointer text-destructive hover:underline"
+              : "text-muted-foreground",
+          )}
+          role={canOpenDefaultModel ? "button" : undefined}
+          onClick={canOpenDefaultModel ? openDefaultModelSettings : undefined}
+        >
           {bulkIngestResult}
         </div>
       ) : null}
