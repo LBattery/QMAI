@@ -50,6 +50,20 @@ function registerRoot(rootPath) {
   allowedRoots.add(path.resolve(rootPath))
 }
 
+const DEFAULT_NOVEL_DIR_NAME = "QM-BOOK"
+
+// Web 版没有桌面端的安装目录，默认小说目录按服务进程所在盘符推算。
+// 规则必须与前端 src/lib/default-paths.ts 的 buildDefaultNovelDir 一致：
+// 否则书架扫描默认目录时会被 assertAllowed 拒绝，页面每次都会提示"默认小说目录暂不可读"。
+function buildDefaultNovelDir(pathLike) {
+  const match = String(pathLike).trim().match(/^([a-zA-Z]):[\\/]/)
+  const drive = match ? match[1].toUpperCase() : "D"
+  return `${drive}:\\${DEFAULT_NOVEL_DIR_NAME}`
+}
+
+// 默认小说目录属于应用自身的数据目录，服务启动即放行，供书架只读扫描与新书创建。
+registerRoot(buildDefaultNovelDir(process.cwd()))
+
 function replaceLastSegment(inputPath, from, to) {
   const parts = toPortablePath(inputPath).split("/")
   const index = parts.lastIndexOf(from)
@@ -94,16 +108,36 @@ function virtualizeProjectStoragePath(absPath) {
   return portable
 }
 
-async function assertAllowed(rawPath) {
+// 书架里已保存的书目由前端登记为只读根目录：可以在打开前统计字数、确认目录是否还在，
+// 但不能借此写入或删除文件，写入仍然只认已打开的项目。
+const readOnlyRoots = new Set()
+
+function isFilesystemRoot(absPath) {
+  return absPath === path.parse(absPath).root
+}
+
+function registerReadOnlyRoot(rootPath) {
+  const resolved = path.resolve(rootPath)
+  if (isFilesystemRoot(resolved)) return false
+  readOnlyRoots.add(resolved)
+  return true
+}
+
+async function assertAllowed(rawPath, { write = false } = {}) {
   const resolved = await resolveProjectStoragePath(rawPath)
   for (const root of allowedRoots) {
     if (isSubPath(resolved, root)) return resolved
+  }
+  if (!write) {
+    for (const root of readOnlyRoots) {
+      if (isSubPath(resolved, root)) return resolved
+    }
   }
   throw new Error(`Path is outside opened projects: ${rawPath}`)
 }
 
 async function assertDeletable(rawPath) {
-  const resolved = await assertAllowed(rawPath)
+  const resolved = await assertAllowed(rawPath, { write: true })
   for (const root of allowedRoots) {
     if (path.relative(root, resolved) === "") {
       throw new Error("不能删除已打开项目的根目录")
@@ -288,7 +322,7 @@ async function handleApi(req, res, route) {
       return
     }
     case "/api/project/rename": {
-      const source = await assertAllowed(body.path)
+      const source = await assertAllowed(body.path, { write: true })
       if (!allowedRoots.has(source)) throw new Error("只能重命名已打开的项目根目录")
       const name = validateProjectName(body.name)
       if (/[<>:"|?*]/.test(name) || /[. ]$/.test(name)) throw new Error("小说名称包含无效字符")
@@ -301,12 +335,12 @@ async function handleApi(req, res, route) {
       return
     }
     case "/api/project/cover": {
-      const root = await assertAllowed(body.path)
+      const root = await assertAllowed(body.path, { write: true })
       if (!allowedRoots.has(root)) throw new Error("封面必须保存在已打开的项目中")
       const source = await assertAllowed(body.source)
       const ext = path.extname(source).toLowerCase()
       if (![".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)) throw new Error("封面仅支持 PNG、JPEG、WebP 或 GIF")
-      const destination = await assertAllowed(path.join(root, META_DIR, "covers", `cover${ext}`))
+      const destination = await assertAllowed(path.join(root, META_DIR, "covers", `cover${ext}`), { write: true })
       await fs.mkdir(path.dirname(destination), { recursive: true })
       await fs.copyFile(source, destination)
       sendJson(res, 200, { ok: true, savedPath: toPortablePath(destination) })
@@ -318,7 +352,7 @@ async function handleApi(req, res, route) {
       return
     }
     case "/api/fs/write": {
-      const absPath = await assertAllowed(body.path)
+      const absPath = await assertAllowed(body.path, { write: true })
       await fs.mkdir(path.dirname(absPath), { recursive: true })
       await fs.writeFile(absPath, String(body.contents ?? ""), "utf8")
       sendJson(res, 200, { ok: true })
@@ -330,14 +364,14 @@ async function handleApi(req, res, route) {
       return
     }
     case "/api/fs/mkdir": {
-      const absPath = await assertAllowed(body.path)
+      const absPath = await assertAllowed(body.path, { write: true })
       await fs.mkdir(absPath, { recursive: true })
       sendJson(res, 200, { ok: true })
       return
     }
     case "/api/fs/copy-file": {
       const source = await assertAllowed(body.source)
-      const destination = await assertAllowed(body.destination)
+      const destination = await assertAllowed(body.destination, { write: true })
       await fs.mkdir(path.dirname(destination), { recursive: true })
       await fs.copyFile(source, destination)
       sendJson(res, 200, { ok: true })
@@ -345,7 +379,7 @@ async function handleApi(req, res, route) {
     }
     case "/api/fs/copy-dir": {
       const source = await assertAllowed(body.source)
-      const destination = await assertAllowed(body.destination)
+      const destination = await assertAllowed(body.destination, { write: true })
       sendJson(res, 200, { ok: true, copied: await copyDirectory(source, destination) })
       return
     }
@@ -358,6 +392,16 @@ async function handleApi(req, res, route) {
         await fs.unlink(absPath)
       }
       sendJson(res, 200, { ok: true })
+      return
+    }
+    case "/api/library/allow": {
+      const paths = Array.isArray(body.paths) ? body.paths : []
+      let accepted = 0
+      for (const item of paths) {
+        if (typeof item !== "string" || !item.trim()) continue
+        if (registerReadOnlyRoot(await resolveProjectStoragePath(item))) accepted += 1
+      }
+      sendJson(res, 200, { ok: true, accepted })
       return
     }
     case "/api/fs/exists": {

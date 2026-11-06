@@ -248,6 +248,12 @@ export async function openFileLocation(path: string): Promise<void> {
   return invoke<void>("open_file_location", { path })
 }
 
+/** 书架记录的书目在 Web 版登记为只读目录，未打开也能统计字数；桌面版无需此步骤。 */
+export async function allowReadOnlyRoots(paths: string[]): Promise<void> {
+  if (!useWebFs()) return
+  await getWebFs().allowReadOnlyRoots(paths)
+}
+
 export async function getExecutableDir(): Promise<string> {
   if (useWebFs()) return getWebFs().getExecutableDir()
   return invoke<string>("get_executable_dir")

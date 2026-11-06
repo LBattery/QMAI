@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   createProject: vi.fn(),
   createDirectory: vi.fn(),
   writeFile: vi.fn(),
+  allowReadOnlyRoots: vi.fn(),
   pickDirectory: vi.fn(),
   setOutputLanguage: vi.fn(),
   saveOutputLanguage: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("@/commands/fs", () => ({
   createDirectory: mocks.createDirectory,
   writeFile: mocks.writeFile,
   fileExists: mocks.fileExists,
+  allowReadOnlyRoots: mocks.allowReadOnlyRoots,
   openProjectFolder: vi.fn(),
   renameProject: vi.fn(),
   moveProjectToSystemTrash: vi.fn(),
@@ -99,6 +101,7 @@ beforeEach(() => {
   mocks.createDirectory.mockResolvedValue(undefined)
   mocks.writeFile.mockResolvedValue(undefined)
   mocks.saveOutputLanguage.mockResolvedValue(undefined)
+  mocks.allowReadOnlyRoots.mockResolvedValue(undefined)
   mocks.pickDirectory.mockResolvedValue(null)
   host = document.createElement("div")
   host.className = "ui-test-root"

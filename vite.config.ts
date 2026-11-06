@@ -4,8 +4,23 @@ import { defineConfig } from "vitest/config"
 import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 import { sentryVitePlugin } from "@sentry/vite-plugin"
+import { DEV_PROXY_ROUTES } from "./src/lib/dev-proxy.ts"
 
 const host = process.env.TAURI_DEV_HOST
+
+// 浏览器开发模式下转发第三方接口，规避对方缺失 CORS 头导致的预检失败。
+// 映射表与前端请求层共用 src/lib/dev-proxy.ts，避免两边主机名漂移。
+const devProxy = Object.fromEntries(
+  DEV_PROXY_ROUTES.map((route) => [
+    route.prefix,
+    {
+      target: route.origin,
+      changeOrigin: true,
+      rewrite: (requestPath: string) =>
+        requestPath.startsWith(route.prefix) ? requestPath.slice(route.prefix.length) : requestPath,
+    },
+  ]),
+)
 
 // Read version from package.json at config-load time so the Settings
 // UI can show the running app version without duplicating the string.
@@ -97,6 +112,7 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: host || false,
+    proxy: devProxy,
     hmr: host
       ? {
           protocol: "ws",

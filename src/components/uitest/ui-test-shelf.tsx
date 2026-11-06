@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { FolderOpen, Plus, BookOpen, RectangleVertical } from "lucide-react"
 import type { WikiProject } from "@/types/wiki"
-import { fileExists, getExecutableDir, listDirectory, moveProjectToSystemTrash, openProjectFolder, readFile, renameProject } from "@/commands/fs"
+import { allowReadOnlyRoots, fileExists, getExecutableDir, listDirectory, moveProjectToSystemTrash, openProjectFolder, readFile, renameProject } from "@/commands/fs"
 import { buildDefaultNovelDir } from "@/lib/default-paths"
 import { flattenMdFiles } from "@/lib/novel/chapter-utils"
 import { countChapterBodyWords } from "@/lib/chapter-word-count"
@@ -166,6 +166,10 @@ export function UiTestShelf({
       setScanError([...new Set(warnings)].join(" "))
       setBooks(merged.map((project, index) => ({ project, wordCount: null, coverIndex: index % COVER_COLORS.length })))
       setLoading(false)
+
+      // Web 版的书目记录只在浏览器里，服务端默认不认识这些目录；
+      // 先登记为只读目录，字数统计和删除前的目录确认才能读到文件。
+      await allowReadOnlyRoots(merged.map((project) => project.path)).catch(() => undefined)
 
       for (const project of merged) {
         if (cancelled) return

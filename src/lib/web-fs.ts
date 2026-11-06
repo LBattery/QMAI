@@ -20,6 +20,7 @@ interface WebFileSystemLike {
   findRelatedWikiPages(projectPath: string, sourceName: string): Promise<string[]>
   readFileAsBase64(path: string): Promise<{ base64: string; mimeType: string }>
   openProjectFolder(path: string): Promise<void>
+  allowReadOnlyRoots(paths: string[]): Promise<void>
   clipServerStatus(): Promise<string>
   getExecutableDir(): Promise<string>
   getResourceDir(): Promise<string>
@@ -117,6 +118,11 @@ class HttpWebFileSystem implements WebFileSystemLike {
 
   async openProjectFolder(_path: string): Promise<void> {
     // Browser mode cannot reveal local folders without the full native bridge.
+  }
+
+  async allowReadOnlyRoots(paths: string[]): Promise<void> {
+    const { allowWebReadOnlyRoots } = await import("@/lib/web-service-fs")
+    await allowWebReadOnlyRoots(paths)
   }
 
   async clipServerStatus(): Promise<string> {
@@ -277,6 +283,10 @@ class MemoryWebFileSystem implements WebFileSystemLike {
   }
 
   async openProjectFolder(): Promise<void> {}
+
+  async allowReadOnlyRoots(): Promise<void> {
+    // 内存文件系统没有服务端权限概念。
+  }
 
   async clipServerStatus(): Promise<string> {
     return "stopped"

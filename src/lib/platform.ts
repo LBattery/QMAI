@@ -1,7 +1,3 @@
-type DirectoryPickerWindow = Window & {
-  showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>
-}
-
 type NavigatorWithClientHints = Navigator & {
   userAgentData?: { platform?: string }
 }
@@ -17,10 +13,6 @@ export function isMacOS(): boolean {
   return /Mac/i.test(navigator.platform) || /Macintosh|Mac OS X/i.test(navigator.userAgent)
 }
 
-export function supportsDirectoryPicker(): boolean {
-  return typeof window !== "undefined" && typeof (window as DirectoryPickerWindow).showDirectoryPicker === "function"
-}
-
 export async function pickDirectory(): Promise<string | null> {
   if (isTauri()) {
     const { open } = await import("@tauri-apps/plugin-dialog")
@@ -32,18 +24,8 @@ export async function pickDirectory(): Promise<string | null> {
     return selected ?? null
   }
 
-  if (supportsDirectoryPicker()) {
-    try {
-      const pickerWindow = window as DirectoryPickerWindow
-      const handle = await pickerWindow.showDirectoryPicker?.()
-      return handle?.name ?? null
-    } catch (err) {
-      if ((err as DOMException).name === "AbortError") {
-        return null
-      }
-      throw err
-    }
-  }
-
-  return window.prompt("请输入文件夹路径：")
+  // 浏览器的目录选择器只能拿到文件夹名，本地 Web 服务需要绝对路径才能读写，
+  // 所以 Web 版直接询问绝对路径，避免选出来的目录被当成服务端相对路径而打开失败。
+  const input = window.prompt("请输入文件夹的完整路径（例如 D:\\QM-BOOK\\我的小说）：")
+  return input?.trim() || null
 }

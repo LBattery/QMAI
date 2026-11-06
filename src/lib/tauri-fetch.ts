@@ -18,6 +18,7 @@
  */
 
 import { asAbortError, isTauriInvalidResourceIdError } from "./tauri-resource-error"
+import { toDevProxyUrl } from "./dev-proxy"
 
 let pluginFetchPromise: Promise<typeof globalThis.fetch> | null = null
 
@@ -31,6 +32,28 @@ function wrapPluginHttpFetch(pluginFetch: typeof globalThis.fetch): typeof globa
       }
       throw error
     }
+  }) as typeof globalThis.fetch
+}
+
+/**
+ * 浏览器开发模式：把命中 DEV_PROXY_ROUTES 的绝对地址改写成同源前缀，
+ * 交给 Vite dev server 转发，从而绕开第三方接口缺失 CORS 头的问题。
+ *
+ * 只在 dev 生效：构建产物里没有 Vite 代理，改写后只会 404，
+ * 所以生产环境保持直连（行为与改动前一致）。
+ * 地址前缀统一维护在 dev-proxy.ts，Authorization 等请求头原样透传。
+ */
+function wrapDevProxyFetch(nativeFetch: typeof globalThis.fetch): typeof globalThis.fetch {
+  if (!import.meta.env?.DEV) return nativeFetch
+  return (async (input, init) => {
+    const target =
+      typeof input === "string"
+        ? toDevProxyUrl(input)
+        : input instanceof URL
+          ? toDevProxyUrl(input.toString())
+          : input
+    // 保持调用参数形态不变，避免多传一个 undefined 影响既有断言。
+    return init === undefined ? await nativeFetch(target) : await nativeFetch(target, init)
   }) as typeof globalThis.fetch
 }
 
@@ -59,7 +82,8 @@ export function getHttpFetch(): Promise<typeof globalThis.fetch> {
   if (!pluginFetchPromise) {
     if (isNodeEnv || !isTauriEnv()) {
       // Bind so `this === globalThis` — Node's fetch requires it.
-      pluginFetchPromise = Promise.resolve(globalThis.fetch.bind(globalThis))
+      const nativeFetch = globalThis.fetch.bind(globalThis)
+      pluginFetchPromise = Promise.resolve(isNodeEnv ? nativeFetch : wrapDevProxyFetch(nativeFetch))
     } else {
       pluginFetchPromise = import("@tauri-apps/plugin-http")
         .then((m) => wrapPluginHttpFetch(m.fetch as unknown as typeof globalThis.fetch))

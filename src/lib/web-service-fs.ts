@@ -65,6 +65,12 @@ export async function loadLegacyTauriAppState(): Promise<{
   }
 }
 
+/** 让本地 Web 服务把书架里已保存的书目登记为只读目录：不打开也能读字数、确认目录是否还在。 */
+export async function allowWebReadOnlyRoots(paths: string[]): Promise<void> {
+  if (!paths.length) return
+  await api("/api/library/allow", { paths })
+}
+
 export const webServiceFs = {
   async readFile(path: string): Promise<string> {
     return (await api("/api/fs/read", { path })).contents ?? ""
